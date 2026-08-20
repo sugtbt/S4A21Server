@@ -52,9 +52,7 @@ namespace DfoServer.Game.Mailbox
         public string Text { get; set; } = string.Empty;
         public int MailType { get; set; }
         public ushort SourceProtocol { get; set; }
-        // MailType controls the official/admin presentation. Expiration is an
-        // independent policy: player sends are always 15 days; system callers
-        // default to unlimited and may explicitly request a finite deadline.
+        // MailType 控制系统信展示。过期策略独立：玩家寄信固定 15 天；系统寄信默认不过期，也可指定截止时间。
         public bool? Unlimited { get; set; }
         public DateTimeOffset? ExpireAtUtc { get; set; }
         // Administrative attribution is persisted only for system-mail audit.

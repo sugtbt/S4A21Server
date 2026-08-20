@@ -17,17 +17,16 @@ namespace DfoServer.Network.Handlers
 {
     internal sealed class MailboxHandler
     {
-        private const int MailboxListNotificationType = 0x0061;
-        private const int MailboxRemoveNotificationType = 0x0062;
+        private const int MailboxListNotificationType = (int)NotiPacketTypeA21.MAILBOX_MAIL_LIST;
+        private const int MailboxRemoveNotificationType = (int)NotiPacketTypeA21.MAILBOX_REMOVE_MAIL;
         // Client sub_D317E0 consumes one WORD and raises the online mailbox notice.
-        private const int MailboxAlarmNotificationType = 0x0063;
-        private const ushort MailboxChangeLetterStatType = 0x0086;
+        private const int MailboxAlarmNotificationType = (int)NotiPacketTypeA21.MAILBOX_ALARM;
+        private const ushort MailboxChangeLetterStatType = (ushort)CmdPacketTypeA21.CHANGE_LETTER_STAT;
         private const int MailboxPageSize = 20;
         private const int MailboxStorageLimit = 10;
         private const int MailboxSenderNameSize = 30;
         private const int MailboxLetterTextSize = 512;
         private const int MinExpirationUnixTime = 1000000000;
-        private static readonly bool A21MailboxFullListEnabled = false;
         private const int OfficialMailSenderCharacterId = 0;
         private const string OfficialMailSenderName = "DNFadmin";
         private const string DefaultMailboxSafetyText = "DNF\u8FD0\u8425\u8005\u4E0D\u4F1A\u4EE5\u4EFB\u4F55\u5F62\u5F0F\u7D22\u8981\u6216\u8BE2\u95EE\u60A8\u7684\u8D26\u53F7\u5BC6\u7801,\u8BF7\u60A8\u4E0D\u8981\u90AE\u5BC4\u5199\u6709DNF\u8D26\u53F7\u5BC6\u7801\u7B49\u91CD\u8981\u4FE1\u606F\u7684\u4FE1\u4EF6";
@@ -113,8 +112,7 @@ namespace DfoServer.Network.Handlers
         public async Task HandleOpenMailbox(EnhancedClientSession session, GamePacketHeader header, byte[] body)
         {
             var characterId = session.Player?.CharacterId ?? 0;
-            // Opening the mailbox acknowledges only the session-level new-mail alarm.
-            // Per-message read_flag remains controlled by 0x0086 action=2.
+            // 打开邮箱只清会话级新邮件提示；单封已读仍由 CHANGE_LETTER_STAT action=2 控制。
             _mailboxAlarmStates.Remove(session);
             var page = _mailboxService.LoadInboxPage(characterId, MailboxPageSize);
             var entries = page.Entries;
@@ -123,18 +121,7 @@ namespace DfoServer.Network.Handlers
 
             var notLoaded = ClampUInt16(page.NotLoadedCount);
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x01, header.type, BuildOpenMailboxAck(notLoaded)));
-            if (!A21MailboxFullListEnabled)
-            {
-                // A21 邮箱列表/附件预览结构尚未确认，先发送空列表避免客户端解析错误崩溃。
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                    0x00,
-                    MailboxListNotificationType,
-                    BuildMailboxListNotification(Array.Empty<MailboxListEntry>(), isFirstLoad: false, notLoadedCount: notLoaded)))
-                    .ConfigureAwait(false);
-                FileLogger.Log($"[Mailbox] OPEN suppressed full list for A21 cid={characterId} entries={entries.Count}");
-                return;
-            }
-
+            // 打开 ACK 之后发完整 0x0061，有邮件时与进城 init 同一份。
             await SendMailboxListNotifications(session, entries, notLoaded).ConfigureAwait(false);
         }
 
@@ -865,10 +852,7 @@ namespace DfoServer.Network.Handlers
                     wroteAttachment = true;
                 }
 
-                // Detail-only letters still need the summary loop to seed the client's
-                // internal current mail id (v40 in sub_D3E080). The empty summary is read
-                // and skipped by sub_14F9D00, then the detail record can be inserted with
-                // a valid object id instead of 0, avoiding bogus negative remaining days.
+                // 纯正文邮件也要占一条 summary，给客户端当前邮件 id，避免剩余天数算成负数。
                 if (!wroteAttachment && entry != null && !string.IsNullOrEmpty(entry.Body) && summaryRecords.Count < byte.MaxValue)
                     summaryRecords.Add(new MailboxSummaryRecord(entry, null, false, seedOnly: true));
             }
@@ -973,10 +957,7 @@ namespace DfoServer.Network.Handlers
             var senderCharacterId = GetMailboxSenderCharacterId(entry);
             var senderName = GetMailboxSenderName(entry);
 
-            // The client uses the first dword as the per-slot claim object and the
-            // final dword as the UI de-duplication key. Multiple attachment summaries
-            // with the same final key are merged into one mail row and appended as
-            // separate attachment slots.
+            // 首字段是领取对象，末字段是同一封邮件的合并 key。
             var hasItemAttachment = MailboxSummaryAttachmentPreviewEnabled
                 && attachment != null
                 && attachment.ItemTemplateId > 0
@@ -990,7 +971,7 @@ namespace DfoServer.Network.Handlers
             WriteMailboxString(writer, senderName, MailboxSenderNameSize);
             writer.WriteInt32(includeGold ? (entry?.Gold ?? 0) : 0);
 
-            // Item attachment fields follow the client's sub_D3E080 read order.
+            // 附件字段按 A21 列表读序写出。
             writer.WriteInt32(hasItemAttachment ? attachment.ItemTemplateId : 0);
             writer.WriteByte(hasItemAttachment ? (byte)1 : (byte)0);
 
@@ -1003,11 +984,15 @@ namespace DfoServer.Network.Handlers
                 ? EquipmentTypeInfo.ParseOrUnknown(
                     ItemMetadataResolver.Resolve(attachment.ItemTemplateId)?.EquipmentType)
                 : EquipmentType.Unknown;
+            // 时装为装备类型 0-11；宠物 extras 仅 type 25。无 PVF 类型时按 ItemKind 回退。
             var isAvatarAttachment = hasItemAttachment
-                && equipmentType >= EquipmentType.HatAvatar
-                && equipmentType <= EquipmentType.WeaponAvatar;
+                && (EquipmentTypeInfo.IsAvatarPart(equipmentType)
+                    || (equipmentType == EquipmentType.Unknown
+                        && itemCore?.ItemKind == ItemCore.KindAvatar));
             var isCreatureAttachment = hasItemAttachment
-                && equipmentType == EquipmentType.Creature;
+                && (equipmentType == EquipmentType.Creature
+                    || (equipmentType == EquipmentType.Unknown
+                        && itemCore?.ItemKind == ItemCore.KindCreature));
             var isEquipmentAttachment = hasItemAttachment
                 && (itemCore?.ItemKind == ItemCore.KindEquipment
                     || itemCore?.ItemKind == ItemCore.KindCreatureEquipment);
@@ -1021,11 +1006,7 @@ namespace DfoServer.Network.Handlers
                     : (itemCore?.Value ?? attachment.InstanceValue))
                 : 0;
 
-            // The mailbox constructor uses the same leading semantics as a common
-            // inventory item. Creature eggs cannot be reinforced; their raw attr byte is
-            // normally zero and must come from tailData0A[0], never from seal_flag.
-            // For creature artifacts the client overloads this WORD as remaining
-            // validity seconds (0 means permanent). Other equipment keeps durability.
+            // 宠物装备耐久位写剩余秒数，0 表示永久；其他装备写耐久。
             var durability = isPetArtifactAttachment
                 ? ResolvePetArtifactRemainingSeconds(itemCore?.ExpireTime ?? attachment.ExpireTime)
                 : (structuredItem != null
@@ -1033,9 +1014,7 @@ namespace DfoServer.Network.Handlers
                     : (hasItemAttachment ? ClampUInt16(attachment.Durability) : (ushort)0));
             var itemAttr = structuredItem?.Attr
                 ?? (hasItemAttachment ? ClampByte(attachment.SealFlag) : (byte)0);
-            // The compact mailbox item header continues with enchant card id,
-            // enchant upgrade count, amplify type and amplify value. Stackable
-            // attachments keep their verified count value in v29.
+            // 附魔卡、强化次数、增幅类型与增幅值；堆叠附件数量走 instance 字段。
             var enchantOrCount = structuredItem != null ? structuredItem.EnchantCardId : itemCount;
             var enchantUpgradeCount = structuredItem != null ? structuredItem.EnchantUpgradeCount : (byte)0;
             var amplifyValue = structuredItem != null
@@ -1044,12 +1023,9 @@ namespace DfoServer.Network.Handlers
             var expireTime = structuredItem != null
                 ? structuredItem.ExpireTime
                 : (hasItemAttachment ? attachment.ExpireTime : 0);
-            // Client sub_D3E080 reads one extra DWORD only when the PVF equipment
-            // type is 24 ([creature]). Avatar types 0..10 use the leading WORD as
-            // ability_no and do not contain this field. For creatures this is
-            // tailData0A[12..15] (remaining validity seconds).
+            // 宠物 type=25 在 expire 前写 i32 + flag，flag 固定 0。
             var typeSpecificExtra = isCreatureAttachment
-                ? structuredItem.Marker16
+                ? ResolveMailboxCreatureExtra(structuredItem)
                 : 0;
             var protocolAmplifyType = structuredItem != null
                 ? structuredItem.AmplifyType
@@ -1070,8 +1046,6 @@ namespace DfoServer.Network.Handlers
                 ? ReadEquipmentEmblemIds(structuredItem)
                 : (hasItemAttachment ? ReadAttachmentExtraDwordArray(attachment, "mailboxAttrArray") : Array.Empty<int>());
 
-            // These fields mirror the front part of the common item entry closely enough
-            // for the client to build the mailbox attachment object without inventing data.
             writer.WriteInt32(instanceValue);
             writer.WriteUInt16(durability);
             writer.WriteByte(itemAttr);
@@ -1079,11 +1053,10 @@ namespace DfoServer.Network.Handlers
             writer.WriteByte(enchantUpgradeCount);
             writer.WriteByte(protocolAmplifyType);
             writer.WriteUInt16(amplifyValue);
-            if (isCreatureAttachment)
-                writer.WriteInt32(typeSpecificExtra);
+            WriteA21MailboxCreatureExtras(writer, isCreatureAttachment, typeSpecificExtra);
             writer.WriteInt32(expireTime);
-            WriteDwordArray(writer, attrArray); // sub_1185890 attr-array
-            writer.WriteUInt16(dfWord); // sub_DF6780
+            WriteDwordArray(writer, attrArray);
+            writer.WriteUInt16(dfWord);
             WriteMailboxSealData(writer, structuredItem);
             writer.WriteByte(v47);
             writer.WriteByte(v25);
@@ -1094,35 +1067,98 @@ namespace DfoServer.Network.Handlers
             writer.WriteByte(tailByte2);
             writer.WriteByte(tailByte3);
             writer.WriteByte(tailByte4);
-            // Client sub_D3E080 reads the same two avatar-detail blocks as the
-            // inventory item-list protocol: a length-prefixed 30-byte socket
-            // payload followed by a length-prefixed four-byte colour payload.
-            if (isAvatarAttachment)
-            {
-                var avatarDetail = MailboxItemDetailCodec
-                    .BuildCreateOptions(attachment?.DetailJson)
-                    ?.AvatarDetailTemplate;
-                var jewelSocket = avatarDetail != null
-                    ? JewelSocket.FromBytes(avatarDetail.JewelSocket).ToBytes()
-                    : JewelSocket.FromBytes(
-                        ReadAttachmentExtraHexBytes(attachment, "reserved2")).ToBytes();
-                var legacyColor = avatarDetail == null
-                    ? ReadAttachmentExtraHexBytes(attachment, "tailData")
-                    : Array.Empty<byte>();
-                var color1 = avatarDetail?.Color1
-                    ?? ReadUInt16LittleEndian(legacyColor, 0);
-                var color2 = avatarDetail?.Color2
-                    ?? ReadUInt16LittleEndian(legacyColor, 2);
-
-                writer.WriteInt32(JewelSocket.Size);
-                writer.WriteBytes(jewelSocket);
-                writer.WriteInt32(4);
-                writer.WriteUInt16(color1);
-                writer.WriteUInt16(color2);
-            }
+            // 尾部固定两段长度前缀 blob；非时装 0/0，时装 18B 宝珠 + 4B 颜色。
+            WriteA21MailboxItemBlobs(writer, isAvatarAttachment, attachment);
+            writer.WriteByte(0);
+            // 时装在 extra1 之后、remain 之前再写两段空长度前缀。
+            WriteA21MailboxAvatarPostCreateBlobs(writer, isAvatarAttachment);
             writer.WriteInt32(remainSeconds);
             var summaryKey = seedOnly ? 0 : messageId;
             writer.WriteInt32(summaryKey);
+            writer.WriteByte(0);
+        }
+
+        private static int ResolveMailboxCreatureExtra(ItemCore core)
+        {
+            if (core == null || core.Marker16 < 0)
+                return 0;
+            return core.Marker16;
+        }
+
+        private static void WriteA21MailboxCreatureExtras(
+            GamePacketWriter writer,
+            bool isCreatureAttachment,
+            int typeSpecificExtra)
+        {
+            if (!isCreatureAttachment)
+                return;
+
+            writer.WriteInt32(typeSpecificExtra);
+            writer.WriteByte(0);
+        }
+
+        private static void WriteA21MailboxItemBlobs(
+            GamePacketWriter writer,
+            bool isAvatarAttachment,
+            MailboxAttachmentEntry attachment)
+        {
+            if (!isAvatarAttachment)
+            {
+                writer.WriteInt32(0);
+                writer.WriteInt32(0);
+                return;
+            }
+
+            var avatarDetail = MailboxItemDetailCodec
+                .BuildCreateOptions(attachment?.DetailJson)
+                ?.AvatarDetailTemplate;
+            var jewelSocket = avatarDetail != null
+                ? JewelSocket.FromBytes(avatarDetail.JewelSocket).ToBytes()
+                : JewelSocket.FromBytes(
+                    ReadAttachmentExtraHexBytes(attachment, "reserved2")).ToBytes();
+            var legacyColor = avatarDetail == null
+                ? ReadAttachmentExtraHexBytes(attachment, "tailData")
+                : Array.Empty<byte>();
+            var color1 = avatarDetail?.Color1
+                ?? ReadUInt16LittleEndian(legacyColor, 0);
+            var color2 = avatarDetail?.Color2
+                ?? ReadUInt16LittleEndian(legacyColor, 2);
+
+            writer.WriteInt32(ItemListProtocolWriter.A21AvatarJewelBytes);
+            WriteFixedMailboxBytes(writer, jewelSocket, ItemListProtocolWriter.A21AvatarJewelBytes);
+            writer.WriteInt32(4);
+            writer.WriteUInt16(color1);
+            writer.WriteUInt16(color2);
+        }
+
+        private static void WriteA21MailboxAvatarPostCreateBlobs(
+            GamePacketWriter writer,
+            bool isAvatarAttachment)
+        {
+            if (!isAvatarAttachment)
+                return;
+
+            writer.WriteInt32(0);
+            writer.WriteInt32(0);
+        }
+
+        private static void WriteFixedMailboxBytes(GamePacketWriter writer, byte[] value, int length)
+        {
+            if (value == null || value.Length == 0)
+            {
+                writer.WriteZeroBytes(length);
+                return;
+            }
+
+            if (value.Length == length)
+            {
+                writer.WriteBytes(value);
+                return;
+            }
+
+            var buffer = new byte[length];
+            Buffer.BlockCopy(value, 0, buffer, 0, Math.Min(value.Length, length));
+            writer.WriteBytes(buffer);
         }
 
         private static ushort ReadUInt16LittleEndian(byte[] data, int offset)
@@ -1320,9 +1356,7 @@ namespace DfoServer.Network.Handlers
 
         private static void WriteMailboxLetterDetail(GamePacketWriter writer, MailboxListEntry entry)
         {
-            // Client sub_14FBED0 interprets this detail DWORD as the letter's
-            // creation Unix time for stat 1/2 and derives the normal 15-day
-            // lifetime itself. Summary records use remaining seconds instead.
+            // detail 的时间字段是创建 Unix 秒；剩余秒数只写在 summary。
             var createdAtUnixSeconds = Math.Max(0, entry?.CreatedAtUnixSeconds ?? 0);
             var letterStat = Math.Max(0, entry?.LetterStat ?? 0);
             var senderCharacterId = GetMailboxSenderCharacterId(entry);
@@ -1334,6 +1368,7 @@ namespace DfoServer.Network.Handlers
             WriteMailboxString(writer, BuildMailboxDisplayText(entry), MailboxLetterTextSize);
             writer.WriteInt32(createdAtUnixSeconds);
             writer.WriteUInt16((ushort)letterStat);
+            writer.WriteByte(0);
         }
 
         private static string BuildMailboxDisplayText(MailboxListEntry entry)
@@ -1373,6 +1408,7 @@ namespace DfoServer.Network.Handlers
 
         private static void WriteMailboxString(GamePacketWriter writer, string value, int maxBytes)
         {
+            // 本客户端邮件字符串用 UTF-8；长度按缓冲区预留结尾 0。
             var bytes = TruncateUtf8(value ?? string.Empty, Math.Max(0, maxBytes - 1));
             writer.WriteInt32(bytes.Length);
             writer.WriteBytes(bytes);

@@ -62,6 +62,7 @@ namespace DfoServer.Game.Mailbox
                     {
                         connection.Open();
                         using (var transaction = connection.BeginTransaction(deferred: false))
+                        using (InventoryUidAllocationContext.Enter(connection, transaction))
                         {
                             var result = SendMail(connection, transaction, request, lease, out inventoryMutated);
                             if (result.Success)
@@ -516,6 +517,7 @@ ORDER BY ordinal, attachment_id;";
                     {
                         connection.Open();
                         using (var transaction = connection.BeginTransaction(deferred: false))
+                        using (InventoryUidAllocationContext.Enter(connection, transaction))
                         {
                             var result = ClaimMail(
                                 connection,
