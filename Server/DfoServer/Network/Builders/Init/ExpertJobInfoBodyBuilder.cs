@@ -28,7 +28,7 @@ namespace DfoServer.Network.Builders
             return BuildBody(info);
         }
 
-        private static byte[] BuildBody(ExpertJobInfoSnapshot info)
+        internal static byte[] BuildBody(ExpertJobInfoSnapshot info)
         {
             var writer = new GamePacketWriter();
             writer.WriteByte(info.State0);

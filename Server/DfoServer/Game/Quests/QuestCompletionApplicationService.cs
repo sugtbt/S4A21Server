@@ -166,6 +166,7 @@ namespace DfoServer.Game.Quests
             var isTitleRewardQuest = GameWorld.QuestData.IsTitleRewardQuest(questId);
             var consumedEntries = new List<ConsumedItemEntry>();
             var insertedEntries = new List<InsertedItemEntry>();
+            SelectCharacter.SkillInfoSnapshot expertJobSkills = null;
             uint goldReward = 0;
             uint expReward = 0;
             uint honorExpReward = 0;
@@ -406,7 +407,7 @@ namespace DfoServer.Game.Quests
                             }
                             else if (reward.ChainType == 20)
                             {
-                                UpdateExpertJob(
+                                expertJobSkills = UpdateExpertJob(
                                     connection,
                                     transaction,
                                     characterId,
@@ -527,6 +528,9 @@ namespace DfoServer.Game.Quests
                 PetCreatureEvolution = petEvolution,
                 ConsumedEntries = consumedEntries,
                 InsertedEntries = insertedEntries,
+                SkillPages = reward.ChainType == 20
+                    ? CaptureExpertJobSkillPages(expertJobSkills)
+                    : new List<QuestFinishSkillPage>(),
             };
         }
 
@@ -1581,7 +1585,7 @@ namespace DfoServer.Game.Quests
             }
         }
 
-        internal static void UpdateExpertJob(
+        internal static SelectCharacter.SkillInfoSnapshot UpdateExpertJob(
             SqliteConnection connection,
             SqliteTransaction transaction,
             int characterId,
@@ -1603,6 +1607,93 @@ namespace DfoServer.Game.Quests
                 transaction,
                 characterId,
                 expertJobType);
+
+            byte job;
+            byte characterLevel;
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText =
+                    "SELECT job, level FROM characters WHERE character_id = @cid";
+                command.Parameters.AddWithValue("@cid", characterId);
+                using (var reader = command.ExecuteReader())
+                {
+                    if (!reader.Read())
+                    {
+                        throw new InvalidOperationException(
+                            $"character not found: cid={characterId}");
+                    }
+
+                    job = (byte)reader.GetInt32(0);
+                    characterLevel = (byte)Math.Max(1, Math.Min(255, reader.GetInt32(1)));
+                }
+            }
+
+            var progressRepository = CharacterData.SqliteCharacterProgressRepository
+                .FromConnectionString(connection.ConnectionString);
+            var skills = progressRepository.LoadSkills(
+                connection,
+                transaction,
+                characterId);
+            if (ExpertJobGiveupConfigProvider.TryGet(expertJobType, out var config)
+                && config.SkillGrants != null
+                && config.SkillGrants.Count > 0)
+            {
+                var grants = new List<Skills.CharacterSkillProfile.SkillGrant>(
+                    config.SkillGrants.Count);
+                foreach (var grant in config.SkillGrants)
+                {
+                    grants.Add(new Skills.CharacterSkillProfile.SkillGrant
+                    {
+                        SkillIndex = grant.SkillId,
+                        Level = grant.Level,
+                    });
+                }
+
+                Skills.CharacterSkillProfile.MergeGrants(
+                    skills,
+                    grants,
+                    job,
+                    characterLevel);
+                progressRepository.SaveSkillProgress(
+                    connection,
+                    transaction,
+                    characterId,
+                    skills);
+            }
+
+            return skills;
+        }
+
+        private static List<QuestFinishSkillPage> CaptureExpertJobSkillPages(
+            SelectCharacter.SkillInfoSnapshot skills)
+        {
+            var pages = new List<QuestFinishSkillPage>(2);
+            for (var pageIndex = 0; pageIndex < 2; pageIndex++)
+            {
+                var page = new QuestFinishSkillPage();
+                var source = skills != null && pageIndex < skills.Pages.Count
+                    ? skills.Pages[pageIndex]
+                    : null;
+                if (source?.Entries != null)
+                {
+                    foreach (var entry in source.Entries)
+                    {
+                        if (entry == null)
+                            continue;
+                        page.Entries.Add(new QuestFinishSkillEntry
+                        {
+                            Slot = entry.Slot,
+                            SkillId = entry.SkillId,
+                            Level = entry.Level,
+                        });
+                    }
+                }
+
+                pages.Add(page);
+            }
+
+            return pages;
         }
 
         internal static void UpdateSlotExpansion(

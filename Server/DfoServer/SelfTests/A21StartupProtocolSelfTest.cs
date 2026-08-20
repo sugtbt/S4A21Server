@@ -1,5 +1,7 @@
 using DfoServer.Game.Settings;
 using DfoServer.Game.Characters;
+using DfoServer.Game.ExpertJob;
+using DfoServer.Game.Quests;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.Network;
 using DfoServer.Network.Builders;
@@ -151,6 +153,122 @@ namespace DfoServer.SelfTests
                 "A21 USERINFO0 reserves the fixed 38-byte header",
                 userInfo0PrefixValid
                 && BitConverter.ToUInt16(userInfo0, 41) == 7,
+                ref failures);
+
+            var expertJobChangeRecord = new CharacterRecord
+            {
+                CharacterId = 7,
+                Name = new byte[] { (byte)'a' },
+            };
+            var expertJobChangeUserInfo = QuestNotificationProjector
+                .BuildExpertJobChangeUserInfoBody(expertJobChangeRecord);
+            Check(
+                "A21 expert-job-change USERINFO0 reuses the login 38-byte header",
+                expertJobChangeUserInfo != null
+                && expertJobChangeUserInfo.Length == userInfo0.Length
+                && expertJobChangeUserInfo.SequenceEqual(userInfo0),
+                ref failures);
+
+            var headerlessWriter = new GamePacketWriter();
+            headerlessWriter.WriteByte(0);
+            headerlessWriter.WriteUInt16(1);
+            headerlessWriter.WriteUInt16((ushort)expertJobChangeRecord.CharacterId);
+            headerlessWriter.WriteDstr(expertJobChangeRecord.Name);
+            headerlessWriter.WriteBytes(
+                UserInfoSubtype0Builder.BuildRemainingBytes(expertJobChangeRecord));
+            var headerlessUserInfo = headerlessWriter.ToArray();
+            Check(
+                "A21 expert-job-change USERINFO0 is not the A12 headerless layout",
+                expertJobChangeUserInfo.Length == headerlessUserInfo.Length + 38
+                && BitConverter.ToUInt16(headerlessUserInfo, 3) == 7,
+                ref failures);
+
+            var expertJobUserInfo = UserInfoSubtype0Builder.BuildNotificationBody(
+                new CharacterRecord
+                {
+                    CharacterId = 7,
+                    Name = new byte[] { (byte)'a' },
+                    Subtype0Tail = new UserInfoMinimumTailSnapshot
+                    {
+                        ExpertJobType = 3,
+                        ExpertJobExp = 0x10203040,
+                    },
+                });
+            var afterAliveOffset = expertJobUserInfo.Length
+                - UserInfoSubtype0Builder.A21AfterAliveLength;
+            Check(
+                "A21 USERINFO0 carries expert job type and exp in the 64-byte tail",
+                afterAliveOffset >= 0
+                && expertJobUserInfo[afterAliveOffset
+                    + UserInfoSubtype0Builder.A21AfterAliveExpertJobTypeOffset] == 3
+                && BitConverter.ToUInt32(
+                    expertJobUserInfo,
+                    afterAliveOffset
+                    + UserInfoSubtype0Builder.A21AfterAliveExpertJobExpOffset) == 0x10203040
+                && expertJobUserInfo[afterAliveOffset + 52] == 0x64
+                && expertJobUserInfo[afterAliveOffset + 61] == 0xFF,
+                ref failures);
+
+            var noExpertJobUserInfo = UserInfoSubtype0Builder.BuildNotificationBody(
+                new CharacterRecord
+                {
+                    CharacterId = 7,
+                    Name = new byte[] { (byte)'a' },
+                    Subtype0Tail = new UserInfoMinimumTailSnapshot
+                    {
+                        ExpertJobType = 0,
+                        ExpertJobExp = uint.MaxValue,
+                    },
+                });
+            var noJobAfterAliveOffset = noExpertJobUserInfo.Length
+                - UserInfoSubtype0Builder.A21AfterAliveLength;
+            Check(
+                "A21 USERINFO0 writes 0 expert-job exp when the job was given up",
+                noJobAfterAliveOffset >= 0
+                && noExpertJobUserInfo[noJobAfterAliveOffset
+                    + UserInfoSubtype0Builder.A21AfterAliveExpertJobTypeOffset] == 0
+                && BitConverter.ToUInt32(
+                    noExpertJobUserInfo,
+                    noJobAfterAliveOffset
+                    + UserInfoSubtype0Builder.A21AfterAliveExpertJobExpOffset) == 0,
+                ref failures);
+
+            var expertJobChangeInfo = ExpertJobInfoBodyBuilder.BuildProjectedBody(
+                3,
+                new ExpertJobState
+                {
+                    DisjointMachine = new DisjointMachineState
+                    {
+                        MachineGrade = 1,
+                        Endurance = 100,
+                    },
+                },
+                0);
+            Check(
+                "A21 expert-job-change 0x00CD uses login machine layout",
+                (ushort)NotiPacketTypeA21.EXPERT_JOB_INFO == 0x00CD
+                && expertJobChangeInfo.Length == 10
+                && expertJobChangeInfo[0] == 0
+                && expertJobChangeInfo[1] == 3
+                && BitConverter.ToInt32(expertJobChangeInfo, 2) == 1
+                && BitConverter.ToInt32(expertJobChangeInfo, 6) == 100,
+                ref failures);
+
+            var enchanterChangeInfo = ExpertJobInfoBodyBuilder.BuildBody(
+                new ExpertJobInfoSnapshot
+                {
+                    Mode = 1,
+                    EnchanterLevel = 1,
+                    EnchanterEndurance = 50,
+                });
+            Check(
+                "A21 enchanter 0x00CD writes initial level with empty recipes",
+                enchanterChangeInfo.Length == 12
+                && enchanterChangeInfo[1] == 1
+                && enchanterChangeInfo[2] == 0
+                && enchanterChangeInfo[3] == 0
+                && BitConverter.ToInt32(enchanterChangeInfo, 4) == 1
+                && BitConverter.ToInt32(enchanterChangeInfo, 8) == 50,
                 ref failures);
 
             var userInfo1 = UserInfoSubtype1Builder.BuildFromSnapshot(

@@ -6,6 +6,19 @@ using PvfLib;
 
 namespace DfoServer.Game.ExpertJob
 {
+    internal readonly struct ExpertJobSkillGrant
+    {
+        internal ExpertJobSkillGrant(ushort skillId, byte level)
+        {
+            SkillId = skillId;
+            Level = level;
+        }
+
+        internal ushort SkillId { get; }
+
+        internal byte Level { get; }
+    }
+
     internal sealed class ExpertJobGiveupConfig
     {
         internal byte ExpertJobType { get; set; }
@@ -17,6 +30,8 @@ namespace DfoServer.Game.ExpertJob
         internal IReadOnlyList<int> GiveupCosts { get; set; }
 
         internal IReadOnlyList<ushort> SkillIds { get; set; }
+
+        internal IReadOnlyList<ExpertJobSkillGrant> SkillGrants { get; set; }
 
         internal int DeleteItemId { get; set; }
 
@@ -99,13 +114,21 @@ namespace DfoServer.Game.ExpertJob
                 throw new InvalidOperationException(
                     $"PVF {jobPath} [skill] row width is not 2");
             var skillIds = new List<ushort>();
+            var skillGrants = new List<ExpertJobSkillGrant>();
             for (var index = 0; index < skillTokens.Length; index += 2)
             {
                 var skillId = ExpertJobPvfValueReader.ParseInt(skillTokens[index]);
                 if (skillId <= 0 || skillId > ushort.MaxValue)
                     throw new InvalidOperationException(
                         $"PVF {jobPath} has invalid skill id");
+                var skillLevel = ExpertJobPvfValueReader.ParseInt(skillTokens[index + 1]);
+                if (skillLevel < 0 || skillLevel > byte.MaxValue)
+                    throw new InvalidOperationException(
+                        $"PVF {jobPath} has invalid skill level");
                 skillIds.Add((ushort)skillId);
+                skillGrants.Add(new ExpertJobSkillGrant(
+                    (ushort)skillId,
+                    (byte)Math.Max(1, skillLevel)));
             }
 
             var deleteTokens = ExpertJobPvfValueReader.ReadTokens(
@@ -129,6 +152,7 @@ namespace DfoServer.Game.ExpertJob
                 ConnectQuestIds = connectQuestIds,
                 GiveupCosts = costs,
                 SkillIds = skillIds,
+                SkillGrants = skillGrants,
                 DeleteItemId = deleteItemId,
             };
         }

@@ -102,7 +102,7 @@ namespace DfoServer.Network.Builders
             }
 
             // A21 无工会路径使用固定 64B 尾，避免客户端把旧 ProgressB 当作 dstr 长度。
-            writer.WriteBytes(A21AfterAliveNoGuild);
+            writer.WriteBytes(BuildA21AfterAliveNoGuild(t));
         }
 
         private static void ApplyOnlineInventoryTailFields(int characterId, UserInfoMinimumTailSnapshot tail)
@@ -118,6 +118,11 @@ namespace DfoServer.Network.Builders
         
         
 
+        // A21 无工会 64B 尾：ExpertJobType/Exp 在 +23/+24。
+        internal const int A21AfterAliveLength = 64;
+        internal const int A21AfterAliveExpertJobTypeOffset = 23;
+        internal const int A21AfterAliveExpertJobExpOffset = 24;
+
         private static readonly byte[] A21AfterAliveNoGuild =
         {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0xCE, 0xDE, 0x00, 0x00, 0x00, 0x00,
@@ -125,6 +130,33 @@ namespace DfoServer.Network.Builders
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x64, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00,
         };
+
+        private static byte[] BuildA21AfterAliveNoGuild(UserInfoMinimumTailSnapshot tail)
+        {
+            var body = (byte[])A21AfterAliveNoGuild.Clone();
+            if (tail == null)
+                return body;
+
+            body[A21AfterAliveExpertJobTypeOffset] = tail.ExpertJobType;
+            var experience = BitConverter.GetBytes(ProjectA21ExpertJobExp(tail));
+            Buffer.BlockCopy(
+                experience,
+                0,
+                body,
+                A21AfterAliveExpertJobExpOffset,
+                sizeof(uint));
+            return body;
+        }
+
+        // A21 无副职业时经验为 0，不发历史 -1 / uint.MaxValue。
+        internal static uint ProjectA21ExpertJobExp(UserInfoMinimumTailSnapshot tail)
+        {
+            if (tail == null
+                || tail.ExpertJobType == 0
+                || tail.ExpertJobExp == uint.MaxValue)
+                return 0;
+            return tail.ExpertJobExp;
+        }
 
         private static List<CharacterAppearanceEntry> GetAppearanceEntries(CharacterRecord record)
         {

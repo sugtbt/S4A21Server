@@ -68,18 +68,19 @@ namespace DfoServer.Game.Quests
                 ?? throw new ArgumentNullException(nameof(selectCharacterDataSource));
         }
 
-        // The client replaces its skill table on this notification, so job-change
-        // completion must send it before the finish ACK exactly as before.
+        // Chain 1/2 在 ACK 前刷新 SKILLINFO；chain 20 在 ACK 前发 USERINFO0
+        // 和登录布局 0x00CD。
         internal async Task SendPreFinishAckNotificationsAsync(
             int characterId,
             QuestFinishResult result)
         {
-            if (result != null
-                && result.Success
-                && (result.ChainType == 1 || result.ChainType == 2))
-            {
+            if (result == null || !result.Success)
+                return;
+
+            if (result.ChainType == 1 || result.ChainType == 2)
                 await SendSkillInfoRefreshAsync(characterId);
-            }
+            else if (result.ChainType == 20)
+                await SendExpertJobChangeNotificationAsync(characterId, result.GrowNumber);
         }
 
         // Must be called after FINISH_QUEST ACK. This is intentionally a projector,
@@ -219,14 +220,6 @@ namespace DfoServer.Game.Quests
             if (result.ChainType == 1 || result.ChainType == 2)
             {
                 await SendJobChangeNotificationAsync(characterId, honorLevel);
-                await SendUserInfoBroadcastAsync(characterId, honorLevel);
-            }
-            else if (result.ChainType == 20)
-            {
-                await SendExpertJobChangeNotificationAsync(
-                    characterId,
-                    result.GrowNumber,
-                    honorLevel);
                 await SendUserInfoBroadcastAsync(characterId, honorLevel);
             }
             else if (result.ChainType == GameWorld.QuestData.ChainTypeSlotExpansion)
@@ -433,6 +426,11 @@ namespace DfoServer.Game.Quests
             }
         }
 
+        internal static byte[] BuildExpertJobChangeUserInfoBody(CharacterRecord record)
+        {
+            return UserInfoSubtype0Builder.BuildNotificationBody(record);
+        }
+
         private async Task SendExpertJobChangeNotificationAsync(
             int characterId,
             int expertJobType,
@@ -453,32 +451,55 @@ namespace DfoServer.Game.Quests
                 HonorLevelDataProvider.ApplyToSubtype0Tail(tail, honorLevel);
                 record.Subtype0Tail = tail;
 
-                var expertJobState = _expertJobStateRepository.Load(
-                    characterId,
-                    expertJobType);
-                var expertJobBody = ExpertJobInfoBodyBuilder.BuildProjectedBody(
-                    expertJobType,
-                    expertJobState,
-                    tail.ExpertJobExp);
-                await _sender.SendNotiAsync(0x00CD, expertJobBody);
-
-                var writer = new Network.GamePacketWriter();
-                writer.WriteByte(0);
-                writer.WriteUInt16(1);
-                writer.WriteUInt16((ushort)record.CharacterId);
-                writer.WriteDstr(record.Name);
-                writer.WriteBytes(UserInfoSubtype0Builder.BuildRemainingBytes(record));
                 await _sender.SendNotiAsync(
                     (ushort)NotiPacketTypeA21.USERINFO,
-                    writer.ToArray());
+                    BuildExpertJobChangeUserInfoBody(record));
                 FileLogger.Log(
                     $"[QuestNotificationProjector] ExpertJobChange NOTI sent: " +
                     $"cid={characterId} expertJobType={expertJobType}");
+
+                await SendExpertJobChangeInfoAsync(
+                    characterId,
+                    expertJobType,
+                    tail);
             }
             catch (Exception ex)
             {
                 FileLogger.Log(
                     $"[QuestNotificationProjector] SendExpertJobChangeNotification ERROR: {ex.Message}");
+            }
+        }
+
+        // 登录布局 0x00CD 同步已学习配方和附魔师等级/耐久。
+        private async Task SendExpertJobChangeInfoAsync(
+            int characterId,
+            int expertJobType,
+            UserInfoMinimumTailSnapshot tail)
+        {
+            if (expertJobType <= 0)
+                return;
+
+            try
+            {
+                var state = _expertJobStateRepository.Load(characterId, expertJobType);
+                var infoBody = ExpertJobInfoBodyBuilder.BuildProjectedBody(
+                    expertJobType,
+                    state,
+                    UserInfoSubtype0Builder.ProjectA21ExpertJobExp(tail));
+                await _sender.SendNotiAsync(
+                    (ushort)NotiPacketTypeA21.EXPERT_JOB_INFO,
+                    infoBody);
+                FileLogger.Log(
+                    $"[QuestNotificationProjector] ExpertJobChange 0x00CD sent: " +
+                    $"cid={characterId} expertJobType={expertJobType} " +
+                    $"recipes={state?.LearnedRecipeIds.Count ?? 0} " +
+                    $"len={infoBody.Length}");
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[QuestNotificationProjector] ExpertJobChange 0x00CD ERROR: " +
+                    $"cid={characterId} {ex.Message}");
             }
         }
 

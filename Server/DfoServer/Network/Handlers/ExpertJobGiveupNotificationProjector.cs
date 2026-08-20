@@ -45,7 +45,7 @@ namespace DfoServer.Network.Handlers
             if (subtype0 != null)
             {
                 subtype0.ExpertJobType = 0;
-                subtype0.ExpertJobExp = uint.MaxValue;
+                subtype0.ExpertJobExp = 0;
             }
 
             await TryProjectAsync(

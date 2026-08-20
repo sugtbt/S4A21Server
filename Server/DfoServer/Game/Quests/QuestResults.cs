@@ -92,6 +92,8 @@ namespace DfoServer.Game.Quests
         public PetCreatureEvolutionResult PetCreatureEvolution;
         public List<ConsumedItemEntry> ConsumedEntries = new List<ConsumedItemEntry>();
         public List<InsertedItemEntry> InsertedEntries = new List<InsertedItemEntry>();
+        // chainType 20 ACK 在 growNumber 后写两页压缩技能。
+        public List<QuestFinishSkillPage> SkillPages = new List<QuestFinishSkillPage>();
 
         public bool Success => ErrorCode == 0;
 
@@ -106,6 +108,18 @@ namespace DfoServer.Game.Quests
         public uint ConsumedCount;
         // All current A21 FINISH_QUEST capture samples keep this byte at zero.
         public byte ReservedTail;
+    }
+
+    public sealed class QuestFinishSkillEntry
+    {
+        public byte Slot;
+        public ushort SkillId;
+        public byte Level;
+    }
+
+    public sealed class QuestFinishSkillPage
+    {
+        public List<QuestFinishSkillEntry> Entries = new List<QuestFinishSkillEntry>();
     }
 
     public sealed class InsertedItemEntry

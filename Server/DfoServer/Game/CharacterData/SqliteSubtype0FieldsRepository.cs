@@ -83,7 +83,7 @@ namespace DfoServer.Game.CharacterData
                         DisguiseKind = (byte)r.GetInt32(16),
                         IsDisguised = (byte)r.GetInt32(17),
                         ExpertJobType = (byte)r.GetInt32(18),
-                        ExpertJobExp = (uint)r.GetInt64(19),
+                        ExpertJobExp = ReadExpertJobExp(r.GetInt64(19)),
                         IsHardcoreMode = (byte)r.GetInt32(20),
                         IsHardcoreDead = (byte)r.GetInt32(21),
                         HardcoreDeathCount = (ushort)r.GetInt32(22),
@@ -264,7 +264,7 @@ namespace DfoServer.Game.CharacterData
                 transaction,
                 characterId,
                 0,
-                -1);
+                0);
 
         internal static bool SetExpertJobInTransaction(
             SqliteConnection connection,
@@ -325,6 +325,14 @@ ON CONFLICT(character_id) DO UPDATE SET
                 command.Parameters.AddWithValue("@exp", expertJobExperience);
                 return command.ExecuteNonQuery() == 1;
             }
+        }
+
+        // 历史行可能为负数，读出时按 0。
+        private static uint ReadExpertJobExp(long stored)
+        {
+            if (stored < 0)
+                return 0;
+            return stored > uint.MaxValue ? uint.MaxValue : (uint)stored;
         }
 
     }

@@ -1304,13 +1304,12 @@ namespace DfoServer.SelfTests
                 level: 1,
                 totalExp: 0,
                 skillPoints: default,
-                honorLevel: new DfoServer.Game.Accounts.HonorLevelSummary(),
-                channelBonusExp: 73);
+                honorLevel: new DfoServer.Game.Accounts.HonorLevelSummary());
             Check(
-                "A21 EXP is 83B with channel bonus at body offset 0x4B",
+                "A21 EXP is 83B with Seria welcome at body offset 0x4B",
                 exp.Length == ExpNotificationBuilder.BodyLength
                 && exp.Length == 83
-                && BitConverter.ToUInt32(exp, ExpNotificationBuilder.ChannelBonusExpOffset) == 73,
+                && BitConverter.ToUInt32(exp, 0x4B) == 0,
                 ref failures);
 
             var playResult = DungeonNotificationBuilder.BuildPlayResult(
@@ -1628,6 +1627,68 @@ namespace DfoServer.SelfTests
                     capturedTitleSeekingExpected),
                 ref failures);
 
+            var capturedExpertJobFinish = new QuestFinishResult
+            {
+                QuestId = 2710,
+                FinishType = QuestFinishType.Seeking,
+                Exp = 5351,
+                ReservedAfterExperience = 0,
+                ChainType = 20,
+                GrowNumber = 3,
+            };
+            capturedExpertJobFinish.ConsumedEntries.Add(new ConsumedItemEntry
+            {
+                UpdateType = 0,
+                SlotIndex = 358,
+                ConsumedCount = 100,
+                ReservedTail = 0,
+            });
+            var capturedExpertJobExpected = new byte[]
+            {
+                0x01, 0x96, 0x0A, 0x00, 0xE7, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x01, 0x00, 0x66, 0x01, 0x64, 0x00, 0x00, 0x00, 0x14, 0x03, 0x2B, 0x66,
+                0xB3, 0x00, 0x07, 0x06, 0x60, 0x00, 0x01, 0x67, 0xAE, 0x00, 0x01, 0x68,
+                0xA9, 0x00, 0x01, 0x09, 0x01, 0x00, 0x01, 0x0A, 0x08, 0x00, 0x01, 0x69,
+                0xFF, 0x01, 0x01, 0x36, 0xC6, 0x00, 0x01, 0x37, 0x3E, 0x00, 0x01, 0x0B,
+                0x2E, 0x00, 0x01, 0x38, 0x18, 0x00, 0x01, 0x07, 0xC5, 0x00, 0x01, 0x39,
+                0x4B, 0x00, 0x0F, 0x42, 0x4A, 0x00, 0x01, 0x00, 0x40, 0x00, 0x24, 0x46,
+                0x3C, 0x00, 0x01, 0x08, 0x02, 0x00, 0x01, 0x02, 0x6A, 0x00, 0x08, 0x6A,
+                0xBC, 0x00, 0x0A, 0x6B, 0xBE, 0x00, 0x01, 0x6C, 0xB0, 0x00, 0x0A, 0x47,
+                0x28, 0x00, 0x01, 0x01, 0x43, 0x00, 0x01, 0xCB, 0x44, 0x00, 0x1F, 0x3A,
+                0x4C, 0x00, 0x01, 0x3B, 0x41, 0x00, 0x0A, 0xC6, 0x42, 0x00, 0x15, 0xCA,
+                0x4E, 0x00, 0x0B, 0x3D, 0x2B, 0x00, 0x01, 0x3E, 0x46, 0x00, 0x01, 0x03,
+                0x3D, 0x00, 0x0A, 0x05, 0x47, 0x00, 0x17, 0x04, 0x4D, 0x00, 0x10, 0xC8,
+                0x45, 0x00, 0x1C, 0x43, 0x6B, 0x00, 0x06, 0xC7, 0x69, 0x00, 0x06, 0xC9,
+                0x68, 0x00, 0x02, 0x96, 0x80, 0x00, 0x05, 0x97, 0x7B, 0x00, 0x05, 0x98,
+                0x7A, 0x00, 0x01, 0x99, 0x7C, 0x00, 0x05, 0x9A, 0x82, 0x00, 0x01, 0x6D,
+                0xC2, 0x00, 0x01, 0x0F, 0x66, 0xB3, 0x00, 0x07, 0x06, 0x60, 0x00, 0x01,
+                0x67, 0xAE, 0x00, 0x01, 0x68, 0xA9, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01,
+                0x01, 0x08, 0x00, 0x01, 0x69, 0xFF, 0x01, 0x01, 0x36, 0xC6, 0x00, 0x01,
+                0x37, 0x3E, 0x00, 0x01, 0x02, 0x2E, 0x00, 0x01, 0x38, 0x18, 0x00, 0x01,
+                0x07, 0xC5, 0x00, 0x01, 0x39, 0x4B, 0x00, 0x01, 0x03, 0x4A, 0x00, 0x01,
+                0x6A, 0xC2, 0x00, 0x01,
+            };
+            FillExpertJobSkillPagesFromCapture(
+                capturedExpertJobFinish,
+                capturedExpertJobExpected);
+            var capturedExpertJobBody = QuestAckBuilder.BuildFinish(
+                capturedExpertJobFinish);
+            Check(
+                "A21 expert-job FINISH_QUEST uses 7B consume and two compact skill pages",
+                capturedExpertJobBody.Length == capturedExpertJobExpected.Length
+                && capturedExpertJobBody.AsSpan().SequenceEqual(
+                    capturedExpertJobExpected)
+                && capturedExpertJobExpected[20] == 20
+                && capturedExpertJobExpected[21] == 3
+                && capturedExpertJobExpected[22] == 43
+                && capturedExpertJobFinish.SkillPages[0].Entries.Count == 43
+                && capturedExpertJobFinish.SkillPages[1].Entries.Count == 15
+                && capturedExpertJobFinish.SkillPages[0].Entries[
+                    capturedExpertJobFinish.SkillPages[0].Entries.Count - 1].SkillId == 194
+                && capturedExpertJobFinish.SkillPages[1].Entries[
+                    capturedExpertJobFinish.SkillPages[1].Entries.Count - 1].SkillId == 194,
+                ref failures);
+
             var titleReward = QuestData.ResolveReward(
                 4303,
                 rewardSelectIdx: -1,
@@ -1843,6 +1904,31 @@ namespace DfoServer.SelfTests
                     ? "A21_TUTORIAL_PROTOCOL selftest passed."
                     : $"A21_TUTORIAL_PROTOCOL selftest failed: {failures}");
             return failures == 0 ? 0 : 1;
+        }
+
+        private static void FillExpertJobSkillPagesFromCapture(
+            QuestFinishResult result,
+            byte[] capturedBody)
+        {
+            var offset = 22;
+            result.SkillPages.Clear();
+            for (var pageIndex = 0; pageIndex < 2; pageIndex++)
+            {
+                var page = new QuestFinishSkillPage();
+                var count = capturedBody[offset++];
+                for (var index = 0; index < count; index++)
+                {
+                    page.Entries.Add(new QuestFinishSkillEntry
+                    {
+                        Slot = capturedBody[offset],
+                        SkillId = BitConverter.ToUInt16(capturedBody, offset + 1),
+                        Level = capturedBody[offset + 3],
+                    });
+                    offset += 4;
+                }
+
+                result.SkillPages.Add(page);
+            }
         }
 
         private static void Check(

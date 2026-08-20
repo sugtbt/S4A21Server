@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using DfoServer.Game.Quests;
 
 namespace DfoServer.Network.Builders
@@ -66,25 +67,32 @@ namespace DfoServer.Network.Builders
                 {
                     w.WriteByte((byte)r.ConsumedEntries.Count);
                     foreach (var ce in r.ConsumedEntries)
-                    {
-                        w.WriteByte(ce.UpdateType);
-                        w.WriteUInt16(ce.SlotIndex);
-                        w.WriteUInt32(ce.ConsumedCount);
-                    }
+                        WriteConsumedEntryWithoutReservedTail(w, ce);
                 }
                 w.WriteByte((byte)GameWorld.QuestData.ChainTypeTitle);
                 return w.ToArray();
             }
-            else
+
+            if (r.ChainType == 20)
             {
+                // chain 20：7 字节 consume，随后 chain/grow 与两页压缩技能。
+                // 8 字节 consume 会错位并导致客户端闪退。
                 w.WriteByte((byte)r.ConsumedEntries.Count);
                 foreach (var ce in r.ConsumedEntries)
-                {
-                    w.WriteByte(ce.UpdateType);
-                    w.WriteUInt16(ce.SlotIndex);
-                    w.WriteUInt32(ce.ConsumedCount);
-                    w.WriteByte(ce.ReservedTail);
-                }
+                    WriteConsumedEntryWithoutReservedTail(w, ce);
+                w.WriteByte((byte)r.ChainType);
+                w.WriteByte((byte)r.GrowNumber);
+                WriteExpertJobSkillPages(w, r.SkillPages);
+                return w.ToArray();
+            }
+
+            w.WriteByte((byte)r.ConsumedEntries.Count);
+            foreach (var ce in r.ConsumedEntries)
+            {
+                w.WriteByte(ce.UpdateType);
+                w.WriteUInt16(ce.SlotIndex);
+                w.WriteUInt32(ce.ConsumedCount);
+                w.WriteByte(ce.ReservedTail);
             }
 
             if (r.ChainType == 0)
@@ -102,7 +110,6 @@ namespace DfoServer.Network.Builders
                 }
             }
             else if (r.ChainType == 1 || r.ChainType == 2
-                || r.ChainType == 20
                 || r.ChainType == GameWorld.QuestData.ChainTypeSlotExpansion)
             {
                 w.WriteByte((byte)r.ChainType);
@@ -115,6 +122,47 @@ namespace DfoServer.Network.Builders
                 w.WriteByte((byte)r.ChainType);
             }
             return w.ToArray();
+        }
+
+        private static void WriteConsumedEntryWithoutReservedTail(
+            GamePacketWriter writer,
+            ConsumedItemEntry entry)
+        {
+            writer.WriteByte(entry.UpdateType);
+            writer.WriteUInt16(entry.SlotIndex);
+            writer.WriteUInt32(entry.ConsumedCount);
+        }
+
+        private static void WriteExpertJobSkillPages(
+            GamePacketWriter writer,
+            List<QuestFinishSkillPage> pages)
+        {
+            for (var pageIndex = 0; pageIndex < 2; pageIndex++)
+            {
+                var entries = pageIndex < (pages?.Count ?? 0)
+                    && pages[pageIndex]?.Entries != null
+                    ? pages[pageIndex].Entries
+                    : null;
+                var count = entries == null
+                    ? 0
+                    : System.Math.Min(byte.MaxValue, entries.Count);
+                writer.WriteByte((byte)count);
+                for (var index = 0; index < count; index++)
+                {
+                    var entry = entries[index];
+                    if (entry == null)
+                    {
+                        writer.WriteByte(0);
+                        writer.WriteUInt16(0);
+                        writer.WriteByte(0);
+                        continue;
+                    }
+
+                    writer.WriteByte(entry.Slot);
+                    writer.WriteUInt16(entry.SkillId);
+                    writer.WriteByte(entry.Level);
+                }
+            }
         }
 
         private static byte[] BuildFail(byte errorCode)
