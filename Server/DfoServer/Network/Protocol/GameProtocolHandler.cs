@@ -845,11 +845,11 @@ namespace DfoServer.Network
 
         private void RegisterMercenaryHandlers(GameCommandRegistry.GameCommandRegistrationGroup d)
         {
-            d[MercenaryExpeditionHandler.ReturnCommand] = _mercenaryExpeditionHandler.HandleReturn;
-            d[MercenaryExpeditionHandler.InfoCommand] = _mercenaryExpeditionHandler.HandleInfo;
-            d[MercenaryExpeditionHandler.CompetitionCommand] = _mercenaryExpeditionHandler.HandleCompetition;
-            d[0x01E5] = _mercenaryHandler.HandleMercenaryRequest;                  //485 支援兵技能列表
-            d[0x01E8] = _mercenaryHandler.HandleMercenaryRequest;                  //488 支援兵选择
+            d[(ushort)CmdPacketTypeA21.MERCENARY_RETURN] = _mercenaryExpeditionHandler.HandleReturn;
+            d[(ushort)CmdPacketTypeA21.MERCENARY_INFO] = _mercenaryExpeditionHandler.HandleInfo;
+            d[(ushort)CmdPacketTypeA21.MERCENARY_COMPETITION] = _mercenaryExpeditionHandler.HandleCompetition;
+            d[(ushort)CmdPacketTypeA21.REQUEST_CHARAC_SKILL_INFO] = _mercenaryHandler.HandleMercenaryRequest;
+            d[(ushort)CmdPacketTypeA21.SELECT_STRIKER] = _mercenaryHandler.HandleMercenaryRequest;
         }
 
         private void RegisterMiscHandlers(GameCommandRegistry.GameCommandRegistrationGroup d)

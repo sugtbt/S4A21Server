@@ -29,33 +29,8 @@ namespace DfoServer.Network.Builders
             var writer = new GamePacketWriter();
 
             writer.WriteUInt32(addition.CharacExp);
-            writer.WriteInt32(88);
-            writer.WriteUInt32(addition.StatHpMax);
-            writer.WriteUInt32(addition.StatMpMax);
-            writer.WriteInt16(addition.StatPhysicalAttack);
-            writer.WriteInt16(addition.StatPhysicalDefense);
-            writer.WriteInt16(addition.StatMagicalAttack);
-            writer.WriteInt16(addition.StatMagicalDefense);
-            writer.WriteInt16(addition.StatFireResistance);
-            writer.WriteInt16(addition.StatWaterResistance);
-            writer.WriteInt16(addition.StatDarkResistance);
-            writer.WriteInt16(addition.StatLightResistance);
-
-            for (var i = 0; i < 16; i++)
-                writer.WriteUInt16(0);
-            writer.WriteUInt16(5500);
-            writer.WriteUInt32(addition.StatInventoryLimit);
-            writer.WriteUInt16(addition.StatHpRegenSpeed);
-            writer.WriteUInt16(addition.StatMpRegenSpeed);
-            writer.WriteUInt32(addition.StatMoveSpeed);
-            writer.WriteUInt16(addition.StatAttackSpeed);
-            writer.WriteUInt16(addition.StatCastSpeed);
-            writer.WriteUInt16(addition.StatHitRecovery);
-            writer.WriteUInt16(addition.StatJumpPower);
-            writer.WriteUInt32(addition.StatWeight);
-            writer.WriteUInt32(100);
-            writer.WriteByte(0);
-            writer.WriteByte(0);
+            writer.WriteInt32(CombatStatBlobWriter.BlobLength);
+            CombatStatBlobWriter.Write(writer, addition);
             writer.WriteByte(addition.ExEquipSlotStat);
 
             writer.WriteByte((byte)Math.Min(byte.MaxValue, equipped.Count));

@@ -18,7 +18,7 @@ namespace DfoServer.Network.Builders
             _database = database ?? throw new ArgumentNullException(nameof(database));
         }
 
-        public ushort NotiType => 0x019F;
+        public ushort NotiType => (ushort)NotiPacketTypeA21.TAG_CHARACTER_INFO;
 
         public bool TryBuild(SelectCharacterDataSnapshot snapshot, int occurrenceIndex, out byte[] body)
         {

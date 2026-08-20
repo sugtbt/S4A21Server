@@ -61,7 +61,6 @@ namespace DfoServer.Network.Builders
             if (skillOverride != null)
                 snapshot.InitializationSnapshot.SkillInfo = skillOverride;
 
-
             if (snapshot.CharacterRecord != null)
                 snapshot.InitializationSnapshot.AckCharSlotIndex = snapshot.CharacterRecord.TownId;
             var darkKnightComboSent = false;
@@ -88,11 +87,11 @@ namespace DfoServer.Network.Builders
 
                 if (template.Kind == SelectCharacterPacketTemplateKind.Raw
                     && template.Command == 0x00
-                    && template.Type == 0x019F)
+                    && template.Type == (ushort)NotiPacketTypeA21.TAG_CHARACTER_INFO)
                 {
                     if (strikerSupportSent)
                     {
-                        FileLogger.Log("[SelectCharacterPacketBuilder] SKIP duplicate cmd=0 type=0x019F");
+                        FileLogger.Log("[SelectCharacterPacketBuilder] SKIP duplicate cmd=0 type=TAG_CHARACTER_INFO");
                         continue;
                     }
 
@@ -101,8 +100,12 @@ namespace DfoServer.Network.Builders
                         registry,
                         snapshot);
                     strikerSupportSent = true;
-                    FileLogger.Log($"[SelectCharacterPacketBuilder] OK cmd=0 type=0x019F(415) occ=0 bodyLen={strikerSupportBody.Length}");
-                    yield return GamePacketEnvelopeBuilder.Build(0x00, 0x019F, strikerSupportBody);
+                    FileLogger.Log(
+                        $"[SelectCharacterPacketBuilder] OK cmd=0 type=0x{(ushort)NotiPacketTypeA21.TAG_CHARACTER_INFO:X4} occ=0 bodyLen={strikerSupportBody.Length}");
+                    yield return GamePacketEnvelopeBuilder.Build(
+                        0x00,
+                        (ushort)NotiPacketTypeA21.TAG_CHARACTER_INFO,
+                        strikerSupportBody);
                     continue;
                 }
 
@@ -154,8 +157,12 @@ namespace DfoServer.Network.Builders
                 var injectedStrikerSupportBody = BuildStrikerSupportBody(
                     registry,
                     snapshot);
-                FileLogger.Log($"[SelectCharacterPacketBuilder] INJECT cmd=0 type=0x019F(415) occ=0 bodyLen={injectedStrikerSupportBody.Length}");
-                yield return GamePacketEnvelopeBuilder.Build(0x00, 0x019F, injectedStrikerSupportBody);
+                FileLogger.Log(
+                    $"[SelectCharacterPacketBuilder] INJECT cmd=0 type=0x{(ushort)NotiPacketTypeA21.TAG_CHARACTER_INFO:X4} occ=0 bodyLen={injectedStrikerSupportBody.Length}");
+                yield return GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketTypeA21.TAG_CHARACTER_INFO,
+                    injectedStrikerSupportBody);
             }
 
             if (!darkKnightComboSent
@@ -185,7 +192,7 @@ namespace DfoServer.Network.Builders
             InitPacketBuilderRegistry registry,
             SelectCharacterDataSnapshot snapshot)
         {
-            return registry.TryBuild(0x019F, snapshot, 0, out var body)
+            return registry.TryBuild((ushort)NotiPacketTypeA21.TAG_CHARACTER_INFO, snapshot, 0, out var body)
                 ? body
                 : StrikerSupportTagCharacterBodyBuilder.BuildEmptyBody();
         }

@@ -3,6 +3,7 @@ using DfoServer.Game.Inventory;
 using DfoServer.Game.ItemUpgrade;
 using DfoServer.Game.Mercenary;
 using DfoServer.Game.SelectCharacter;
+using DfoServer.Game.Skills;
 using DfoServer.GameWorld;
 using DfoServer.Infrastructure;
 using Microsoft.Data.Sqlite;
@@ -12,23 +13,15 @@ using System.Linq;
 
 namespace DfoServer.Network.Builders
 {
-    // 从选中的支援角色构建动态 0x019F 标记角色记录。
-    // 包体为 count:u16 + record；record 包含身份、82B 属性、装备、称号和活动技能页。
-    // ComboIndex 不写入 record；尾部固定为 5B 空不透明段。
+    // 从选中的支援角色构建动态 TAG_CHARACTER_INFO 0x019F。
+    // 包体为 count:u16 + record；record 使用与 USERINFO subtype1 相同的 88B 战斗块，
+    // 技能表与 0x01E5 共用支援角色技能树页 [slot, skillId, displayLevel]，skillTree 固定 0xFF。
     public static class StrikerSupportTagCharacterPacketBuilder
     {
-        private const ushort TagCharacterInfoNotiType = 0x019F;
-        private const int StatBlobLength = 82;
+        private static readonly ushort TagCharacterInfoNotiType = (ushort)NotiPacketTypeA21.TAG_CHARACTER_INFO;
+        public const byte RecordOpaquePrefix = 0x6F;
         private const int LastDefaultAvatarSlot = 8;
         private const int LastClientEquipmentSlot = 29;
-        public static bool TryBuildOwnerSupportBody(int activeCharacterId, out byte[] body)
-        {
-            return TryBuildOwnerSupportBody(
-                activeCharacterId,
-                GameDatabase.CreateDefault(),
-                out body);
-        }
-
         public static bool TryBuildOwnerSupportBody(
             int activeCharacterId,
             IGameDatabase database,
@@ -37,17 +30,6 @@ namespace DfoServer.Network.Builders
             if (database == null)
                 throw new ArgumentNullException(nameof(database));
 
-            return TryBuildPersistedOwnerSupportBody(
-                activeCharacterId,
-                database,
-                out body);
-        }
-
-        private static bool TryBuildPersistedOwnerSupportBody(
-            int activeCharacterId,
-            IGameDatabase database,
-            out byte[] body)
-        {
             body = null;
             if (activeCharacterId <= 0)
                 return false;
@@ -68,16 +50,6 @@ namespace DfoServer.Network.Builders
                 body = null;
                 return false;
             }
-        }
-
-        public static byte[] BuildOwnerMappedBody(
-            int activeCharacterId,
-            MercenarySupportState state)
-        {
-            return BuildOwnerMappedBody(
-                activeCharacterId,
-                state,
-                GameDatabase.CreateDefault());
         }
 
         public static byte[] BuildOwnerMappedBody(
@@ -138,10 +110,11 @@ namespace DfoServer.Network.Builders
                 return null;
             }
 
-            var skills = BuildSkillPage(
-                state,
-                support,
-                snapshot.SkillTreeIndex,
+            var skills = StrikerSupportSkillListSource.Load(
+                support.CharacterId,
+                support.Job,
+                support.GrowType,
+                support.Level,
                 database);
             if (skills.Count == 0 || skills.Count > byte.MaxValue)
             {
@@ -175,7 +148,7 @@ namespace DfoServer.Network.Builders
             ushort selectedSkillId,
             UserInfoAdditionSnapshot snapshot,
             IReadOnlyList<EquippedEntrySnapshot> equipment,
-            IReadOnlyList<SkillInfoEntrySnapshot> skills)
+            IReadOnlyList<StrikerSupportSkillWireEntry> skills)
         {
             if (snapshot == null)
                 throw new ArgumentNullException(nameof(snapshot));
@@ -184,8 +157,8 @@ namespace DfoServer.Network.Builders
             if (skills == null || skills.Count > byte.MaxValue)
                 throw new ArgumentOutOfRangeException(nameof(skills));
 
-            var statBlob = BuildStatBlob(snapshot);
-            if (statBlob.Length != StatBlobLength)
+            var statBlob = CombatStatBlobWriter.Build(snapshot);
+            if (statBlob.Length != CombatStatBlobWriter.BlobLength)
                 throw new InvalidOperationException($"unexpected striker stat blob length {statBlob.Length}");
 
             var writer = new GamePacketWriter();
@@ -210,61 +183,11 @@ namespace DfoServer.Network.Builders
             }
             writer.WriteUInt32(snapshot.CloneTitleItemId);
             writer.WriteByte(checked((byte)skills.Count));
-            writer.WriteByte(snapshot.SkillTreeIndex);
-            foreach (var skill in skills)
-            {
-                writer.WriteByte(skill.Slot);
-                writer.WriteUInt16(skill.SkillId);
-                writer.WriteByte(skill.Level);
-            }
-            // 每条 record 末尾固定写入空 opaque section。
-            writer.WriteByte(0);
+            writer.WriteByte(SkillTreeExpansionState.LockedWireValue);
+            StrikerSupportSkillListWriter.WriteEntries(writer, skills);
+            writer.WriteByte(RecordOpaquePrefix);
             writer.WriteUInt32(0);
             return writer.ToArray();
-        }
-
-        private static byte[] BuildStatBlob(UserInfoAdditionSnapshot a)
-        {
-            var writer = new GamePacketWriter();
-            writer.WriteUInt32(a.StatHpMax);
-            writer.WriteUInt32(a.StatMpMax);
-            writer.WriteInt16(a.StatPhysicalAttack);
-            writer.WriteInt16(a.StatPhysicalDefense);
-            writer.WriteInt16(a.StatMagicalAttack);
-            writer.WriteInt16(a.StatMagicalDefense);
-            writer.WriteInt16(a.StatFireResistance);
-            writer.WriteInt16(a.StatWaterResistance);
-            writer.WriteInt16(a.StatDarkResistance);
-            writer.WriteInt16(a.StatLightResistance);
-            // 34B 中段按已确认边界保留全零。
-            for (var i = 0; i < 17; i++)
-                writer.WriteUInt16(0);
-            writer.WriteUInt32(a.StatInventoryLimit);
-            writer.WriteUInt16(a.StatHpRegenSpeed);
-            writer.WriteUInt16(a.StatMpRegenSpeed);
-            writer.WriteUInt32(a.StatMoveSpeed);
-            writer.WriteUInt16(a.StatAttackSpeed);
-            writer.WriteUInt16(a.StatCastSpeed);
-            writer.WriteUInt16(a.StatHitRecovery);
-            writer.WriteUInt16(a.StatJumpPower);
-            writer.WriteUInt32(a.StatWeight);
-            return writer.ToArray();
-        }
-
-        private static List<SkillInfoEntrySnapshot> BuildSkillPage(
-            MercenarySupportState state,
-            CharacterSummary support,
-            byte skillTreeIndex,
-            IGameDatabase database)
-        {
-            var learned = StrikerSupportSkillLevelSource.LoadActiveSkillPageEntries(
-                support.CharacterId,
-                database,
-                skillTreeIndex);
-
-            // 只发送真实活动技能页，不为未学习的选中技能伪造槽位或等级。
-
-            return NormalizeSkillPageEntries(state, learned);
         }
 
         private static void ApplyOfflineInventoryProjection(
@@ -294,19 +217,6 @@ namespace DfoServer.Network.Builders
                 foreach (var pair in projection.CreatureDetails)
                     snapshot.CreatureDetails[pair.Key] = pair.Value;
             }
-        }
-
-        private static List<SkillInfoEntrySnapshot> NormalizeSkillPageEntries(
-            MercenarySupportState state,
-            IReadOnlyList<SkillInfoEntrySnapshot> learned)
-        {
-            var result = learned
-                .GroupBy(e => e.Slot)
-                .Select(group => group.FirstOrDefault(e => e.SkillId == state.SkillId)
-                    ?? group.OrderByDescending(e => e.Level).First())
-                .OrderBy(e => e.Slot)
-                .ToList();
-            return result;
         }
 
         private static bool TryBuildEquipmentList(
@@ -355,7 +265,6 @@ namespace DfoServer.Network.Builders
 
                 foreach (var slot in missingAvatarSlots)
                 {
-                    // 默认外观仅使用精确 job/grow；负值或无匹配时保持缺槽。
                     if (defaults == null || defaults.Count <= slot || defaults[slot] <= 0)
                         continue;
                     var defaultItem = CreateDefaultAvatarItem((byte)slot, defaults[slot]);
@@ -455,11 +364,10 @@ namespace DfoServer.Network.Builders
             var skill = StrikerSkillDataProvider.FindBySkill(
                 support.Job,
                 support.GrowType,
-                state.SkillId,
-                state.StrikerSkillId);
+                state.SkillId);
             if (skill == null || skill.RequiredLevel > support.Level)
             {
-                reason = $"skill/combo is invalid for job/grow/level: skill={state.SkillId} combo={state.StrikerSkillId}";
+                reason = $"skill is invalid for job/grow/level: skill={state.SkillId}";
                 return false;
             }
             if (support.Name == null || support.Name.Length == 0)
@@ -518,7 +426,7 @@ WHERE character_id IN (@owner, @support) AND delete_flag=0", conn))
             ushort selectedSkillId,
             UserInfoAdditionSnapshot snapshot,
             IReadOnlyList<EquippedEntrySnapshot> equipment,
-            IReadOnlyList<SkillInfoEntrySnapshot> skills)
+            IReadOnlyList<StrikerSupportSkillWireEntry> skills)
         {
             return BuildRecord(mappedCharacterId, name, level, job, growType, selectedSkillId,
                 snapshot, equipment ?? Array.Empty<EquippedEntrySnapshot>(), skills);
@@ -527,13 +435,6 @@ WHERE character_id IN (@owner, @support) AND delete_flag=0", conn))
         internal static bool IsEquipmentSlotMatchForTest(byte slot, int itemId)
         {
             return IsEquipmentSlotMatch(slot, ItemCore.Create(ItemCore.KindEquipment, itemId), out _);
-        }
-
-        internal static List<SkillInfoEntrySnapshot> NormalizeSkillPageEntriesForTest(
-            MercenarySupportState state,
-            IReadOnlyList<SkillInfoEntrySnapshot> learned)
-        {
-            return NormalizeSkillPageEntries(state, learned);
         }
 
         private sealed class CharacterSummary

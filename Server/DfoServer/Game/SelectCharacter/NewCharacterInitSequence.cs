@@ -4,11 +4,6 @@ using System.Collections.Generic;
 
 namespace DfoServer.Game.SelectCharacter
 {
-    
-    
-    
-    
-    
     public static class NewCharacterInitSequence
     {
         public static List<SelectCharacterPacketTemplate> Build()
@@ -72,7 +67,7 @@ namespace DfoServer.Game.SelectCharacter
             Raw(0x00, (ushort)NotiPacketTypeA21.EQUIPMENT_RENTAL_LIST);
             Raw(0x00, 0x00FB);                      
             Raw(0x00, 0x00CD);                      
-            Raw(0x00, 0x019F);                      
+            Raw(0x00, (ushort)NotiPacketTypeA21.TAG_CHARACTER_INFO);
             Raw(0x00, 0x00B1);                      
             Raw(0x00, 0x0300);                      
             Raw(0x00, 0x03D8);                      
@@ -88,8 +83,9 @@ namespace DfoServer.Game.SelectCharacter
             Raw(0x00, 0x0009);
             Raw(0x00, 0x0344);
             Raw(0x00, 0x007C);                      
-            Raw(0x00, (ushort)NotiPacketTypeA21.USERINFO, 2);
-            Raw(0x00, 0x0035);
+            Raw(0x00, (ushort)NotiPacketTypeA21.USERINFO, 2); // subtype 6，25B
+            Raw(0x01, (ushort)CmdPacketTypeA21.MERCENARY_INFO);
+            Raw(0x00, (ushort)NotiPacketTypeA21.CERA);
             Raw(0x00, 0x0111);
             Raw(0x00, 0x0016);
             Raw(0x00, 0x0077);   // 宠物欢迎语; 无宠物或无缓存时 builder 返回 false 跳过

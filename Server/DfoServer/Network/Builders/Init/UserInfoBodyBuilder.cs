@@ -1,20 +1,9 @@
 using DfoServer.Game.Characters;
-using DfoServer.Game.Inventory;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.Network;
 
 namespace DfoServer.Network.Builders
 {
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
     public sealed class UserInfoBodyBuilder : IInitPacketBuilder
     {
         public ushort NotiType => (ushort)NotiPacketTypeA21.USERINFO;
@@ -44,13 +33,19 @@ namespace DfoServer.Network.Builders
                 body = w.ToArray(); return true;
             }
 
-            if (occurrenceIndex == 0 || occurrenceIndex == 2)
+            if (occurrenceIndex == 0)
             {
                 body = UserInfoSubtype0Builder.BuildNotificationBody(c);
                 return true;
             }
 
-            
+            // 进号 CERA / 0x01BA 之前发 25B USERINFO subtype 6。
+            if (occurrenceIndex == 2)
+            {
+                body = UserInfoSubtype6Builder.BuildNotificationBody(c.CharacterId);
+                return true;
+            }
+
             DfoServer.FileLogger.Log($"[UserInfoBodyBuilder] ERROR: 不支持的 occurrence {occurrenceIndex} — init 流只有 occ0/1/2。");
             body = null;
             return false;

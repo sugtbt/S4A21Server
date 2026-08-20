@@ -9,18 +9,6 @@ using DfoServer.Network;
 
 namespace DfoServer.Network.Builders
 {
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
     public static class UserInfoSubtype0Builder
     {
         public static byte[] BuildNotificationBody(CharacterRecord record)
@@ -39,10 +27,6 @@ namespace DfoServer.Network.Builders
             return writer.ToArray();
         }
 
-        
-        
-        
-        
         public static byte[] BuildRemainingBytes(CharacterRecord record)
         {
             var writer = new GamePacketWriter();
@@ -67,11 +51,6 @@ namespace DfoServer.Network.Builders
             return writer.ToArray();
         }
 
-        
-        
-        
-        
-        
         private static void WriteTail(GamePacketWriter writer, CharacterRecord record)
         {
             var t = record.Subtype0Tail ?? new UserInfoMinimumTailSnapshot();
@@ -114,14 +93,11 @@ namespace DfoServer.Network.Builders
                 new Noti2InventoryProjectionBuilder().ApplySubtype0TailDynamicFields(lease.Inventory, tail);
         }
 
-        
-        
-        
-
-        // A21 无工会 64B 尾：ExpertJobType/Exp 在 +23/+24。
+        // A21 无工会 64B 尾：ExpertJobType/Exp 在 +23/+24；ChannelId 在 +59。
         internal const int A21AfterAliveLength = 64;
         internal const int A21AfterAliveExpertJobTypeOffset = 23;
         internal const int A21AfterAliveExpertJobExpOffset = 24;
+        internal const int A21AfterAliveChannelIdOffset = 59;
 
         private static readonly byte[] A21AfterAliveNoGuild =
         {
@@ -145,6 +121,16 @@ namespace DfoServer.Network.Builders
                 body,
                 A21AfterAliveExpertJobExpOffset,
                 sizeof(uint));
+            var channelId = BitConverter.GetBytes(
+                tail.ChannelId == 0
+                    ? (ushort)2
+                    : tail.ChannelId);
+            Buffer.BlockCopy(
+                channelId,
+                0,
+                body,
+                A21AfterAliveChannelIdOffset,
+                sizeof(ushort));
             return body;
         }
 

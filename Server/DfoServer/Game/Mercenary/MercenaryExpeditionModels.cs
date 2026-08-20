@@ -204,12 +204,15 @@ namespace DfoServer.Game.Mercenary
 
     public sealed class MercenaryCharacterInfo
     {
+        public const byte WaitingAreaIndex = 0;
+        public const byte UnassignedPeriodIndex = byte.MaxValue;
+
         public int CharacterId { get; set; }
         public byte[] Name { get; set; }
         public MercenaryExpeditionState State { get; set; }
         public int RemainingSeconds { get; set; }
-        public byte AreaIndex { get; set; } = byte.MaxValue;
-        public byte PeriodIndex { get; set; } = byte.MaxValue;
+        public byte AreaIndex { get; set; } = WaitingAreaIndex;
+        public byte PeriodIndex { get; set; } = UnassignedPeriodIndex;
         public byte AvatarBonusTier { get; set; }
     }
 

@@ -206,6 +206,10 @@ namespace DfoServer.SelfTests
                     afterAliveOffset
                     + UserInfoSubtype0Builder.A21AfterAliveExpertJobExpOffset) == 0x10203040
                 && expertJobUserInfo[afterAliveOffset + 52] == 0x64
+                && BitConverter.ToUInt16(
+                    expertJobUserInfo,
+                    afterAliveOffset
+                    + UserInfoSubtype0Builder.A21AfterAliveChannelIdOffset) == 2
                 && expertJobUserInfo[afterAliveOffset + 61] == 0xFF,
                 ref failures);
 

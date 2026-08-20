@@ -9,6 +9,7 @@ namespace DfoServer.Network.Builders
     public sealed class InitPacketBuilderRegistry
     {
         private readonly Dictionary<ushort, IInitPacketBuilder> _builders = new Dictionary<ushort, IInitPacketBuilder>();
+        private readonly Dictionary<ushort, IInitCmdPacketBuilder> _cmdBuilders = new Dictionary<ushort, IInitCmdPacketBuilder>();
         private readonly IGameDatabase _database;
 
         public InitPacketBuilderRegistry()
@@ -84,9 +85,7 @@ namespace DfoServer.Network.Builders
             Register(new PetCreatureWelcomeMessageBodyBuilder());
             Register(new UnitedServerFriendInfoBodyBuilder());
             Register(new StrikerSupportTagCharacterBodyBuilder(_database));
-
-            
-            
+            RegisterCmd(new MercenaryInfoCmdBodyBuilder(_database));
         }
 
         public bool TryBuild(ushort notiType, SelectCharacterDataSnapshot snapshot, int occurrenceIndex, out byte[] body)
@@ -99,7 +98,9 @@ namespace DfoServer.Network.Builders
 
         public bool TryBuildCmd(ushort cmdType, SelectCharacterDataSnapshot snapshot, out byte[] body)
         {
-            
+            if (_cmdBuilders.TryGetValue(cmdType, out var cmdBuilder))
+                return cmdBuilder.TryBuild(snapshot, out body);
+
             if (cmdType == 0x0004)
             {
                 if (SelectCharacterAckBodyBuilder.TryBuild(
@@ -115,6 +116,11 @@ namespace DfoServer.Network.Builders
         private void Register(IInitPacketBuilder builder)
         {
             _builders[builder.NotiType] = builder;
+        }
+
+        private void RegisterCmd(IInitCmdPacketBuilder builder)
+        {
+            _cmdBuilders[builder.CmdType] = builder;
         }
     }
 }

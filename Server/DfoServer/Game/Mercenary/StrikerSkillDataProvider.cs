@@ -22,7 +22,8 @@ namespace DfoServer.Game.Mercenary
         public int Job { get; }
         public int GrowType { get; }
         public int SkillIndex { get; }
-        // PVF 第四字段（历史名 ComboIndex），用于状态校验。
+        // PVF [striker skill] 第四字段：预览视频/脚本 ID，值常大于 255。
+        // 不是 0x01E5 / 0x019F 的 wire combo；wire combo 来自技能树 Slot。
         public int ComboIndex { get; }
         public int RequiredLevel { get; }
     }
@@ -77,7 +78,7 @@ namespace DfoServer.Game.Mercenary
             return State.Value.Entries;
         }
 
-        public static StrikerSkillEntry FindBySkill(int job, int growType, int skillIndex, int comboIndex)
+        public static StrikerSkillEntry FindBySkill(int job, int growType, int skillIndex)
         {
             var entries = State.Value.Entries;
             var normalizedGrowType = NormalizeGrowType(growType);
@@ -86,7 +87,7 @@ namespace DfoServer.Game.Mercenary
                 var entry = entries[i];
                 if (entry.Job != job || entry.GrowType != normalizedGrowType)
                     continue;
-                if (entry.SkillIndex == skillIndex && entry.ComboIndex == comboIndex)
+                if (entry.SkillIndex == skillIndex)
                     return entry;
             }
 

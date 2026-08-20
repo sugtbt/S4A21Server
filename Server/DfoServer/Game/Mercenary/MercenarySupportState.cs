@@ -10,7 +10,7 @@ namespace DfoServer.Game.Mercenary
         public byte Slot { get; set; }
         public int SupportCharacterId { get; set; }
         public ushort SkillId { get; set; }
-        // 历史列名；保存完整 PVF ComboIndex，用于状态校验。
+        // 保存 PVF [striker skill] 第四字段；校验只认 skillId。
         public ushort StrikerSkillId { get; set; }
     }
 }

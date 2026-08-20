@@ -89,9 +89,9 @@ namespace DfoServer.Game.Mercenary
                     CharacterId = character.CharacterId,
                     Name = character.Name,
                     State = MercenaryExpeditionState.Waiting,
-                    RemainingSeconds = ClampToInt(-(long)now),
-                    AreaIndex = byte.MaxValue,
-                    PeriodIndex = byte.MaxValue,
+                    RemainingSeconds = 0,
+                    AreaIndex = MercenaryCharacterInfo.WaitingAreaIndex,
+                    PeriodIndex = MercenaryCharacterInfo.UnassignedPeriodIndex,
                     AvatarBonusTier = (byte)Math.Max(
                         0,
                         Math.Min(byte.MaxValue, _avatarBonus.ResolveTier(character.CharacterId, now, config))),

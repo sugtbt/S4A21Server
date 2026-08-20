@@ -5,6 +5,9 @@ namespace DfoServer.Network.Builders
 {
     public static class MercenaryExpeditionBodyBuilder
     {
+        // 无奖励归队时成功 ACK 第二字节固定为 2，不是请求 purpose 回显。
+        public const byte ReturnSuccessStatus = 2;
+
         public static byte[] BuildInfoSuccess(MercenaryInfoSnapshot snapshot)
         {
             snapshot = snapshot ?? new MercenaryInfoSnapshot();
@@ -31,7 +34,6 @@ namespace DfoServer.Network.Builders
 
         public static byte[] BuildReturnSuccess(
             int characterId,
-            byte purpose,
             int itemTemplateId,
             int itemCount,
             bool hasReward)
@@ -39,7 +41,7 @@ namespace DfoServer.Network.Builders
             var hasAreaLoot = itemTemplateId > 0 && itemCount > 0;
             var writer = new GamePacketWriter();
             writer.WriteByte(1);
-            writer.WriteByte(purpose);
+            writer.WriteByte(ReturnSuccessStatus);
             writer.WriteInt32(characterId);
             writer.WriteInt32(hasAreaLoot ? itemTemplateId : 0);
             writer.WriteInt32(hasAreaLoot ? itemCount : 0);
