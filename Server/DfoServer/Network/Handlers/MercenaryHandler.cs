@@ -129,11 +129,17 @@ namespace DfoServer.Network.Handlers
 
             var roster = ListAccountCharacters(accountId);
             var candidate = StrikerSupportRoster.FindByWireIndex(roster, command.WireSlot);
+            if (StrikerSupportRoster.IsTownClearSelection(candidate, activeCharacterId))
+            {
+                await HandleClearSelection(session, activeCharacterId, command.WireSlot);
+                return;
+            }
+
             if (!StrikerSupportRoster.IsEligibleSupport(candidate, activeCharacterId))
             {
                 FileLogger.Log(
                     $"[{ProtocolName}] MERCENARY/STRIKER select rejected: wire={command.WireSlot} " +
-                    $"cid={candidate?.CharacterId ?? 0} is not an eligible support");
+                    $"cid={candidate?.CharacterId ?? 0} skill={command.SkillId} is not an eligible support");
                 await SendCommandAck(session, SelectSkillCommand, StrikerSupportSkillListWriter.BuildFailureAck());
                 return;
             }
@@ -180,6 +186,30 @@ namespace DfoServer.Network.Handlers
             }
 
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, TagCharacterInfoNotiType, tagBody));
+        }
+
+        private async Task HandleClearSelection(
+            EnhancedClientSession session,
+            int activeCharacterId,
+            byte wireSlot)
+        {
+            try
+            {
+                _supportRepository.Clear(activeCharacterId, MercenarySupportState.SingletonStateKey);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log($"[{ProtocolName}] MERCENARY/STRIKER clear persist failed owner={activeCharacterId}: {ex}");
+                await SendCommandAck(session, SelectSkillCommand, StrikerSupportSkillListWriter.BuildFailureAck());
+                return;
+            }
+
+            FileLogger.Log(
+                $"[{ProtocolName}] MERCENARY/STRIKER cleared owner={activeCharacterId} wire={wireSlot}");
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x00,
+                TagCharacterInfoNotiType,
+                StrikerSupportTagCharacterBodyBuilder.BuildEmptyBody()));
         }
 
         private IReadOnlyList<CharacterRecord> ListAccountCharacters(int accountId)

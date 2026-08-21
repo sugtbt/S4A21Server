@@ -73,7 +73,7 @@ namespace DfoServer.SelfTests
                 && selectCommand.SkillId == 43,
                 ref failures);
             Check(
-                "0x01E8 reads skill id 0 as skill id 0, not as a dedicated clear command",
+                "0x01E8 skill id 0 stays skill id 0",
                 MercenaryCommandParser.TryParseSelectStriker(new byte[] { 0x01, 0x00, 0x00 }, out var zeroSkill)
                 && zeroSkill.WireSlot == 1
                 && zeroSkill.SkillId == 0,
@@ -451,6 +451,16 @@ namespace DfoServer.SelfTests
                 StrikerSupportRoster.FindByWireIndex(roster, 1)?.CharacterId == 22
                 && StrikerSupportRoster.FindByWireIndex(roster, 0)?.CharacterId == 11
                 && StrikerSupportRoster.FindByWireIndex(roster, 2) == null,
+                ref failures);
+            Check(
+                "town clear is selecting the current character",
+                StrikerSupportRoster.IsTownClearSelection(roster[0], 11)
+                && !StrikerSupportRoster.IsTownClearSelection(roster[1], 11)
+                && !StrikerSupportRoster.IsTownClearSelection(null, 11)
+                && !StrikerSupportRoster.IsEligibleSupport(roster[0], 11)
+                && StrikerSupportTagCharacterBodyBuilder.BuildEmptyBody().Length == 2
+                && StrikerSupportTagCharacterBodyBuilder.BuildEmptyBody()[0] == 0
+                && StrikerSupportTagCharacterBodyBuilder.BuildEmptyBody()[1] == 0,
                 ref failures);
         }
 

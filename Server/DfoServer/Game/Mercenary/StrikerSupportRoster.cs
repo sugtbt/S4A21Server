@@ -28,5 +28,13 @@ namespace DfoServer.Game.Mercenary
                 && candidate.CharacterId != activeCharacterId
                 && candidate.Level >= StrikerSkillDataProvider.GetMinimumSupportLevel();
         }
+
+        // 城镇点当前角色自己 = 取消支援。
+        internal static bool IsTownClearSelection(CharacterRecord candidate, int activeCharacterId)
+        {
+            return candidate != null
+                && candidate.CharacterId > 0
+                && candidate.CharacterId == activeCharacterId;
+        }
     }
 }
