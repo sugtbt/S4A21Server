@@ -179,7 +179,8 @@ namespace DfoServer.Network.Handlers
                 store.TownId,
                 store.AreaId,
                 store.OwnerCharacterId,
-                notification);
+                notification,
+                session.ListenerPort);
             FileLogger.Log(
                 $"[ExpertJobStore] CREATE owner={store.OwnerCharacterId} uid={store.OwnerUserId} " +
                 $"kind={store.Kind} cost={store.Cost} town={store.TownId} area={store.AreaId} " +
@@ -819,7 +820,8 @@ namespace DfoServer.Network.Handlers
                 store.TownId,
                 store.AreaId,
                 store.OwnerCharacterId,
-                notification);
+                notification,
+                ownerSession.ListenerPort);
             FileLogger.Log($"[ExpertJobStore] CLOSE owner={store.OwnerCharacterId} uid={store.OwnerUserId}");
         }
 

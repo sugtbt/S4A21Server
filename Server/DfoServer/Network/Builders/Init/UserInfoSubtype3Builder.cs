@@ -5,12 +5,17 @@ using System.IO;
 namespace DfoServer.Network.Builders
 {
     /// <summary>
-    /// Builds the USERINFO subtype 3 body consumed by the inspect-player window.
+    /// USERINFO subtype 3：城镇查看他人（GET_USERINFO mode=3）。
+    /// 头为 subtype/ver/manageLevel/5B 零/uid；战斗块 88B 后接
+    /// ExEquipSlotStat。公会 dstr 前 27B 目前写 0。
     /// </summary>
     public static class UserInfoSubtype3Builder
     {
-        public const int AdornmentBlockLength = 12;
-        public const int ContextBlockLength = 16;
+        public const byte Subtype = 3;
+        public const ushort Version = 1;
+        public const int PrefixPaddingLength = 5;
+        public const int InspectContextLength = 27;
+        public const byte InspectGuildMarker = 0x6F;
 
         public static byte[] BuildNotificationBody(
             ushort targetUserId,
@@ -23,14 +28,18 @@ namespace DfoServer.Network.Builders
                     "USERINFO subtype 3 requires UserInfoAddition");
 
             var writer = new GamePacketWriter();
-            writer.WriteByte(3);
-            writer.WriteUInt16(1);
+            writer.WriteByte(Subtype);
+            writer.WriteUInt16(Version);
+            writer.WriteUInt16(addition.ManageLevel);
+            writer.WriteZeroBytes(PrefixPaddingLength);
             writer.WriteUInt16(targetUserId);
 
-            WriteCharacterStats(writer, addition);
-            WriteEquipment(writer, addition);
+            writer.WriteUInt32(addition.CharacExp);
+            writer.WriteInt32(CombatStatBlobWriter.BlobLength);
+            CombatStatBlobWriter.Write(writer, addition);
+            writer.WriteByte(addition.ExEquipSlotStat);
+            WriteEquipment(writer, addition, characterRecord?.Appearance);
 
-            // The client consumes these three u32 values before both skill pages.
             writer.WriteUInt32(addition.CloneTitleItemId);
             writer.WriteUInt32(addition.NameTagItemId);
             writer.WriteUInt32(addition.NameTagExpireTime);
@@ -40,16 +49,7 @@ namespace DfoServer.Network.Builders
             WriteSkillPage(writer, skills, 1);
             writer.WriteByte(addition.EquippedCreatureLevel);
 
-            // Inspect/PvP context: 3*u32 + 4*u8. Unknown persisted counters use
-            // their neutral wire value instead of shifting the following trailer.
-            writer.WriteUInt32(0);
-            writer.WriteUInt32(0);
-            writer.WriteUInt32(0);
-            writer.WriteByte(0);
-            writer.WriteByte(0);
-            writer.WriteByte(0);
-            writer.WriteByte(0);
-
+            WriteInspectContext(writer);
             WritePostContextFields(
                 writer,
                 addition,
@@ -57,70 +57,51 @@ namespace DfoServer.Network.Builders
             return writer.ToArray();
         }
 
+        private static void WriteInspectContext(GamePacketWriter writer)
+        {
+            // 公会 dstr 前 6×u32 + 3B，字段所有者未定时写 0。
+            for (var index = 0; index < 6; index++)
+                writer.WriteUInt32(0);
+            writer.WriteZeroBytes(3);
+        }
+
         private static void WritePostContextFields(
             GamePacketWriter writer,
             UserInfoAdditionSnapshot addition,
             UserInfoMinimumTailSnapshot minimumTail)
         {
-            writer.WriteUInt32(0); // help/abuse ratio
-            writer.WriteUInt16(0); // personal power-war point
-            writer.WriteUInt32(addition.GuildPowerWar);
             writer.WriteDstr(minimumTail?.GuildNameBytes);
             writer.WriteByte(minimumTail?.GuildLevel ?? 0);
             writer.WriteByte(0);
-            writer.WriteByte(0);
-            writer.WriteByte(addition.ManageLevel);
-            writer.WriteByte(addition.FlagByte);
+            writer.WriteByte(InspectGuildMarker);
             writer.WriteUInt32(
                 (uint)addition.SpecialRewardQuestIds.Count);
             foreach (var questId in addition.SpecialRewardQuestIds)
                 writer.WriteUInt32(questId);
-            writer.WriteUInt16(addition.QuestShopCount);
-            writer.WriteByte(0); // optional inspection record count
-        }
-
-        private static void WriteCharacterStats(
-            GamePacketWriter writer,
-            UserInfoAdditionSnapshot addition)
-        {
-            writer.WriteUInt32(addition.CharacExp);
-            writer.WriteInt32(83);
-            writer.WriteUInt32(addition.StatHpMax);
-            writer.WriteUInt32(addition.StatMpMax);
-            writer.WriteInt16(addition.StatPhysicalAttack);
-            writer.WriteInt16(addition.StatPhysicalDefense);
-            writer.WriteInt16(addition.StatMagicalAttack);
-            writer.WriteInt16(addition.StatMagicalDefense);
-            writer.WriteInt16(addition.StatFireResistance);
-            writer.WriteInt16(addition.StatWaterResistance);
-            writer.WriteInt16(addition.StatDarkResistance);
-            writer.WriteInt16(addition.StatLightResistance);
-            for (var index = 0; index < 17; index++)
-                writer.WriteUInt16(0);
-            writer.WriteUInt32(addition.StatInventoryLimit);
-            writer.WriteUInt16(addition.StatHpRegenSpeed);
-            writer.WriteUInt16(addition.StatMpRegenSpeed);
-            writer.WriteUInt32(addition.StatMoveSpeed);
-            writer.WriteUInt16(addition.StatAttackSpeed);
-            writer.WriteUInt16(addition.StatCastSpeed);
-            writer.WriteUInt16(addition.StatHitRecovery);
-            writer.WriteUInt16(addition.StatJumpPower);
-            writer.WriteUInt32(addition.StatWeight);
-            writer.WriteByte(addition.StatLevel);
-            writer.WriteByte(addition.ExEquipSlotStat);
+            writer.WriteByte(0);
         }
 
         private static void WriteEquipment(
             GamePacketWriter writer,
-            UserInfoAdditionSnapshot addition)
+            UserInfoAdditionSnapshot addition,
+            CharacterAppearanceEntry[] appearance)
         {
-            writer.WriteByte((byte)addition.EquippedEntries.Count);
-            foreach (var entry in addition.EquippedEntries)
+            var equipped = UserInfoSubtype1Builder.MergeA21FashionEntries(
+                addition.EquippedEntries,
+                appearance);
+            if (equipped.Count > byte.MaxValue)
             {
-                if (entry.Core == null)
+                throw new InvalidDataException(
+                    "USERINFO subtype 3 equipped count exceeds 255");
+            }
+
+            writer.WriteByte((byte)equipped.Count);
+            foreach (var entry in equipped)
+            {
+                if (entry?.Core == null)
                 {
                     throw new InvalidDataException(
-                        $"USERINFO subtype 3 slot {entry.Slot}: " +
+                        $"USERINFO subtype 3 slot {entry?.Slot}: " +
                         "ItemCore is unavailable");
                 }
 
@@ -148,14 +129,20 @@ namespace DfoServer.Network.Builders
             var count = 0;
             foreach (var entry in page.Entries)
             {
-                if (entry.Level > 0)
+                if (entry != null && entry.Level > 0)
                     count++;
+            }
+
+            if (count > byte.MaxValue)
+            {
+                throw new InvalidDataException(
+                    "USERINFO subtype 3 skill page exceeds 255 entries");
             }
 
             writer.WriteByte((byte)count);
             foreach (var entry in page.Entries)
             {
-                if (entry.Level == 0)
+                if (entry == null || entry.Level <= 0)
                     continue;
                 writer.WriteUInt16(entry.SkillId);
                 writer.WriteByte(entry.Level);

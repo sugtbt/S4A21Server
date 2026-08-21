@@ -191,7 +191,8 @@ namespace DfoServer.Network.Handlers
             {
                 await _sessions.BroadcastToAreaAsync(
                     session.Player.CurTownId, session.Player.CurAreaId, session.Player.CharacterId,
-                    positionPacket);
+                    positionPacket,
+                    session.ListenerPort);
             }
         }
 
@@ -354,10 +355,17 @@ namespace DfoServer.Network.Handlers
             var townId = session.Player.CurTownId;
             var areaId = session.Player.CurAreaId;
 
-            IReadOnlyList<EnhancedClientSession> others = _sessions?.GetSessionsInArea(townId, areaId, session.Player.CharacterId)
+            IReadOnlyList<EnhancedClientSession> others = _sessions?.GetSessionsInArea(
+                    townId,
+                    areaId,
+                    session.Player.CharacterId,
+                    session.ListenerPort)
                 ?? System.Array.Empty<EnhancedClientSession>();
 
-            FileLogger.Log($"[{ProtocolName}] AREA co-presence: uid={session.Player.UserId} town={townId} area={areaId} others={others.Count}");
+            FileLogger.Log(
+                $"[{ProtocolName}] AREA co-presence: uid={session.Player.UserId} " +
+                $"town={townId} area={areaId} listener={session.ListenerPort} " +
+                $"others={others.Count}");
 
             // 全体名册(自己 + 其它人)。
             var roster = new List<TownUserSnapshot>(others.Count + 1) { selfSnapshot };
@@ -434,7 +442,8 @@ namespace DfoServer.Network.Handlers
                 return;
             await _sessions.BroadcastToAreaAsync(
                 session.Player.CurTownId, session.Player.CurAreaId, session.Player.CharacterId,
-                GamePacketEnvelopeBuilder.Build(0x00, 0x0006, TownAreaNotificationBuilder.BuildUserLeave(session.Player.UserId)));
+                GamePacketEnvelopeBuilder.Build(0x00, 0x0006, TownAreaNotificationBuilder.BuildUserLeave(session.Player.UserId)),
+                session.ListenerPort);
         }
 
         public async Task Handle_ENUM_CMDPACKET_FINISH_LOADING(EnhancedClientSession session, GamePacketHeader header, byte[] body)

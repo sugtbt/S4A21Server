@@ -120,22 +120,18 @@ namespace DfoServer.Network.Builders
                     };
                 }
 
-                // Build the complete sequence in memory. If subtype 3 or any
-                // title-book packet fails, the caller receives no partial response.
-                var packets = BuildTitleBookPacketsFromSnapshot(
-                    snapshot,
-                    targetUserId,
-                    infoType: 2);
+                // mode=3 只回 USERINFO subtype 3。
+                // 称号簿走 OTHER_USER_TITLE_BOOK_LIST。
                 var subtype3Body =
                     UserInfoSubtype3Builder.BuildNotificationBody(
                         targetUserId,
                         initialization.UserInfoAddition,
                         initialization.SkillInfo,
                         snapshot.CharacterRecord);
-                packets.Add(BuildUserInfoPacket(
-                    subtype3Body,
-                    routingByte7));
-                return packets;
+                return new[]
+                {
+                    BuildUserInfoPacket(subtype3Body, routingByte7),
+                };
             }
             catch (Exception ex)
             {
@@ -344,7 +340,7 @@ namespace DfoServer.Network.Builders
         {
             var packet = GamePacketEnvelopeBuilder.Build(
                 0x00,
-                (ushort)NotiPacketType.USERINFO,
+                (ushort)NotiPacketTypeA21.USERINFO,
                 body);
             packet[7] = routingByte7;
             return packet;

@@ -66,7 +66,8 @@ namespace DfoServer.Network.Handlers
                                 session.Player.CurTownId,
                                 session.Player.CurAreaId,
                                 characterId,
-                                packet);
+                                packet,
+                                session.ListenerPort);
                         }
                     }
                 }
