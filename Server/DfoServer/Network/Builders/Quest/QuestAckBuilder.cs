@@ -56,14 +56,16 @@ namespace DfoServer.Network.Builders
             w.WriteUInt16(r.QuestId);
             w.WriteByte((byte)r.FinishType);
             w.WriteUInt32(r.Exp);
-            w.WriteUInt32(r.ReservedAfterExperience);
+            w.WriteUInt32(r.CompletionCount);
+
+            var hasConsumedEntryPrefix = r.FinishType == QuestFinishType.Seeking
+                || (byte)r.FinishType == 0x19;
 
             if (r.ChainType == GameWorld.QuestData.ChainTypeTitle)
             {
                 // A21 title/achievement branch uses the legacy 7B consume
-                // entry and terminates with chain type 5.  The reserved tail
-                // used by ordinary 8B entries is absent in this branch.
-                if (r.ConsumedEntries.Count > 0)
+                // entry and terminates with chain type 5.
+                if (hasConsumedEntryPrefix)
                 {
                     w.WriteByte((byte)r.ConsumedEntries.Count);
                     foreach (var ce in r.ConsumedEntries)
@@ -79,6 +81,12 @@ namespace DfoServer.Network.Builders
                 // directly after the common prefix, followed by both compact
                 // skill pages. The PVF grow number updates character state but
                 // is not serialized in this branch.
+                if (hasConsumedEntryPrefix)
+                {
+                    w.WriteByte((byte)r.ConsumedEntries.Count);
+                    foreach (var ce in r.ConsumedEntries)
+                        WriteConsumedEntryWithoutReservedTail(w, ce);
+                }
                 w.WriteByte((byte)r.ChainType);
                 w.WriteByte(0);
                 WriteSkillPages(w, r.SkillPages);
@@ -89,24 +97,28 @@ namespace DfoServer.Network.Builders
             {
                 // chain 20：7 字节 consume，随后 chain/grow 与两页压缩技能。
                 // 8 字节 consume 会错位并导致客户端闪退。
-                w.WriteByte((byte)r.ConsumedEntries.Count);
-                foreach (var ce in r.ConsumedEntries)
-                    WriteConsumedEntryWithoutReservedTail(w, ce);
+                if (hasConsumedEntryPrefix)
+                {
+                    w.WriteByte((byte)r.ConsumedEntries.Count);
+                    foreach (var ce in r.ConsumedEntries)
+                        WriteConsumedEntryWithoutReservedTail(w, ce);
+                }
                 w.WriteByte((byte)r.ChainType);
                 w.WriteByte((byte)r.GrowNumber);
                 WriteSkillPages(w, r.SkillPages);
                 return w.ToArray();
             }
 
-            w.WriteByte((byte)r.ConsumedEntries.Count);
-            foreach (var ce in r.ConsumedEntries)
+            if (hasConsumedEntryPrefix)
             {
-                w.WriteByte(ce.UpdateType);
-                w.WriteUInt16(ce.SlotIndex);
-                w.WriteUInt32(ce.ConsumedCount);
-                w.WriteByte(ce.ReservedTail);
+                w.WriteByte((byte)r.ConsumedEntries.Count);
+                foreach (var ce in r.ConsumedEntries)
+                    WriteConsumedEntryWithoutReservedTail(w, ce);
             }
 
+            // A21 Seeking/0x19 先消费 7B 材料条目，再单独读取 chain。
+            // 无材料时这个零字节也不能省略，否则奖励数量会被当成 chain。
+            w.WriteByte((byte)r.ChainType);
             if (r.ChainType == 0)
             {
                 w.WriteByte((byte)r.InsertedEntries.Count);
@@ -123,14 +135,9 @@ namespace DfoServer.Network.Builders
             }
             else if (r.ChainType == GameWorld.QuestData.ChainTypeSlotExpansion)
             {
-                w.WriteByte((byte)r.ChainType);
                 w.WriteByte((byte)r.GrowNumber);
                 w.WriteByte(0); // npcCount layer 1
                 w.WriteByte(0); // npcCount layer 2
-            }
-            else
-            {
-                w.WriteByte((byte)r.ChainType);
             }
             return w.ToArray();
         }

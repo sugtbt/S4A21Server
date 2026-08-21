@@ -315,13 +315,13 @@ namespace DfoServer.SelfTests
                 hellPartyRoomY: 0xFF);
             var infoExpected = new byte[]
             {
-                0x90, 0x00, 0x00, 0x00, 0x00, 0x01, 0xFF, 0xFF,
+                0x90, 0x00, 0x00, 0x00, 0x00, 0x01, 0x05, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             };
             Check(
-                "A21 DUNGEON_INFO dungeon 144 keeps maze index at offset 5",
+                "A21 DUNGEON_INFO keeps maze index and boss coordinates",
                 info.Length == 32
                 && info.AsSpan().SequenceEqual(infoExpected),
                 ref failures);
@@ -341,8 +341,8 @@ namespace DfoServer.SelfTests
                 && BitConverter.ToInt32(nonzeroDifficultyInfo, 0) == 160
                 && nonzeroDifficultyInfo[4] == 1
                 && nonzeroDifficultyInfo[5] == 1
-                && nonzeroDifficultyInfo[6] == DungeonNotificationBuilder.NoBossMapMarkerCoordinate
-                && nonzeroDifficultyInfo[7] == DungeonNotificationBuilder.NoBossMapMarkerCoordinate,
+                && nonzeroDifficultyInfo[6] == 4
+                && nonzeroDifficultyInfo[7] == 0,
                 ref failures);
 
             var hellInfoMode1 = DungeonNotificationBuilder.BuildDungeonInfo(
@@ -367,7 +367,7 @@ namespace DfoServer.SelfTests
                 hellPartyEnabled: 1);
             var hellInfoExpected = new byte[]
             {
-                0x68, 0x00, 0x00, 0x00, 0x00, 0x03, 0xFF, 0xFF,
+                0x68, 0x00, 0x00, 0x00, 0x00, 0x03, 0x01, 0x02,
                 0x02, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -393,8 +393,8 @@ namespace DfoServer.SelfTests
             Check(
                 "A21 DUNGEON_INFO serializes minimap groups without dropping coordinates",
                 minimapInfo.Length == 40
-                && minimapInfo[6] == DungeonNotificationBuilder.NoBossMapMarkerCoordinate
-                && minimapInfo[7] == DungeonNotificationBuilder.NoBossMapMarkerCoordinate
+                && minimapInfo[6] == 5
+                && minimapInfo[7] == 1
                 && minimapInfo[11] == 2
                 && minimapInfo[12] == 2
                 && minimapInfo[13] == 2
@@ -1762,7 +1762,7 @@ namespace DfoServer.SelfTests
                 QuestId = 1016,
                 FinishType = QuestFinishType.MeetNpc,
                 Exp = 10,
-                ReservedAfterExperience = 0,
+                CompletionCount = 0,
                 ChainType = 0,
                 RewardAcquiredAtUnixTime = 0x6A7DE18E,
             };
@@ -1810,7 +1810,7 @@ namespace DfoServer.SelfTests
                 QuestId = 13099,
                 FinishType = QuestFinishType.MeetNpc,
                 Exp = 6932,
-                ReservedAfterExperience = 0,
+                CompletionCount = 0,
                 ChainType = 0,
                 RewardAcquiredAtUnixTime = 0x6A7DEC50,
             };
@@ -1831,7 +1831,7 @@ namespace DfoServer.SelfTests
                 0x6A, 0x00, 0x00,
             };
             Check(
-                "A21 FINISH_QUEST quest 13099 keeps the post-EXP field reserved",
+                "A21 captured quest 13099 keeps its completion-count sample at zero",
                 capturedGoldQuestBody.Length == 33
                 && capturedGoldQuestBody.AsSpan().SequenceEqual(
                     capturedGoldQuestExpected),
@@ -1842,7 +1842,7 @@ namespace DfoServer.SelfTests
                 QuestId = 13081,
                 FinishType = QuestFinishType.Seeking,
                 Exp = 2600,
-                ReservedAfterExperience = 0,
+                CompletionCount = 0,
                 ChainType = 0,
                 RewardAcquiredAtUnixTime = 0x6A830D0D,
             };
@@ -1851,7 +1851,6 @@ namespace DfoServer.SelfTests
                 UpdateType = 0,
                 SlotIndex = 182,
                 ConsumedCount = 1,
-                ReservedTail = 0,
             });
             seekingFinishQuest.InsertedEntries.Add(new InsertedItemEntry
             {
@@ -1868,7 +1867,7 @@ namespace DfoServer.SelfTests
             var seekingFinishBody = QuestAckBuilder.BuildFinish(
                 seekingFinishQuest);
             Check(
-                "A21 seeking FINISH_QUEST uses an 8B consumed entry",
+                "A21 seeking FINISH_QUEST uses a 7B consumed entry followed by chain",
                 seekingFinishBody.Length == 60
                 && BitConverter.ToUInt32(seekingFinishBody, 8) == 0
                 && seekingFinishBody[12] == 1
@@ -1885,12 +1884,47 @@ namespace DfoServer.SelfTests
                 && BitConverter.ToUInt32(seekingFinishBody, 47) == 1,
                 ref failures);
 
+            var dailyChallengeFinish = new QuestFinishResult
+            {
+                QuestId = 14650,
+                FinishType = QuestFinishType.Seeking,
+                Exp = 427677,
+                CompletionCount = 1,
+                ChainType = 0,
+                RewardAcquiredAtUnixTime = 0x6A886DC1,
+            };
+            dailyChallengeFinish.InsertedEntries.Add(new InsertedItemEntry
+            {
+                SlotIndex = 6,
+                ItemId = 10099411,
+                GrantedCount = 2,
+            });
+            var dailyChallengeFinishBody = QuestAckBuilder.BuildFinish(
+                dailyChallengeFinish);
+            var dailyChallengeFinishExpected = new byte[]
+            {
+                0x01, 0x3A, 0x39, 0x00, 0x9D, 0x86, 0x06, 0x00,
+                0x01, 0x00, 0x00, 0x00,
+                0x00, // consumed count
+                0x00, // chain type
+                0x01, // inserted reward count
+                0x06, 0x00, 0xD3, 0x1A, 0x9A, 0x00, 0x02, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0xC1, 0x6D, 0x88,
+                0x6A, 0x00, 0x00,
+            };
+            Check(
+                "A21 seeking FINISH_QUEST keeps explicit chain zero when no items are consumed",
+                dailyChallengeFinishBody.Length == 34
+                && dailyChallengeFinishBody.AsSpan().SequenceEqual(
+                    dailyChallengeFinishExpected),
+                ref failures);
+
             var capturedSeekingQuest = new QuestFinishResult
             {
                 QuestId = 1782,
                 FinishType = QuestFinishType.Seeking,
                 Exp = 771,
-                ReservedAfterExperience = 0,
+                CompletionCount = 0,
                 ChainType = 0,
                 RewardAcquiredAtUnixTime = 0x6A7DE550,
             };
@@ -1899,7 +1933,6 @@ namespace DfoServer.SelfTests
                 UpdateType = 0,
                 SlotIndex = 182,
                 ConsumedCount = 10,
-                ReservedTail = 0,
             });
             capturedSeekingQuest.InsertedEntries.Add(new InsertedItemEntry
             {
@@ -1930,7 +1963,7 @@ namespace DfoServer.SelfTests
                 QuestId = 4303,
                 FinishType = QuestFinishType.HuntMonster,
                 Exp = 2403,
-                ReservedAfterExperience = 0,
+                CompletionCount = 0,
                 ChainType = QuestData.ChainTypeTitle,
             };
             var capturedTitleBody = QuestAckBuilder.BuildFinish(capturedTitleQuest);
@@ -1950,7 +1983,7 @@ namespace DfoServer.SelfTests
                 QuestId = 1028,
                 FinishType = QuestFinishType.Seeking,
                 Exp = 0x1693,
-                ReservedAfterExperience = 0,
+                CompletionCount = 0,
                 ChainType = QuestData.ChainTypeTitle,
             };
             for (var slot = 0x0162; slot <= 0x0165; slot++)
@@ -1960,7 +1993,6 @@ namespace DfoServer.SelfTests
                     UpdateType = 0,
                     SlotIndex = (ushort)slot,
                     ConsumedCount = 21,
-                    ReservedTail = 0,
                 });
             }
             var capturedTitleSeekingBody = QuestAckBuilder.BuildFinish(
@@ -1987,7 +2019,7 @@ namespace DfoServer.SelfTests
                 QuestId = 7810,
                 FinishType = QuestFinishType.HuntMonster,
                 Exp = 6932,
-                ReservedAfterExperience = 0,
+                CompletionCount = 0,
                 ChainType = 1,
                 // PVF reward parameter is 3, while the captured wire byte is 0.
                 GrowNumber = 3,
@@ -2031,7 +2063,7 @@ namespace DfoServer.SelfTests
                 QuestId = 7873,
                 FinishType = QuestFinishType.HuntMonster,
                 Exp = 5836,
-                ReservedAfterExperience = 0,
+                CompletionCount = 0,
                 ChainType = 1,
                 GrowNumber = 2,
                 SkillPages = QuestCompletionApplicationService
@@ -2076,7 +2108,7 @@ namespace DfoServer.SelfTests
                 QuestId = 2710,
                 FinishType = QuestFinishType.Seeking,
                 Exp = 5351,
-                ReservedAfterExperience = 0,
+                CompletionCount = 0,
                 ChainType = 20,
                 GrowNumber = 3,
             };
@@ -2085,7 +2117,6 @@ namespace DfoServer.SelfTests
                 UpdateType = 0,
                 SlotIndex = 358,
                 ConsumedCount = 100,
-                ReservedTail = 0,
             });
             var capturedExpertJobExpected = new byte[]
             {

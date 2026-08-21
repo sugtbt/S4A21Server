@@ -5,6 +5,8 @@ namespace DfoServer.Game.SelectCharacter
 {
     public sealed class SelectCharacterInitializationSnapshot
     {
+        public const int DailyChallengeClaimFlagCount = 5;
+
         public ExpertJobInfoSnapshot ExpertJobInfo { get; set; } = new ExpertJobInfoSnapshot();
 
         public ItemLockListSnapshot ItemLockList { get; set; } = new ItemLockListSnapshot();
@@ -63,7 +65,8 @@ namespace DfoServer.Game.SelectCharacter
 
         public List<RacingDungeonGroupSnapshot> RacingDungeonGroups { get; } = new List<RacingDungeonGroupSnapshot>();
 
-        public byte[] DailyChallengeRewardClaimFlags { get; set; } = new byte[6];
+        public byte[] DailyChallengeRewardClaimFlags { get; set; } =
+            new byte[DailyChallengeClaimFlagCount];
 
         public List<uint> RacingDungeonTailIds { get; } = new List<uint>();
 

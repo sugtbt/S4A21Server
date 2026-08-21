@@ -753,6 +753,31 @@ CREATE TABLE IF NOT EXISTS character_daily_challenge_claims (
     FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS character_daily_challenge_entry_claims (
+    character_id INTEGER NOT NULL,
+    group_index INTEGER NOT NULL CHECK (group_index >= 0 AND group_index < 6),
+    entry_index INTEGER NOT NULL CHECK (entry_index >= 0),
+    quest_id INTEGER NOT NULL CHECK (quest_id > 0),
+    claimed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (character_id, group_index, entry_index),
+    FOREIGN KEY (character_id, group_index, entry_index)
+        REFERENCES character_daily_challenge_entries(character_id, group_index, entry_index)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS character_daily_challenge_progress_events (
+    character_id INTEGER NOT NULL,
+    source_event_id TEXT NOT NULL,
+    group_index INTEGER NOT NULL,
+    entry_index INTEGER NOT NULL,
+    quest_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (character_id, source_event_id, group_index, entry_index),
+    FOREIGN KEY (character_id, group_index, entry_index)
+        REFERENCES character_daily_challenge_entries(character_id, group_index, entry_index)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS quest_progress_event_inbox (
     character_id INTEGER NOT NULL,
     activation_id TEXT NOT NULL,

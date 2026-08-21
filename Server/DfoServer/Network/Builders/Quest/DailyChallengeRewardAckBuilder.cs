@@ -12,7 +12,9 @@ namespace DfoServer.Network.Builders
             var writer = new GamePacketWriter();
             writer.WriteByte(1);
             writer.WriteInt32(result.GroupIndex);
-            writer.WriteInt32(0); // Only special challenge index 5 consumes this count.
+            // A21 exposes only group indices 0-4. Keep the migrated reserved
+            // field zero until the current client establishes another meaning.
+            writer.WriteInt32(0);
             return writer.ToArray();
         }
     }

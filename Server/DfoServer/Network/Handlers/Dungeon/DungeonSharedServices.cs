@@ -27,6 +27,7 @@ namespace DfoServer.Network.Handlers.Dungeon
         internal Game.ReviveCoin.ReviveCoinService ReviveCoin { get; }
         internal DeathTowerCoordinator DeathTower { get; }
         internal Game.Quests.QuestDropService QuestDrops { get; }
+        internal Game.Quests.DailyChallengeService DailyChallenges { get; }
         internal Game.Dungeon.DungeonItemAcquisitionService ItemAcquisition { get; }
         internal DungeonPersistentMechanismCoordinator PersistentMechanisms { get; }
         internal SqliteCharacterRepository CharacterRepository { get; }
@@ -103,6 +104,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                 rollDrop: null,
                 itemAcquisition: ItemAcquisition,
                 database: Database);
+            DailyChallenges = new Game.Quests.DailyChallengeService(
+                ConnectionString,
+                new Game.DailyReset.DailyResetService(Database));
             Subtype1Repository = new SqliteSubtype1Repository(
                 Database);
             CharacterStateRepository = new SqliteCharacterStateRepository(

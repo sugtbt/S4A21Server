@@ -1,25 +1,80 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
+using DfoServer.Game.DailyReset;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.GameWorld;
+using DfoServer.Infrastructure;
 using Microsoft.Data.Sqlite;
 
 namespace DfoServer.Game.Quests
 {
     internal sealed class DailyChallengeService
     {
-        private static readonly ConcurrentDictionary<long, byte> MissingEntryWarnings =
-            new ConcurrentDictionary<long, byte>();
+        private readonly ConcurrentDictionary<ushort, byte> _missingEntryWarnings =
+            new ConcurrentDictionary<ushort, byte>();
 
         private readonly DailyChallengeRepository _repository;
         private readonly string _connectionString;
 
-        internal DailyChallengeService(string connectionString)
+        internal DailyChallengeService(
+            string connectionString,
+            DailyResetService dailyReset = null)
         {
             _connectionString = connectionString;
-            _repository = new DailyChallengeRepository(connectionString);
+            if (dailyReset == null)
+            {
+                var databasePath = new SqliteConnectionStringBuilder(connectionString).DataSource;
+                dailyReset = new DailyResetService(databasePath, ServerPaths.SchemaFilePath);
+            }
+
+            _repository = new DailyChallengeRepository(connectionString, dailyReset);
+        }
+
+        internal DailyChallengeInitializationResult EnsureInitialized(int characterId)
+        {
+            if (characterId <= 0)
+                throw new ArgumentOutOfRangeException(nameof(characterId));
+
+            int characterLevel;
+            using (var connection = new SqliteConnection(_connectionString))
+            {
+                connection.Open();
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = @"
+SELECT level
+FROM characters
+WHERE character_id = @cid;";
+                    command.Parameters.AddWithValue("@cid", characterId);
+                    var value = command.ExecuteScalar();
+                    if (value == null || value == DBNull.Value)
+                    {
+                        throw new InvalidOperationException(
+                            $"Daily challenge character not found: {characterId}");
+                    }
+                    characterLevel = Convert.ToInt32(value);
+                }
+            }
+
+            var plan = DailyChallengeData.BuildGenerationPlan(
+                characterId,
+                characterLevel,
+                DailyResetService.TodayId());
+            var result = _repository.EnsureInitialized(
+                characterId,
+                characterLevel,
+                plan);
+            if (result.Refreshed)
+            {
+                FileLogger.Log(
+                    $"[DailyChallenge] generated cid={characterId} "
+                    + $"level={characterLevel} groups={result.GroupCount} "
+                    + $"entries={result.EntryCount}");
+            }
+
+            return result;
         }
 
         internal bool TryHandleSetTrigger(
@@ -37,15 +92,30 @@ namespace DfoServer.Game.Quests
 
             var triggerType = body[2];
             var isIncrement = body.Length >= 4 && body[3] != 0;
+            var serverOwnedSuitableClear = QuestData
+                .TryGetSuitableDungeonClearChallengeRule(questId, out _);
+            var serverOwnedBossKill = QuestData
+                .TryGetSuitableDungeonBossKillChallengeRule(
+                    questId,
+                    out _,
+                    out _);
+            var serverOwnedQuestCompletion = QuestData
+                .TryGetQuestCompletionChallengeRule(questId, out _, out _);
             var stored = _repository.ApplyMutation(
                 characterId,
                 questId,
-                (target, current) => ApplyMutation(target, current, triggerType, isIncrement));
+                (target, current) => serverOwnedSuitableClear
+                    || serverOwnedBossKill
+                    || serverOwnedQuestCompletion
+                    ? current
+                    : ApplyMutation(target, current, triggerType, isIncrement));
 
             if (!stored.Found)
             {
-                var warningKey = ((long)characterId << 32) | questId;
-                if (MissingEntryWarnings.TryAdd(warningKey, 0))
+                // This service is scoped to its composition owner. Keep the
+                // warning cache instance-local so stale client reports cannot
+                // accumulate one process-lifetime entry per character.
+                if (_missingEntryWarnings.TryAdd(questId, 0))
                 {
                     FileLogger.Log(
                         $"[DailyChallenge] configured quest missing from character ledger: "
@@ -61,6 +131,16 @@ namespace DfoServer.Game.Quests
                     + $"remaining={stored.PreviousValue}->{stored.CurrentValue} "
                     + $"target={stored.TargetValue}");
             }
+            else if ((serverOwnedSuitableClear
+                    || serverOwnedBossKill
+                    || serverOwnedQuestCompletion)
+                && stored.Found)
+            {
+                FileLogger.Log(
+                    $"[DailyChallenge] SET_TRIGGER echo server-owned challenge "
+                    + $"cid={characterId} quest={questId} "
+                    + $"remaining={stored.CurrentValue} target={stored.TargetValue}");
+            }
 
             result = new DailyChallengeSetTriggerResult(
                 new QuestSetTriggerResult
@@ -73,6 +153,60 @@ namespace DfoServer.Game.Quests
                 stored.Found,
                 stored.Changed);
             return true;
+        }
+
+        internal DailyChallengeDungeonClearResult ApplySuitableDungeonClear(
+            int characterId,
+            int dungeonId,
+            int difficulty,
+            int characterLevel,
+            Guid sourceEventId)
+        {
+            var result = _repository.ApplySuitableDungeonClear(
+                characterId,
+                dungeonId,
+                difficulty,
+                characterLevel,
+                sourceEventId);
+            if (result.ChangedEntries > 0)
+            {
+                FileLogger.Log(
+                    $"[DailyChallenge] SUITABLE_DUNGEON_CLEAR cid={characterId} "
+                    + $"dungeon={dungeonId} difficulty={difficulty} "
+                    + $"level={characterLevel} event={sourceEventId:N} "
+                    + $"changed={result.ChangedEntries}");
+            }
+            return result;
+        }
+
+        internal DailyChallengeMonsterKillResult ApplySuitableDungeonBossKill(
+            int characterId,
+            int dungeonId,
+            int difficulty,
+            int characterLevel,
+            int monsterCode,
+            byte monsterType,
+            Guid sourceEventId)
+        {
+            var result = _repository.ApplySuitableDungeonBossKill(
+                characterId,
+                dungeonId,
+                difficulty,
+                characterLevel,
+                monsterCode,
+                monsterType,
+                sourceEventId);
+            if (result.ChangedEntries > 0)
+            {
+                FileLogger.Log(
+                    $"[DailyChallenge] SUITABLE_DUNGEON_BOSS_KILL "
+                    + $"cid={characterId} dungeon={dungeonId} "
+                    + $"difficulty={difficulty} level={characterLevel} "
+                    + $"monster={monsterCode} type={monsterType} "
+                    + $"event={sourceEventId:N} "
+                    + $"changed={result.ChangedEntries}");
+            }
+            return result;
         }
 
         internal DailyChallengeResetResult ResetCharacter(int characterId)
@@ -92,17 +226,20 @@ namespace DfoServer.Game.Quests
         }
 
         internal DailyChallengeRewardClaimResult ClaimReward(
-            int characterId,
-            int characterLevel,
-            int groupIndex,
-            InventoryLease lease)
+            QuestCommandOwnerContext owner,
+            int groupIndex)
         {
+            var characterId = owner.CharacterId;
+            var lease = owner.InventoryLease;
             if (characterId <= 0
+                || owner.AccountId <= 0
                 || groupIndex < 0
-                || groupIndex >= 6
+                || groupIndex >= SelectCharacterInitializationSnapshot
+                    .DailyChallengeClaimFlagCount
                 || lease == null
                 || lease.CharacterId != characterId
-                || lease.Inventory == null)
+                || lease.Inventory == null
+                || !owner.IsCurrentInventoryOwner())
             {
                 return DailyChallengeRewardClaimResult.Rejected(
                     DailyChallengeRewardClaimStatus.InvalidRequest,
@@ -112,6 +249,14 @@ namespace DfoServer.Game.Quests
 
             lock (lease.SyncRoot)
             {
+                if (!owner.IsCurrentInventoryOwner())
+                {
+                    return DailyChallengeRewardClaimResult.Rejected(
+                        DailyChallengeRewardClaimStatus.InvalidRequest,
+                        groupIndex,
+                        null);
+                }
+
                 SelectCharacterInitializationSnapshot snapshot = null;
                 RewardInventoryRollback rollback = null;
                 InventoryRewardGrantBatchResult grant = null;
@@ -124,6 +269,20 @@ namespace DfoServer.Game.Quests
                         connection.Open();
                         using (var transaction = connection.BeginTransaction(deferred: false))
                         {
+                            if (!owner.IsCurrentInventoryOwner()
+                                || !TryLoadOwnedCharacterLevel(
+                                    connection,
+                                    transaction,
+                                    characterId,
+                                    owner.AccountId,
+                                    out var characterLevel))
+                            {
+                                return DailyChallengeRewardClaimResult.Rejected(
+                                    DailyChallengeRewardClaimStatus.InvalidRequest,
+                                    groupIndex,
+                                    null);
+                            }
+
                             var state = _repository.LoadRewardState(
                                 connection,
                                 transaction,
@@ -186,6 +345,18 @@ namespace DfoServer.Game.Quests
                             {
                                 return DailyChallengeRewardClaimResult.Rejected(
                                     DailyChallengeRewardClaimStatus.InventoryFull,
+                                    groupIndex,
+                                    snapshot,
+                                    reward,
+                                    state.CompletedEntryCount);
+                            }
+
+                            if (plan.Entries.Count != 1
+                                || !RewardInventoryRollback.CanRestore(
+                                    plan.Entries[0]))
+                            {
+                                return DailyChallengeRewardClaimResult.Rejected(
+                                    DailyChallengeRewardClaimStatus.RewardUnavailable,
                                     groupIndex,
                                     snapshot,
                                     reward,
@@ -272,6 +443,30 @@ namespace DfoServer.Game.Quests
                         groupIndex,
                         snapshot);
                 }
+            }
+        }
+
+        private static bool TryLoadOwnedCharacterLevel(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            int characterId,
+            int accountId,
+            out int characterLevel)
+        {
+            characterLevel = 0;
+            using (var command = new SqliteCommand(@"
+SELECT level
+FROM characters
+WHERE character_id = @cid AND account_id = @aid;", connection, transaction))
+            {
+                command.Parameters.AddWithValue("@cid", characterId);
+                command.Parameters.AddWithValue("@aid", accountId);
+                var value = command.ExecuteScalar();
+                if (value == null || value == DBNull.Value)
+                    return false;
+
+                characterLevel = Convert.ToInt32(value);
+                return characterLevel > 0;
             }
         }
 
@@ -375,6 +570,11 @@ namespace DfoServer.Game.Quests
         internal short SlotIndex { get; private set; }
         internal ItemCore PreviousItem { get; private set; }
         internal VirtualCountItem PreviousVirtualCount { get; private set; }
+
+        internal static bool CanRestore(InventoryRewardGrantPlanEntry entry) =>
+            entry != null
+            && (entry.Kind == InventoryRewardGrantKind.InventoryItem
+                || entry.Kind == InventoryRewardGrantKind.MainVirtualCount);
 
         internal static RewardInventoryRollback Capture(
             InventoryService inventory,

@@ -11,6 +11,7 @@ using DfoServer.Game.Inventory;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.Game.Session;
 using DfoServer.Infrastructure;
+using DfoServer.Network;
 using DfoServer.Network.Builders;
 using DfoServer.Network.Handlers;
 using DfoServer.Network.Parsers.Quest;
@@ -256,7 +257,7 @@ namespace DfoServer.Game.Quests
             if (_dailyChallengeService.TryHandleSetTrigger(cid, qBody, out var dailyChallenge))
             {
                 await _sender.SendNotiAsync(
-                    0x0286,
+                    (ushort)NotiPacketTypeA21.DAILY_CHALLENGE,
                     DailyChallengeBodyBuilder.Build(dailyChallenge.Snapshot));
                 return dailyChallenge.Ack;
             }
@@ -295,8 +296,7 @@ namespace DfoServer.Game.Quests
             }
 
             var groupIndex = BitConverter.ToInt32(body, 0);
-            if (!InventoryContext.TryGetLease(characterId, out var lease)
-                || !lease.IsOwnedBy(sessionId))
+            if (!InventoryContext.TryGetOwnedLease(sessionId, characterId, out var lease))
             {
                 return DailyChallengeRewardClaimResult.Rejected(
                     DailyChallengeRewardClaimStatus.InvalidRequest,
@@ -304,11 +304,14 @@ namespace DfoServer.Game.Quests
                     null);
             }
 
-            return _dailyChallengeService.ClaimReward(
+            var owner = new QuestCommandOwnerContext(
                 characterId,
-                _sender.Player?.Level ?? 0,
-                groupIndex,
+                _sender.AccountId,
+                sessionId,
                 lease);
+            return _dailyChallengeService.ClaimReward(
+                owner,
+                groupIndex);
         }
 
         public async Task HandleFinishQuestAsync(
@@ -334,6 +337,17 @@ namespace DfoServer.Game.Quests
             await _notifications.SendPreFinishAckNotificationsAsync(cid, result);
             await _sender.SendCmdAckAsync(wireType, QuestAckBuilder.BuildFinish(result));
             await _notifications.ProjectFinishedQuestAsync(cid, result);
+            if (result?.DailyChallengeSnapshot != null)
+            {
+                // The daily snapshot owns progress/claim state, while the
+                // standard clear list owns the completed marker rendered by
+                // the A21 button. Re-login already publishes both; keep the
+                // online claim projection convergent in the same order.
+                await _notifications.SendClearQuestListAsync();
+                await _sender.SendNotiAsync(
+                    (ushort)NotiPacketTypeA21.DAILY_CHALLENGE,
+                    DailyChallengeBodyBuilder.Build(result.DailyChallengeSnapshot));
+            }
         }
 
         public async Task HandleScenarioModeClearQuestAsync(

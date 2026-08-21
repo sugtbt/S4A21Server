@@ -783,7 +783,7 @@ namespace DfoServer.Network
                 s.GameSession?.QuestManager.HandleSaveQuestNotify(b);
                 return Task.CompletedTask;
             };
-            d[0x02BC] = async (s, h, b) =>
+            d[(ushort)CmdPacketTypeA21.DAILY_CHALLENGE_REWARD] = async (s, h, b) =>
             {
                 if (s.GameSession == null)
                     return;
@@ -817,7 +817,7 @@ namespace DfoServer.Network
                 {
                     await s.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
                         0x00,
-                        0x0286,
+                        (ushort)NotiPacketTypeA21.DAILY_CHALLENGE,
                         DailyChallengeBodyBuilder.Build(result.Snapshot)));
                 }
 

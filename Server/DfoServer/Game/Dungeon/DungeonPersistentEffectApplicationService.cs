@@ -19,6 +19,8 @@ namespace DfoServer.Game.Dungeon
             "settlement-score-experience-adjustment";
         internal const string SuitableDungeonLuckyStar =
             "suitable-dungeon-lucky-star";
+        internal const string SuitableDungeonDailyChallenge =
+            "suitable-dungeon-daily-challenge";
         internal const string TowerOfDespairSettlementCommit =
             "tower-of-despair-settlement-commit";
         internal const string CardRewardFreeCommit =

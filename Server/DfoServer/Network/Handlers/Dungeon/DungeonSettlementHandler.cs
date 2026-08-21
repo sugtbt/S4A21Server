@@ -501,6 +501,30 @@ namespace DfoServer.Network.Handlers.Dungeon
                     return false;
                 }
 
+                if (DungeonClearPresentationPolicy
+                        .UsesCommonExperienceAuthority(
+                            clearFact.PresentationKind)
+                    && !await ExecuteSettlementEffectAsync(
+                        session,
+                        run,
+                        identity,
+                        DungeonPersistentEffectKinds.SuitableDungeonDailyChallenge,
+                        async () =>
+                        {
+                            if (!await ApplySuitableDungeonDailyChallenge(
+                                    session,
+                                    run,
+                                    settlement.PreviousLevel))
+                            {
+                                throw new InvalidOperationException(
+                                    "Suitable-dungeon daily challenge persistence failed.");
+                            }
+                        }))
+                {
+                    run.Effects.TryFail(authoritativeReservation);
+                    return false;
+                }
+
                 _svc.PersistentMechanisms.ConfigureLinkedChallenge(run);
                 if (!await ExecuteSettlementEffectAsync(
                         session,
@@ -2580,6 +2604,71 @@ namespace DfoServer.Network.Handlers.Dungeon
                     $"stars={result.NewTotal} {ex.Message}");
             }
             return true;
+        }
+
+        private async Task<bool> ApplySuitableDungeonDailyChallenge(
+            EnhancedClientSession session,
+            DungeonRun run,
+            int clearLevel)
+        {
+            if (run == null
+                || !session.Player.IsCurrentDungeonRun(run.CaptureIdentity()))
+            {
+                return false;
+            }
+
+            var characterId = session.Player.CharacterId;
+            if (characterId <= 0)
+                return true;
+
+            try
+            {
+                var sourceEventId = run.GetSettlementSourceEventId();
+                var result = _svc.DailyChallenges.ApplySuitableDungeonClear(
+                    characterId,
+                    run.DungeonId,
+                    run.Difficulty,
+                    clearLevel,
+                    sourceEventId);
+                if (!result.HasRelevantProgress)
+                    return true;
+                if (!session.Player.IsCurrentDungeonRun(run.CaptureIdentity()))
+                    return false;
+
+                // A committed snapshot is the recovery path when a previous
+                // notification failed after persistence. Publish it before the
+                // edge-triggered clear notification so reconnect/retry converges.
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketTypeA21.DAILY_CHALLENGE,
+                    DailyChallengeBodyBuilder.Build(result.Snapshot)));
+
+                if (result.ChangedEntries > 0)
+                {
+                    if (!session.Player.IsCurrentDungeonRun(run.CaptureIdentity()))
+                        return false;
+
+                    var completionToken = DailyChallengeClearDungeonBodyBuilder
+                        .ResolveCompletionToken(sourceEventId);
+                    await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                        0x00,
+                        (ushort)NotiPacketTypeA21.DAILY_CHALLENGE_CLEAR_DUNGEON,
+                        DailyChallengeClearDungeonBodyBuilder.Build(completionToken)));
+                    FileLogger.Log(
+                        $"[DungeonHandler] DAILY_CHALLENGE clear noti "
+                        + $"cid={characterId} dungeon={run.DungeonId} "
+                        + $"event={sourceEventId:N} token={completionToken}");
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] DAILY_CHALLENGE suitable clear ERROR: "
+                    + $"char={characterId} dungeon={run.DungeonId} "
+                    + $"difficulty={run.Difficulty} level={clearLevel} {ex.Message}");
+                return false;
+            }
         }
     }
 }

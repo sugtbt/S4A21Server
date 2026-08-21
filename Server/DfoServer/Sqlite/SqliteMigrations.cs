@@ -19,6 +19,7 @@ namespace DfoServer.Sqlite
                 new MigrationStep(3, "import_character_new_items", ApplyImportCharacterNewItems),
                 new MigrationStep(4, "add_item_purchase_limits", ApplyPurchaseLimitTracking),
                 new MigrationStep(5, "add_aura_skin_flag", ApplyAuraSkinFlag),
+                new MigrationStep(6, "add_daily_challenge_entry_claims", ApplyDailyChallengeEntryClaims),
             };
 
         internal static int CurrentVersion =>
@@ -126,6 +127,37 @@ ON CONFLICT(singleton_id) DO UPDATE SET
             SqliteTransaction transaction)
         {
             ImportCharacterNewItems(connection, transaction, shiftEquipmentSlots: true, dropSourceTable: true);
+        }
+
+        private static void ApplyDailyChallengeEntryClaims(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            ExecuteSql(connection, transaction, @"
+CREATE TABLE IF NOT EXISTS character_daily_challenge_entry_claims (
+    character_id INTEGER NOT NULL,
+    group_index INTEGER NOT NULL CHECK (group_index >= 0 AND group_index < 6),
+    entry_index INTEGER NOT NULL CHECK (entry_index >= 0),
+    quest_id INTEGER NOT NULL CHECK (quest_id > 0),
+    claimed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (character_id, group_index, entry_index),
+    FOREIGN KEY (character_id, group_index, entry_index)
+        REFERENCES character_daily_challenge_entries(character_id, group_index, entry_index)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS character_daily_challenge_progress_events (
+    character_id INTEGER NOT NULL,
+    source_event_id TEXT NOT NULL,
+    group_index INTEGER NOT NULL,
+    entry_index INTEGER NOT NULL,
+    quest_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (character_id, source_event_id, group_index, entry_index),
+    FOREIGN KEY (character_id, group_index, entry_index)
+        REFERENCES character_daily_challenge_entries(character_id, group_index, entry_index)
+        ON DELETE CASCADE
+);");
         }
 
         private static void ApplyPurchaseLimitTracking(

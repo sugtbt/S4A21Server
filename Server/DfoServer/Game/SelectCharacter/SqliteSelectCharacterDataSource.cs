@@ -39,6 +39,7 @@ namespace DfoServer.Game.SelectCharacter
         private readonly Infrastructure.IGameDatabase _database;
         private readonly string _connectionString;
         private readonly IRentalTimeProvider _rentalTimeProvider;
+        private readonly Quests.DailyChallengeService _dailyChallengeService;
 
         public SqliteSelectCharacterDataSource(
             string databasePath,
@@ -91,6 +92,9 @@ namespace DfoServer.Game.SelectCharacter
             _goldLimitRepository = new CharacterGoldLimitRepository(database);
             _dungeonDifficultyPermissions =
                 new DungeonDifficultyPermissionService(database);
+            _dailyChallengeService = new Quests.DailyChallengeService(
+                _connectionString,
+                _dailyResetService);
         }
 
         public int GetSeedCharacterId()
@@ -237,6 +241,7 @@ namespace DfoServer.Game.SelectCharacter
             SanitizeDarkKnightComboSkillInfo(initSnapshot);
             initSnapshot.CreatureItemList = LoadCreatureItemListSnapshot(characterId);
 
+            _dailyChallengeService.EnsureInitialized(characterId);
             _initFlagsRepository.LoadAll(characterId, initSnapshot);
             var loginPermissions = _dungeonDifficultyPermissions
                 .BuildLoginPermissions(

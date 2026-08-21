@@ -178,7 +178,8 @@ namespace DfoServer.Game.CharacterData
                     }
                 }
 
-                snapshot.DailyChallengeRewardClaimFlags = new byte[6];
+                snapshot.DailyChallengeRewardClaimFlags = new byte[
+                    SelectCharacterInitializationSnapshot.DailyChallengeClaimFlagCount];
                 using (var cmd = new SqliteCommand(
                     "SELECT group_index FROM character_daily_challenge_claims WHERE character_id = @cid ORDER BY group_index", conn))
                 {
@@ -542,62 +543,11 @@ ORDER BY sort_order;",
                     Game.Quests.QuestRepository.ReplaceAllClearedFlags(conn, tx, characterId,
                         snapshot.CharacInvisibleFalgs.ConvertAll(
                             entry => new KeyValuePair<int, int>(entry.SlotIndex, entry.FlagValue)));
-                    using (var cmd = new SqliteCommand("DELETE FROM character_daily_challenge_groups WHERE character_id = @cid", conn, tx))
-                    {
-                        cmd.Parameters.AddWithValue("@cid", characterId);
-                        cmd.ExecuteNonQuery();
-                    }
-                    using (var cmd = new SqliteCommand("DELETE FROM character_daily_challenge_entries WHERE character_id = @cid", conn, tx))
-                    {
-                        cmd.Parameters.AddWithValue("@cid", characterId);
-                        cmd.ExecuteNonQuery();
-                    }
-                    using (var cmd = new SqliteCommand("DELETE FROM character_daily_challenge_tail_ids WHERE character_id = @cid", conn, tx))
-                    {
-                        cmd.Parameters.AddWithValue("@cid", characterId);
-                        cmd.ExecuteNonQuery();
-                    }
 
-                    var racingGroups = snapshot.RacingDungeonGroups;
-                    for (int i = 0; i < racingGroups.Count; i++)
-                    {
-                        using (var cmd = new SqliteCommand(
-                            "INSERT INTO character_daily_challenge_groups (character_id, group_index, group_id) VALUES (@cid, @gi, @gid)", conn, tx))
-                        {
-                            cmd.Parameters.AddWithValue("@cid", characterId);
-                            cmd.Parameters.AddWithValue("@gi", i);
-                            cmd.Parameters.AddWithValue("@gid", (long)racingGroups[i].GroupId);
-                            cmd.ExecuteNonQuery();
-                        }
-                        var entries = racingGroups[i].Entries;
-                        for (int j = 0; j < entries.Count; j++)
-                        {
-                            using (var cmd = new SqliteCommand(
-                                "INSERT INTO character_daily_challenge_entries (character_id, group_index, entry_index, track_like_id, value_a, value_b) VALUES (@cid, @gi, @ei, @tid, @va, @vb)", conn, tx))
-                            {
-                                cmd.Parameters.AddWithValue("@cid", characterId);
-                                cmd.Parameters.AddWithValue("@gi", i);
-                                cmd.Parameters.AddWithValue("@ei", j);
-                                cmd.Parameters.AddWithValue("@tid", (long)entries[j].TrackLikeId);
-                                cmd.Parameters.AddWithValue("@va", (long)entries[j].ValueA);
-                                cmd.Parameters.AddWithValue("@vb", (long)entries[j].ValueB);
-                                cmd.ExecuteNonQuery();
-                            }
-                        }
-                    }
-
-                    var tailIds = snapshot.RacingDungeonTailIds;
-                    for (int i = 0; i < tailIds.Count; i++)
-                    {
-                        using (var cmd = new SqliteCommand(
-                            "INSERT INTO character_daily_challenge_tail_ids (character_id, sort_order, id_value) VALUES (@cid, @ord, @v)", conn, tx))
-                        {
-                            cmd.Parameters.AddWithValue("@cid", characterId);
-                            cmd.Parameters.AddWithValue("@ord", i);
-                            cmd.Parameters.AddWithValue("@v", (long)tailIds[i]);
-                            cmd.ExecuteNonQuery();
-                        }
-                    }
+                    // DailyChallengeRepository is the ledger owner. Generic
+                    // init-flag saves (notably tutorial flag 31) must not
+                    // replace entries: deleting them cascades entry claims and
+                    // source-event dedup records from schema v6.
 
                     tx.Commit();
                 }

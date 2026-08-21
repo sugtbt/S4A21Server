@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using DfoServer.Game.Inventory;
+using DfoServer.Game.SelectCharacter;
 
 namespace DfoServer.Game.Quests
 {
@@ -78,9 +79,9 @@ namespace DfoServer.Game.Quests
         public ulong TotalHonorExp;
         public uint GrowthCapsuleExp;
         public uint TotalGrowthCapsuleExp;
-        // A21 captures keep the 4B field after Exp at zero. Quest gold is
-        // projected only through an inserted reward entry with ItemId=0.
-        public uint ReservedAfterExperience;
+        // A21 客户端把 Exp 后的 UInt32 继续投影为任务完成事件次数。
+        // 金币只通过后续 ItemId=0 的奖励条目下发，不能占用该字段。
+        public uint CompletionCount;
         // 经验结算后的等级与总经验(与奖励同一事务已落库; Exp 为 0 时等于结算前取值)。
         public byte NewLevel;
         public uint NewExp;
@@ -96,6 +97,7 @@ namespace DfoServer.Game.Quests
         // chainType 1/2 在 chain+reserved 后、chainType 20 在 chain+growNumber 后
         // 写当前角色自己的两页压缩技能。
         public List<QuestFinishSkillPage> SkillPages = new List<QuestFinishSkillPage>();
+        internal SelectCharacterInitializationSnapshot DailyChallengeSnapshot;
 
         public bool Success => ErrorCode == 0;
 
@@ -108,8 +110,6 @@ namespace DfoServer.Game.Quests
         public byte UpdateType;
         public ushort SlotIndex;
         public uint ConsumedCount;
-        // All current A21 FINISH_QUEST capture samples keep this byte at zero.
-        public byte ReservedTail;
     }
 
     public sealed class QuestFinishSkillEntry

@@ -499,6 +499,20 @@ namespace DfoServer.Network.Handlers.Dungeon
                     return false;
             }
 
+            if (advancesQuestObjectives
+                && killedMonsterType == 3
+                && run.RewardPolicy.AllowsQuestProgress)
+            {
+                await ApplySuitableDungeonBossKillChallengeAsync(
+                    session,
+                    run,
+                    context.Envelope,
+                    killedMonsterCode,
+                    killedMonsterType);
+                if (!IsCurrent(run, context.Envelope))
+                    return false;
+            }
+
             var appliesGeneralMechanisms = dynamicActor == null
                 || dynamicActor.Policy.AppliesGeneralMechanisms;
             var mechanismKill = default(DungeonMechanismCoordinator.ClearRequest);
@@ -626,6 +640,65 @@ namespace DfoServer.Network.Handlers.Dungeon
             }
 
             return true;
+        }
+
+        private async Task ApplySuitableDungeonBossKillChallengeAsync(
+            EnhancedClientSession session,
+            DungeonRun run,
+            DungeonEventEnvelope source,
+            int monsterCode,
+            byte monsterType)
+        {
+            var characterId = session?.Player?.CharacterId ?? 0;
+            if (characterId <= 0
+                || run == null
+                || source == null
+                || source.SourceEventId == Guid.Empty
+                || !IsCurrent(run, source))
+            {
+                return;
+            }
+
+            try
+            {
+                var result = _services.DailyChallenges
+                    .ApplySuitableDungeonBossKill(
+                        characterId,
+                        run.DungeonId,
+                        run.Difficulty,
+                        session.Player.Level,
+                        monsterCode,
+                        monsterType,
+                        source.SourceEventId);
+                if (!result.HasRelevantProgress || !IsCurrent(run, source))
+                    return;
+
+                // Boss-kill challenges are snapshot state in A21. Unlike a
+                // successful dungeon clear, they do not consume the 0x0287
+                // edge-triggered completion notification.
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketTypeA21.DAILY_CHALLENGE,
+                    DailyChallengeBodyBuilder.Build(result.Snapshot)));
+                FileLogger.Log(
+                    $"[DungeonKill] DAILY_CHALLENGE boss kill noti "
+                    + $"cid={characterId} dungeon={run.DungeonId} "
+                    + $"monster={monsterCode} event={source.SourceEventId:N} "
+                    + $"changed={result.ChangedEntries}");
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[DungeonKill] DAILY_CHALLENGE boss kill ERROR: "
+                    + $"cid={characterId} dungeon={run.DungeonId} "
+                    + $"monster={monsterCode} event={source.SourceEventId:N} "
+                    + ex.Message);
+                // Preserve the canonical actor-death fact but fail this
+                // participant-effect attempt. Recovery replays the same stable
+                // source id, so a committed DB update is not counted twice and
+                // a failed update is not silently lost.
+                throw;
+            }
         }
 
         private static IReadOnlyList<DropInfo> MergeDrops(

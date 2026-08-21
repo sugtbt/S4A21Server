@@ -142,6 +142,115 @@ namespace DfoServer.GameWorld
             return NormalizeQuestTag(GetQuestFile(questId)?.Grade) == "challenge";
         }
 
+        internal static bool TryGetSuitableDungeonClearChallengeRule(
+            int questId,
+            out int minimumDifficulty)
+        {
+            minimumDifficulty = -1;
+            if (!IsDailyChallengeQuest(questId))
+                return false;
+
+            var quest = GetQuestFile(questId);
+            if (quest == null
+                || NormalizeQuestTag(quest.Type) != "condition under clear"
+                || quest.SubType != 6)
+            {
+                return false;
+            }
+
+            var values = ParseIntList(quest.IntData);
+            if (values.Count < 3 || values[0] != -3 || values[values.Count - 1] <= 0)
+                return false;
+
+            minimumDifficulty = values[1];
+            return true;
+        }
+
+        internal static bool TryGetSuitableDungeonBossKillChallengeRule(
+            int questId,
+            out int minimumDifficulty,
+            out int targetCount)
+        {
+            minimumDifficulty = -1;
+            targetCount = 0;
+            if (!IsDailyChallengeQuest(questId))
+                return false;
+
+            var quest = GetQuestFile(questId);
+            if (quest == null
+                || NormalizeQuestTag(quest.Type) != "hunt monster")
+            {
+                return false;
+            }
+
+            // The frozen A21 challenge catalog uses a four-int hunt target:
+            //   dungeon=-3, minimumDifficulty, monster=-3, requiredCount
+            // The first -3 scopes the event to a recommended-level dungeon;
+            // the monster -3 is the existing "any boss" selector.
+            var values = ParseIntList(quest.IntData);
+            const int stride = 4;
+            for (var offset = 0; offset + stride <= values.Count; offset += stride)
+            {
+                if (values[offset] != -3
+                    || values[offset + 1] < -1
+                    || values[offset + 2]
+                        != HuntMonsterQuestTarget.AnyBossMonsterCode
+                    || values[offset + 3] <= 0)
+                {
+                    continue;
+                }
+
+                minimumDifficulty = values[offset + 1];
+                targetCount = values[offset + 3];
+                return true;
+            }
+
+            return false;
+        }
+
+        internal static bool TryGetQuestCompletionChallengeRule(
+            int questId,
+            out int gradeSelector,
+            out int targetCount)
+        {
+            gradeSelector = int.MinValue;
+            targetCount = 0;
+            if (!IsDailyChallengeQuest(questId))
+                return false;
+
+            var quest = GetQuestFile(questId);
+            if (quest == null
+                || NormalizeQuestTag(quest.Type) != "clear quest by grade")
+            {
+                return false;
+            }
+
+            var values = ParseIntList(quest.IntData);
+            if (values.Count < 2 || values[1] <= 0)
+                return false;
+
+            gradeSelector = values[0];
+            targetCount = values[1];
+            return true;
+        }
+
+        internal static bool MatchesQuestGradeSelector(
+            int gradeSelector,
+            string normalizedGrade)
+        {
+            normalizedGrade = NormalizeQuestTag(normalizedGrade);
+            if (normalizedGrade == "challenge")
+                return false;
+            if (gradeSelector < 0)
+                return true;
+
+            // Current A21 PVF uses selector 0 for challenges named
+            // "完成...个主线". Mainline quests have grade [epic]. No other
+            // non-negative selector exists in the frozen challenge catalog;
+            // unknown future selectors stay fail-closed until evidenced.
+            return gradeSelector == 0 && normalizedGrade == "epic";
+        }
+
         public static bool IsTitleRewardQuest(int questId)
         {
             var qst = GetQuestFile(questId);
@@ -475,6 +584,12 @@ namespace DfoServer.GameWorld
             int typeCode = MapTypeString(qst.Type);
             string typeTag = NormalizeQuestTag(qst.Type);
 
+            if (NormalizeQuestTag(qst.Grade) == "challenge"
+                && TryComputeDailyChallengeInitTrigger(qst, typeTag, out var challengeTrigger))
+            {
+                return challengeTrigger;
+            }
+
             if (IsSeekAndMeetNpcQuest(qst))
                 return ComputeSeekAndMeetNpcInitTrigger(qst.IntData);
 
@@ -511,6 +626,50 @@ namespace DfoServer.GameWorld
             }
 
             return 1;
+        }
+
+        private static bool TryComputeDailyChallengeInitTrigger(
+            QuestFile qst,
+            string typeTag,
+            out uint trigger)
+        {
+            trigger = 0;
+            var checkCountNode = qst.Root?.GetChild("check count");
+            if (checkCountNode != null)
+            {
+                var checkCounts = ParseIntList(
+                    checkCountNode.GetFirstDataContent(qst.Content));
+                if (checkCounts.Count > 0 && checkCounts[0] > 0)
+                {
+                    trigger = (uint)checkCounts[0];
+                    return true;
+                }
+            }
+
+            var values = ParseIntList(qst.IntData);
+            switch (typeTag)
+            {
+                case "clear quest by grade":
+                case "use skill":
+                    if (values.Count >= 2 && values[1] > 0)
+                    {
+                        trigger = (uint)values[1];
+                        return true;
+                    }
+                    break;
+
+                case "condition under clear":
+                    if (qst.SubType == 6
+                        && values.Count >= 3
+                        && values[values.Count - 1] > 0)
+                    {
+                        trigger = (uint)values[values.Count - 1];
+                        return true;
+                    }
+                    break;
+            }
+
+            return false;
         }
 
         internal static uint ReplaceTriggerChannel(uint trigger, int channelIndex, long value)

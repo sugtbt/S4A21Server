@@ -5,7 +5,7 @@ namespace DfoServer.Network.Builders
 {
     public sealed class DailyChallengeBodyBuilder : IInitPacketBuilder
     {
-        public ushort NotiType => 0x0286;
+        public ushort NotiType => (ushort)NotiPacketTypeA21.DAILY_CHALLENGE;
 
         public bool TryBuild(SelectCharacterDataSnapshot snapshot, int occurrenceIndex, out byte[] body)
         {
@@ -28,15 +28,17 @@ namespace DfoServer.Network.Builders
             init ??= new SelectCharacterInitializationSnapshot();
             var groups = init.RacingDungeonGroups;
             var groupFlags = NormalizeClaimFlags(init.DailyChallengeRewardClaimFlags);
-            var tailIds = init.RacingDungeonTailIds;
 
             var groupCount = groups?.Count ?? 0;
             var totalEntries = 0;
             for (var i = 0; i < groupCount; i++)
                 totalEntries += groups[i].Entries.Count;
-            var tailIdCount = tailIds?.Count ?? 0;
 
-            var size = 4 + 4 + groupCount * 8 + totalEntries * 12 + 4 + groupFlags.Length + 4 + tailIdCount * 4;
+            // A21 DNF.exe SHA256 1F8244... handler 0x01170F00 reads the
+            // claim-flag vector and returns immediately.  Its state updater
+            // 0x00884FB0 rejects any vector whose length is not exactly five.
+            // The migrated A12 sixth special flag and tail list are not A21 wire.
+            var size = 4 + 4 + groupCount * 8 + totalEntries * 12 + 4 + groupFlags.Length;
             var body = new byte[size];
 
             var offset = 0;
@@ -65,22 +67,14 @@ namespace DfoServer.Network.Builders
             Buffer.BlockCopy(BitConverter.GetBytes((uint)groupFlags.Length), 0, body, offset, 4);
             offset += 4;
             Buffer.BlockCopy(groupFlags, 0, body, offset, groupFlags.Length);
-            offset += groupFlags.Length;
-
-            Buffer.BlockCopy(BitConverter.GetBytes((uint)tailIdCount), 0, body, offset, 4);
-            offset += 4;
-            for (var i = 0; i < tailIdCount; i++)
-            {
-                Buffer.BlockCopy(BitConverter.GetBytes(tailIds[i]), 0, body, offset, 4);
-                offset += 4;
-            }
 
             return body;
         }
 
         private static byte[] NormalizeClaimFlags(byte[] source)
         {
-            var flags = new byte[6];
+            var flags = new byte[
+                SelectCharacterInitializationSnapshot.DailyChallengeClaimFlagCount];
             if (source == null)
                 return flags;
 
