@@ -74,6 +74,7 @@ namespace DfoServer.Game.SelectCharacter
             Raw(0x00, 0x03D8);                      
             Raw(0x00, 0x025B);                      
             Raw(0x00, 0x0331);                      
+            Raw(0x00, (ushort)NotiPacketTypeA21.UPGRADE_CARRY_GOLD);
             Raw(0x00, 0x01EB);                      
             Raw(0x00, 0x0061);                      
             Raw(0x00, 0x0158);                      
