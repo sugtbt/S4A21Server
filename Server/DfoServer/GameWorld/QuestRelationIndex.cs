@@ -193,9 +193,34 @@ namespace DfoServer.GameWorld
             }
 
             var jobChangeQuest = quest.JobChangeQuestValue;
-            if (jobChangeQuest == 2 || jobChangeQuest == 3)
+            var firstGrow = growType & 0xF;
+            var secondGrow = (growType >> 4) & 0xF;
+            if (jobChangeQuest == 1
+                && QuestData.IsCareerTransferQuest(quest)
+                && firstGrow != 0)
             {
-                var firstGrow = growType & 0xF;
+                // A GM may change the persisted profession without clearing
+                // the old final transfer quest. The quest is no longer a
+                // valid stage once the character already has a first grow.
+                return false;
+            }
+
+            if (jobChangeQuest == 2)
+            {
+                // First awakening is available only after transfer and before
+                // the first awakening high nibble is recorded.
+                if (firstGrow <= 0 || secondGrow != 0)
+                    return false;
+                if (quest.GrowType != -1 && quest.GrowType != firstGrow)
+                    return false;
+            }
+            else if (jobChangeQuest == 3)
+            {
+                // Second awakening is available only after first awakening and
+                // must disappear as soon as the second high-nibble stage is
+                // persisted.
+                if (firstGrow <= 0 || secondGrow != 1)
+                    return false;
                 if (quest.GrowType != -1 && quest.GrowType != firstGrow)
                     return false;
             }

@@ -3,6 +3,7 @@ using DfoServer.Game.Appearance;
 using DfoServer.Game.Characters;
 using DfoServer.Game.Dungeon;
 using DfoServer.Game.ExpertJob;
+using DfoServer.Game.Friends;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.KnightShield;
 using DfoServer.Game.Lottery;
@@ -238,6 +239,7 @@ namespace DfoServer.Network
             _cmdDispatch.RegisterGroup(
                 "shop-coin-event",
                 d => d[0x00CF] = _shopCoinEventHandler.HandleShopCoinEvent);
+            _cmdDispatch.RegisterGroup("friend", RegisterFriendHandlers);
         }
 
         public void Dispose()
@@ -431,7 +433,16 @@ namespace DfoServer.Network
             d[0x001A] = _inventoryHandler.Handle_ENUM_CMDPACKET_DISJOINT_ITEM;     //26 系统分解
             d[0x00CA] = _inventoryHandler.Handle_DISJOINT_AVATAR;                  //202 时装分解
             d[0x001B] = _lotteryItemHandler.HandleUseLotteryItem;                 //27
-            d[(ushort)CmdPacketType.INCREASE_STATUS] = _inventoryHandler.Handle_ENUM_CMDPACKET_INCREASE_STATUS;
+            d[(ushort)CmdPacketType.INCREASE_STATUS] = async (s, h, b) =>
+            {
+                var prevLevel = s.Player?.Level;
+                await _inventoryHandler.Handle_ENUM_CMDPACKET_INCREASE_STATUS(s, h, b);
+                // 经验道具(INCREASE_STATUS)可能升级：前后比较 Level，
+                // 升级则向把 self 加为好友的人重推好友列表（节点数据，不分频道）。
+                if (s.Player != null && s.Player.Level != prevLevel)
+                    await UnitedFriendSystem.NotifyFriendListInfoChanged(
+                        s, _worldDependencies.Sessions);
+            };
             d[(ushort)CmdPacketTypeA21.REQUEST_EVENT_SERVER_LEVEL_UP] =
                 _inventoryHandler.Handle_REQUEST_EVENT_SERVER_LEVEL_UP;
             d[0x00CC] = _inventoryHandler.Handle_ENUM_CMDPACKET_PURIFY_ITEM;
@@ -865,6 +876,19 @@ namespace DfoServer.Network
             d[(ushort)CmdPacketTypeA21.MERCENARY_COMPETITION] = _mercenaryExpeditionHandler.HandleCompetition;
             d[(ushort)CmdPacketTypeA21.REQUEST_CHARAC_SKILL_INFO] = _mercenaryHandler.HandleMercenaryRequest;
             d[(ushort)CmdPacketTypeA21.SELECT_STRIKER] = _mercenaryHandler.HandleMercenaryRequest;
+        }
+
+        // 好友：0x0122 ADD / 0x0123 DELETE（UnitedFriendSystem 聚合处理器）。
+        // 处理器需会话目录（推在线好友通知/组列表），取 world 依赖绑定的同目录。
+        private void RegisterFriendHandlers(
+            GameCommandRegistry.GameCommandRegistrationGroup d)
+        {
+            d[(ushort)CmdPacketTypeA21.ADD_UNITED_SERVER_FRIEND] =
+                (s, h, b) => UnitedFriendSystem.HandleAddUnitedServerFriend(
+                    s, h, b, _worldDependencies.Sessions);
+            d[(ushort)CmdPacketTypeA21.DELETE_UNITED_SERVER_FRIEND] =
+                (s, h, b) => UnitedFriendSystem.HandleDeleteUnitedServerFriend(
+                    s, h, b, _worldDependencies.Sessions);
         }
 
         private void RegisterMiscHandlers(GameCommandRegistry.GameCommandRegistrationGroup d)

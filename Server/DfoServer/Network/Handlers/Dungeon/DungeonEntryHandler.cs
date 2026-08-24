@@ -2,6 +2,7 @@ using DfoServer.Game.Accounts;
 using DfoServer.Game.CharacterData;
 using DfoServer.Game.Characters;
 using DfoServer.Game.Dungeon;
+using DfoServer.Game.Friends;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.Quests;
 using DfoServer.Game.SelectCharacter;
@@ -189,6 +190,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                         $"area={anchor.AreaId} pos=({anchor.X},{anchor.Y})");
                 }
                 session.Player.UserState = 0x01;
+                // 进本 → 状态繁忙：同频道在线好友推 USERINFO(0x0002) 更新场景实体状态。
+                await UnitedFriendSystem.NotifyUserStateChanged(
+                    session, _svc.Sessions);
 
                 // NOTI 0x0002 subtype1 (ADDITION): dynamically built from structured table (same path as init flow)
                 int cid = session.Player.CharacterId;
@@ -774,6 +778,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                     return;
                 }
                 RegisterActiveParticipant(session, towerRun);
+                // 城镇残留白影：塔进本提交后离开城镇，向旧区域广播不含离开者的名册清残留白影。
+                await NotifyTownAreaRosterDepartureAsync(session);
                 await SendEntryCostUpdates(
                     session,
                     towerRunIdentity,
@@ -985,6 +991,8 @@ namespace DfoServer.Network.Handlers.Dungeon
             if (!run.TryActivate())
                 throw new InvalidOperationException("Dungeon run could not enter the active state after selection.");
             RegisterActiveParticipant(session, run);
+            // 城镇残留白影：进本提交后离开城镇，向旧区域广播不含离开者的名册清残留白影。
+            await NotifyTownAreaRosterDepartureAsync(session);
 
             await SendEntryCostUpdates(
                 session,
@@ -1470,6 +1478,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                     if (!br.TryActivate())
                         throw new InvalidOperationException("Party member run could not enter the active state.");
                     RegisterActiveParticipant(bs, br);
+                    // 城镇残留白影：队员进本同样离开城镇，向旧区域广播不含离开者的名册清残留白影。
+                    await NotifyTownAreaRosterDepartureAsync(bs);
                     bs.Player.UserState = 0x01;
                     await SendDungeonSelectPacketsTo(bs, req, bossPos, selectedMazeIndex);
                     if (!leader.Player.IsCurrentDungeonRun(leaderRunIdentity))
@@ -1806,6 +1816,32 @@ namespace DfoServer.Network.Handlers.Dungeon
             return expectedSelection == null
                 || (session.Player.IsCurrentDungeonSelection(expectedSelection)
                     && !expectedSelection.IsReturning);
+        }
+
+        // 城镇残留白影修复(与切区域同一机制, 参照 86JP 已知协议验证, 见 TownAreaRosterDepartureNotifier):
+        // 进本提交后玩家离开城镇, 向旧区域(CurTownId/CurAreaId 仍是进本前城镇值)广播不含
+        // 离开者的权威名册, 移除其它玩家屏幕上冻结的城镇残影。CurrentRun 已置位 → 离开者被
+        // IsTownPresence 自然排除; 重复广播(如链式进本)名册不变, 幂等无害。
+        private async Task NotifyTownAreaRosterDepartureAsync(
+            EnhancedClientSession session)
+        {
+            if (session?.Player == null || session.Player.CharacterId <= 0)
+                return;
+            if (_svc.Sessions == null)
+                return;
+            try
+            {
+                await TownAreaRosterDepartureNotifier.NotifyOldAreaDepartureAsync(
+                    _svc.Sessions,
+                    session,
+                    session.Player.CurTownId,
+                    session.Player.CurAreaId);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] SELECT_DUNGEON area-leave roster notify failed cid={session.Player.CharacterId}: {ex.Message}");
+            }
         }
 
         private void RegisterActiveParticipant(

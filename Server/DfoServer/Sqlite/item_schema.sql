@@ -1029,6 +1029,21 @@ CREATE TABLE IF NOT EXISTS account_increase_chance_lottery_progress (
     FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
 );
 
+-- 好友关系表（UnitedFriendSystem，单向 A→B，见 Docs/好友系统服务端设计文档.md §2.2）。
+-- 键用角色名（非 character_id）：联合服好友可跨服，本服 characters 表不含对方角色；
+-- 且好友关系应存活于角色删除之后，不随 character 级联。
+-- 键与 characters.name 对齐：BINARY(默认) 大小写敏感——Abc 与 abc 是两个不同角色，
+-- NOCASE 会把它们当同一好友(内存字典同键/表 PK 冲突)。
+-- PK(owner_name, friend_name) 同时充当正向查询/唯一约束；friend_name 索引覆盖"谁把 X 加为好友"反向查询。
+CREATE TABLE IF NOT EXISTS united_friend_relations (
+    owner_name  TEXT NOT NULL,
+    friend_name TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (owner_name, friend_name)
+);
+CREATE INDEX IF NOT EXISTS idx_united_friend_relations_friend
+    ON united_friend_relations(friend_name);
+
 -- 服务端协议默认配置，不包含玩家账号或角色数据。
 INSERT OR IGNORE INTO get_userinfo_template (
     id,

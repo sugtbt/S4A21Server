@@ -1,5 +1,6 @@
 using DfoServer.Game.Inventory;
 using DfoServer.Game.SelectCharacter;
+using DfoServer.Game.Session;
 using DfoServer.Infrastructure;
 using System;
 using System.Collections.Generic;
@@ -13,11 +14,20 @@ namespace DfoServer.Network.Builders
         private readonly IGameDatabase _database;
 
         public InitPacketBuilderRegistry()
-            : this(GameDatabase.CreateDefault())
+            : this(GameDatabase.CreateDefault(), null)
         {
         }
 
         public InitPacketBuilderRegistry(IGameDatabase database)
+            : this(database, null)
+        {
+        }
+
+        // sessions 供 UnitedServerFriendInfoBodyBuilder 按 CharacterId 反查 self 会话，
+        // 组真实好友列表（见 GenericBuilders.cs 该类注释）；null 时好友 init 走空态兜底。
+        public InitPacketBuilderRegistry(
+            IGameDatabase database,
+            ISessionDirectory sessions)
         {
             _database = database ?? throw new ArgumentNullException(nameof(database));
             var collectBoxProgressRepository = new CollectBoxProgressRepository(
@@ -87,7 +97,7 @@ namespace DfoServer.Network.Builders
             Register(new UserPositionBodyBuilder());
             Register(new CeraBodyBuilder());
             Register(new PetCreatureWelcomeMessageBodyBuilder());
-            Register(new UnitedServerFriendInfoBodyBuilder());
+            Register(new UnitedServerFriendInfoBodyBuilder(sessions));
             Register(new WeddingInfoBodyBuilder());
             Register(new StrikerSupportTagCharacterBodyBuilder(_database));
             RegisterCmd(new MercenaryInfoCmdBodyBuilder(_database));

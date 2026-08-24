@@ -194,7 +194,7 @@ namespace DfoServer.Network.Builders
                 writer.WriteByte(e.ObjectIndex);     // +0  passive object index
                 writer.WriteUInt16(e.GlobalSeq);     // +1  global sequence
                 writer.WriteUInt32(ResolveTemplateId(e.Core, e.ItemId));        // +3  item template id
-                writer.WriteUInt32(ResolveDropValue(e.Core, e.StackCount));    // +7  value/count
+                writer.WriteUInt32(ResolveValue(e.Core, e.StackCount));    // +7  value/count
                 writer.WriteUInt16(ResolveEndurance(e.Core, e.Endurance));     // +11 endurance
                 writer.WriteByte(e.Core != null ? e.Core.AmplifyType : (byte)0);                 // +13 amplify type
                 writer.WriteUInt16(e.Core != null ? e.Core.AmplifyValue : (ushort)0);               // +14 amplify value
@@ -262,25 +262,27 @@ namespace DfoServer.Network.Builders
             var dropCount = drops?.Count ?? 0;
             w.WriteByte((byte)dropCount);
 
-            var dropGroupId = ResolveDropGroupId(drops);
+            var dropUnixSeconds = ResolveDropUnixSeconds(drops);
 
             for (int i = 0; i < dropCount; i++)
             {
                 var d = drops[i];
-                w.WriteUInt16(d.SceneSlot);     // +0  sceneSlot
-                w.WriteUInt32(ResolveTemplateId(d.Core, d.TemplateId));    // +2  templateId (0=gold)
-                w.WriteByte(d.Core != null ? d.Core.Upgrade : d.UpgradeLevel);    // +6  upgradeLevel
-                // Ground-drop records carry the amount visible on the map.  For
-                // equipment this is the stack count (normally 1), not the
-                // inventory instance UID stored in ItemCore.Value.  A21's
-                // DIE_MONSTER reader consumes this field before it registers the
-                // local drop object used by GET_ITEM/pickup presentation.
-                w.WriteUInt32(d.StackCount);                              // +7  value/count
-                w.WriteZeroBytes(5);            // +11 reserved
-                w.WriteUInt32(dropGroupId);     // +16 A21 drop-group timestamp/id
-                w.WriteZeroBytes(24);           // +20 reserved
-                w.WriteUInt16(ownerActorId);    // +44 ownerActorId
-                w.WriteUInt16(0);                // +46 reserved
+                var core = d.Core;
+
+                w.WriteUInt16(d.SceneSlot);     // +0  instanceId
+                w.WriteUInt32(ResolveTemplateId(core, d.TemplateId));    // +2  itemId
+                w.WriteByte(core != null ? core.Upgrade : d.UpgradeLevel);    // +6  upgrade
+                // A21 的 value 字段直接投影 ItemCore.Value：
+                // 装备是品级/实例值，消耗品材料是数量，宠物/时装是 UID。
+                // 没有 Core 时，才退回地面记录的显示值。
+                w.WriteUInt32(ResolveValue(core, d.StackCount));         // +7  value
+                w.WriteUInt16(core != null ? core.Durability : d.Endurance);    // +11 durability
+                w.WriteByte(core != null ? core.AmplifyType : (byte)0);          // +13 amplifyType
+                w.WriteUInt16(core != null ? core.AmplifyValue : (ushort)0);     // +14 amplifyValue
+                w.WriteUInt32(dropUnixSeconds);                           // +16 dropUnixSeconds
+                w.WriteZeroBytes(24);                                     // +20 reserved
+                w.WriteUInt16(ownerActorId);                              // +44 ownerCharacterId
+                w.WriteUInt16(0);                                         // +46 reserved
             }
 
             // 末尾固定 4 字节
@@ -297,7 +299,7 @@ namespace DfoServer.Network.Builders
             return core != null && core.ItemId > 0 ? (uint)core.ItemId : fallback;
         }
 
-        private static uint ResolveDropGroupId(IReadOnlyList<DropInfo> drops)
+        private static uint ResolveDropUnixSeconds(IReadOnlyList<DropInfo> drops)
         {
             if (drops == null)
                 return 0;
@@ -311,15 +313,11 @@ namespace DfoServer.Network.Builders
             return 0;
         }
 
-        private static uint ResolveDropValue(ItemCore core, uint fallbackStackCount)
+        private static uint ResolveValue(ItemCore core, uint fallbackValue)
         {
-            if (core == null)
-                return fallbackStackCount;
-
-            if (!core.IsEquipmentItem())
-                return (uint)Math.Max(0, core.Count);
-
-            return unchecked((uint)core.Value);
+            return core == null
+                ? fallbackValue
+                : unchecked((uint)core.Value);
         }
 
         private static ushort ResolveEndurance(ItemCore core, ushort fallback)

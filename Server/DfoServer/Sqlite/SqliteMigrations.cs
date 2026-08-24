@@ -22,6 +22,7 @@ namespace DfoServer.Sqlite
                 new MigrationStep(6, "add_daily_challenge_entry_claims", ApplyDailyChallengeEntryClaims),
                 new MigrationStep(7, "add_character_item_states", ApplyCharacterItemStates),
                 new MigrationStep(8, "add_growup_change_count", ApplyGrowupChangeCount),
+                new MigrationStep(9, "add_united_friend_relations", ApplyUnitedFriendRelations),
             };
 
         internal static int CurrentVersion =>
@@ -207,6 +208,9 @@ GROUP BY character_id, list_kind, item_id;
 DROP TABLE character_item_values_legacy;");
         }
 
+        // 好友关系表（UnitedFriendSystem，单向 A→B）。键是角色名(BINARY 大小写敏感)，
+        // 见 item_schema.sql 同表注释；旧库升级路径经此迁移建表（IF NOT EXISTS 幂等，
+        // 新库由 item_schema.sql 已建，此处自动跳过）。
         private static void ApplyGrowupChangeCount(
             SqliteConnection connection,
             SqliteTransaction transaction)
@@ -217,6 +221,21 @@ DROP TABLE character_item_values_legacy;");
                 "characters",
                 "growup_change_count",
                 "INTEGER NOT NULL DEFAULT 0");
+        }
+
+        private static void ApplyUnitedFriendRelations(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            ExecuteSql(connection, transaction, @"
+CREATE TABLE IF NOT EXISTS united_friend_relations (
+    owner_name  TEXT NOT NULL,
+    friend_name TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (owner_name, friend_name)
+);
+CREATE INDEX IF NOT EXISTS idx_united_friend_relations_friend
+    ON united_friend_relations(friend_name);");
         }
 
         private static void ApplyPurchaseLimitTracking(

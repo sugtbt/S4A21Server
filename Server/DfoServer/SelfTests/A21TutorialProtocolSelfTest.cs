@@ -1749,6 +1749,42 @@ namespace DfoServer.SelfTests
                     clearedQuestIds: new HashSet<int> { 13099 },
                     clearedFlags: new Dictionary<int, int> { [13099] = 1 },
                     allowedCreatureKinds: new HashSet<int>());
+            var demonicLancerGiftAfterDuelist = QuestRelationIndex
+                .ComputeAcceptableQuests(
+                    characterLevel: 15,
+                    characterJob: 13,
+                    growType: 0,
+                    clearedQuestIds: new HashSet<int> { 13099, 2633 },
+                    clearedFlags: new Dictionary<int, int>
+                    {
+                        [13099] = 1,
+                        [2633] = 1,
+                    },
+                    allowedCreatureKinds: new HashSet<int>());
+            var demonicLancerGiftAfterVanguard = QuestRelationIndex
+                .ComputeAcceptableQuests(
+                    characterLevel: 15,
+                    characterJob: 13,
+                    growType: 0,
+                    clearedQuestIds: new HashSet<int> { 13099, 2634 },
+                    clearedFlags: new Dictionary<int, int>
+                    {
+                        [13099] = 1,
+                        [2634] = 1,
+                    },
+                    allowedCreatureKinds: new HashSet<int>());
+            var demonicLancerAfterTransfer = QuestRelationIndex
+                .ComputeAcceptableQuests(
+                    characterLevel: 15,
+                    characterJob: 13,
+                    growType: 1,
+                    clearedQuestIds: new HashSet<int> { 13099, 2633 },
+                    clearedFlags: new Dictionary<int, int>
+                    {
+                        [13099] = 1,
+                        [2633] = 1,
+                    },
+                    allowedCreatureKinds: new HashSet<int>());
             var darkKnightChoice = QuestRelationIndex.ComputeAcceptableQuests(
                 characterLevel: 15,
                 characterJob: 9,
@@ -1769,10 +1805,19 @@ namespace DfoServer.SelfTests
                 demonicLancerChoice.Contains(13099)
                 && demonicLancerTransfers.Contains(2633)
                 && demonicLancerTransfers.Contains(2634)
+                && demonicLancerGiftAfterDuelist.Contains(2637)
+                && demonicLancerGiftAfterVanguard.Contains(2637)
+                && !demonicLancerAfterTransfer.Contains(2634)
+                && demonicLancerAfterTransfer.Contains(2637)
                 && !darkKnightChoice.Contains(13099)
                 && !creatorChoice.Contains(13099)
                 && QuestRelationIndex.MeetsCharacterRestrictions(
                     2633,
+                    characterLevel: 15,
+                    characterJob: 13,
+                    growType: 0)
+                && QuestRelationIndex.MeetsCharacterRestrictions(
+                    2637,
                     characterLevel: 15,
                     characterJob: 13,
                     growType: 0)
@@ -1786,6 +1831,52 @@ namespace DfoServer.SelfTests
                     characterLevel: 15,
                     characterJob: 10,
                     growType: 0),
+                ref failures);
+
+            var firstAwakeningSample = QuestCatalog.OrderedIds
+                .Select(questId => new
+                {
+                    QuestId = questId,
+                    Quest = QuestData.GetQuestFile(questId),
+                })
+                .FirstOrDefault(entry => entry.Quest != null
+                    && entry.Quest.JobChangeQuestValue == 2
+                    && entry.Quest.GrowType >= 0
+                    && entry.Quest.Job == "[fighter]");
+            var secondAwakeningSample = QuestCatalog.OrderedIds
+                .Select(questId => new
+                {
+                    QuestId = questId,
+                    Quest = QuestData.GetQuestFile(questId),
+                })
+                .FirstOrDefault(entry => entry.Quest != null
+                    && entry.Quest.JobChangeQuestValue == 3
+                    && entry.Quest.GrowType >= 0
+                    && entry.Quest.Job == "[swordman]");
+            Check(
+                "PVF awakening quest stages follow persisted grow-type high nibble",
+                firstAwakeningSample != null
+                && secondAwakeningSample != null
+                && QuestRelationIndex.MeetsCharacterRestrictions(
+                    firstAwakeningSample.QuestId,
+                    characterLevel: 50,
+                    characterJob: 1,
+                    growType: firstAwakeningSample.Quest.GrowType)
+                && !QuestRelationIndex.MeetsCharacterRestrictions(
+                    firstAwakeningSample.QuestId,
+                    characterLevel: 50,
+                    characterJob: 1,
+                    growType: firstAwakeningSample.Quest.GrowType | 0x10)
+                && QuestRelationIndex.MeetsCharacterRestrictions(
+                    secondAwakeningSample.QuestId,
+                    characterLevel: 75,
+                    characterJob: 0,
+                    growType: secondAwakeningSample.Quest.GrowType | 0x10)
+                && !QuestRelationIndex.MeetsCharacterRestrictions(
+                    secondAwakeningSample.QuestId,
+                    characterLevel: 75,
+                    characterJob: 0,
+                    growType: secondAwakeningSample.Quest.GrowType | 0x20),
                 ref failures);
 
             var xilanQuest = QuestData.GetQuestFile(2404);
@@ -1984,7 +2075,7 @@ namespace DfoServer.SelfTests
                 ref failures);
 
             var pickupItem = DropItemBuilder.BuildPickupItem(
-                srcSlot: 0x67,
+                sceneSlot: 0x67,
                 pickerActorId: 1081,
                 dstInvSlot: 0x79,
                 moveFlag: 7);
@@ -1998,7 +2089,7 @@ namespace DfoServer.SelfTests
                 ref failures);
 
             var pickupEpicPiece = DropItemBuilder.BuildPickupEpicPiece(
-                srcSlot: 0x71,
+                sceneSlot: 0x71,
                 pickerActorId: 0x0BEB);
             Check(
                 "A21 GET_ITEM epic piece notification has no destination slot",
@@ -2011,7 +2102,7 @@ namespace DfoServer.SelfTests
                 ref failures);
 
             var pickupGold = DropItemBuilder.BuildPickupGold(
-                srcSlot: 0x66,
+                sceneSlot: 0x66,
                 pickerActorId: 1081,
                 goldAmount: 8);
             Check(
@@ -2056,6 +2147,7 @@ namespace DfoServer.SelfTests
                 oneGoldDropDie.Length == 55
                 && oneGoldDropDie[2] == 1
                 && BitConverter.ToUInt16(oneGoldDropDie, 3) == 11
+                && BitConverter.ToUInt32(oneGoldDropDie, 10) == 1
                 && BitConverter.ToUInt16(oneGoldDropDie, 3 + 44) == 9,
                 ref failures);
 
@@ -2064,6 +2156,9 @@ namespace DfoServer.SelfTests
                 ItemKind = DfoServer.Game.Inventory.ItemCore.KindEquipment,
                 ItemId = 35004,
                 Value = unchecked((int)0x343863C0),
+                Durability = 0x1234,
+                AmplifyType = 0x05,
+                AmplifyValue = 0x6789,
             };
             var equipmentDropDie = DungeonNotificationBuilder.BuildMonsterDie(
                 monsterSeqId: 0x66E6,
@@ -2080,10 +2175,13 @@ namespace DfoServer.SelfTests
                 },
                 ownerActorId: 1);
             Check(
-                "A21 DIE_MONSTER equipment drop writes quantity, not ItemCore instance UID",
+                "A21 DIE_MONSTER equipment drop writes ItemCore value and durability fields",
                 equipmentDropDie.Length == 55
                 && BitConverter.ToUInt32(equipmentDropDie, 5) == 35004
-                && BitConverter.ToUInt32(equipmentDropDie, 10) == 1
+                && BitConverter.ToUInt32(equipmentDropDie, 10) == unchecked((uint)equipmentCore.Value)
+                && BitConverter.ToUInt16(equipmentDropDie, 14) == 0x1234
+                && equipmentDropDie[16] == 0x05
+                && BitConverter.ToUInt16(equipmentDropDie, 17) == 0x6789
                 && BitConverter.ToUInt32(equipmentDropDie, 19) == 0x6A7DE18E,
                 ref failures);
 

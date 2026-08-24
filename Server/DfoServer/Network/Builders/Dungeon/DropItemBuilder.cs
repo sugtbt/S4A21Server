@@ -59,11 +59,11 @@ namespace DfoServer.Network.Builders
             return new byte[] { 0x01 };
         }
 
-        public static byte[] BuildPickupItem(ushort srcSlot, ushort pickerActorId, ushort dstInvSlot, byte moveFlag)
+        public static byte[] BuildPickupItem(ushort sceneSlot, ushort pickerActorId, ushort dstInvSlot, byte moveFlag)
         {
             var w = new GamePacketWriter();
 
-            w.WriteUInt16(srcSlot);
+            w.WriteUInt16(sceneSlot);
             w.WriteUInt16(pickerActorId);
 
             // A21: flag + two dwords + picker + destination slot + reserved byte.
@@ -77,19 +77,15 @@ namespace DfoServer.Network.Builders
             return w.ToArray();
         }
 
-        public static byte[] BuildPickupEpicPiece(ushort srcSlot, ushort pickerActorId)
+        public static byte[] BuildPickupEpicPiece(ushort sceneSlot, ushort pickerActorId)
         {
-            // 史诗碎片不进入背包，实机 GET_ITEM 通知的目的槽位固定为 0。
-            return BuildPickupItem(srcSlot, pickerActorId, 0, 7);
+            return BuildPickupItem(sceneSlot, pickerActorId, 0, 7);
         }
 
-        
-        
-        
-        public static byte[] BuildPickupGold(ushort srcSlot, ushort pickerActorId, int goldAmount, int extraGold = 0)
+        public static byte[] BuildPickupGold(ushort sceneSlot, ushort pickerActorId, int goldAmount, int extraGold = 0)
         {
             var body = (byte[])A21PickupGoldTemplate.Clone();
-            WriteUInt16(body, 0, srcSlot);
+            WriteUInt16(body, 0, sceneSlot);
             WriteUInt16(body, 2, pickerActorId);
             WriteInt32(body, 6, goldAmount > 0 ? goldAmount : 1);
             return body;

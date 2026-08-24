@@ -138,7 +138,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                 ProgressRepository,
                 Subtype0FieldsRepository,
                 HonorLevel,
-                AccountExperience);
+                AccountExperience,
+                Sessions);
             PersistentEffects = persistentEffects
                 ?? new Game.Dungeon.DungeonPersistentEffectApplicationService(
                     ConnectionString,
@@ -148,7 +149,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                     ClockService.Instance);
             TownReturn = new DungeonTownReturnCoordinator(
                 InstanceRegistry,
-                ProgressNotifications);
+                ProgressNotifications,
+                Sessions);
             var entryCost = new Game.Dungeon.DungeonEntryCostService(Database);
             EntryAdmission =
                 new Game.Dungeon.DungeonEntryAdmissionApplicationService(

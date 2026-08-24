@@ -4,10 +4,12 @@ using System.Threading.Tasks;
 using DfoServer.Game.Accounts;
 using DfoServer.Game.CharacterData;
 using DfoServer.Game.Characters;
+using DfoServer.Game.Friends;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.Progression;
 using DfoServer.Game.Quests;
 using DfoServer.Game.SelectCharacter;
+using DfoServer.Game.Session;
 using DfoServer.Game.Skills;
 using DfoServer.Infrastructure;
 using DfoServer.Network.Builders;
@@ -23,6 +25,7 @@ namespace DfoServer.Network.Handlers.Dungeon
         private readonly SqliteSubtype0FieldsRepository _subtype0Repository;
         private readonly HonorLevelSyncService _honorLevel;
         private readonly AccountExperienceProgressService _accountExperience;
+        private readonly ISessionDirectory _sessions;
 
         internal DungeonProgressNotificationProjector(
             string connectionString,
@@ -31,7 +34,8 @@ namespace DfoServer.Network.Handlers.Dungeon
             SqliteCharacterProgressRepository progressRepository,
             SqliteSubtype0FieldsRepository subtype0Repository,
             HonorLevelSyncService honorLevel,
-            AccountExperienceProgressService accountExperience)
+            AccountExperienceProgressService accountExperience,
+            ISessionDirectory sessions = null)
         {
             _connectionString = connectionString;
             _characterRepository = characterRepository;
@@ -40,6 +44,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             _subtype0Repository = subtype0Repository;
             _honorLevel = honorLevel;
             _accountExperience = accountExperience;
+            _sessions = sessions;
         }
 
         internal HonorLevelSummary ResolveHonorLevelForExp(
@@ -193,6 +198,10 @@ namespace DfoServer.Network.Handlers.Dungeon
         {
             await SendQuestListRefresh(session);
             await SendUserInfoBroadcast(session);
+            // 副本结算升级：把升级者加为好友的在线会话重推好友列表（节点数据，跨频道）。
+            if (_sessions != null)
+                await UnitedFriendSystem.NotifyFriendListInfoChanged(
+                    session, _sessions);
         }
 
         internal async Task SendQuestListRefresh(EnhancedClientSession session)

@@ -43,6 +43,7 @@ namespace DfoServer.Game.Quests
                 GameDatabase.AttachInitialized(connStr),
                 characterRepository: null,
                 selectCharacterDataSource: null,
+                sessionDirectory: null,
                 DefaultServerTriggerEchoGrace,
                 ClockService.Instance)
         {
@@ -52,12 +53,14 @@ namespace DfoServer.Game.Quests
             ISessionPacketSender sender,
             IGameDatabase database,
             ICharacterRepository characterRepository = null,
-            SqliteSelectCharacterDataSource selectCharacterDataSource = null)
+            SqliteSelectCharacterDataSource selectCharacterDataSource = null,
+            ISessionDirectory sessionDirectory = null)
             : this(
                 sender,
                 database,
                 characterRepository,
                 selectCharacterDataSource,
+                sessionDirectory,
                 DefaultServerTriggerEchoGrace,
                 ClockService.Instance)
         {
@@ -73,6 +76,7 @@ namespace DfoServer.Game.Quests
                 GameDatabase.AttachInitialized(connStr),
                 characterRepository: null,
                 selectCharacterDataSource: null,
+                sessionDirectory: null,
                 serverTriggerEchoGrace,
                 clock)
         {
@@ -83,6 +87,7 @@ namespace DfoServer.Game.Quests
             IGameDatabase database,
             ICharacterRepository characterRepository,
             SqliteSelectCharacterDataSource selectCharacterDataSource,
+            ISessionDirectory sessionDirectory,
             TimeSpan serverTriggerEchoGrace,
             ClockService clock)
         {
@@ -118,7 +123,8 @@ namespace DfoServer.Game.Quests
                 growthCapsuleRepository,
                 new SqliteExpertJobStateRepository(database),
                 new SqliteSubtype1Repository(database),
-                selectCharacterDataSource);
+                selectCharacterDataSource,
+                sessionDirectory);
         }
 
         public QuestRunSnapshot CaptureRunSnapshot()

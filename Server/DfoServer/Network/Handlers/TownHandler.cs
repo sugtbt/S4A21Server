@@ -2,6 +2,7 @@ using DfoServer.Game.Accounts;
 using DfoServer.Game.CharacterData;
 using DfoServer.Game.Characters;
 using DfoServer.Game.Dungeon;
+using DfoServer.Game.Friends;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.Session;
 using DfoServer.GameWorld;
@@ -267,6 +268,12 @@ namespace DfoServer.Network.Handlers
                 return;
             }
 
+            // 城镇残留白影修复: 记录离开前区域, 区域真正变化时向旧区域广播不含离开者的权威名册,
+            // 客户端按名册重建分身列表、移除残留白影。策略检查全过后才记录,
+            // SET 被拒绝时不发任何离开通知。
+            var oldTownId = session.Player.CurTownId;
+            var oldAreaId = session.Player.CurAreaId;
+
             session.Player.CurTownId = gotoTownId;
             session.Player.CurAreaId = gotoAreaId;
             session.Player.CurPosX = gotoPosX;
@@ -291,8 +298,23 @@ namespace DfoServer.Network.Handlers
             if (!CanContinueTownProjection(session, projectionGuard))
                 return;
 
+            // 离开旧区域: 向旧区域广播不含离开者的权威名册, 让残留白影按名册消失。
+            // 逻辑在共享 TownAreaRosterDepartureNotifier(参照 86JP 已知协议验证, 不用 USER_LEAVE,
+            // 见设计文档 §4.5), 与进本路径复用同一机制, 不复制。
+            if (oldTownId != gotoTownId || oldAreaId != gotoAreaId)
+                await TownAreaRosterDepartureNotifier.NotifyOldAreaDepartureAsync(
+                    _sessions,
+                    session,
+                    oldTownId,
+                    oldAreaId);
+            if (!CanContinueTownProjection(session, projectionGuard))
+                return;
+
             PersistPosition(session, forceImmediate: true, source: "set_user_area");
         }
+
+        // 城镇残留白影修复已抽到共享 TownAreaRosterDepartureNotifier,
+        // 与进本路径(DungeonEntryHandler)复用同一机制, 见该类注释。
 
         // 同屏"插入他人"包的构造。脱壳客户端逆向确认(2026-07-06夜):右键组队邀请要求
         // 目标客户端对象 vtable[+40] 返回的 type==4(sub_118C100=sub_118C080==4),否则报字符串311
@@ -843,6 +865,11 @@ namespace DfoServer.Network.Handlers
                 returnAnchor,
                 session.ListenerPort);
             session.Player.UserState = 0x00;
+            // 回城 → 状态回空闲：同频道在线好友推 USERINFO(0x0002) 更新场景实体状态。
+            // （与 DungeonTownReturnCoordinator.ReturnAsync 一致，补齐 GIVEUP_GAME/BACK_2_VILLAGE 路径。）
+            if (_sessions != null)
+                await UnitedFriendSystem.NotifyUserStateChanged(
+                    session, _sessions);
 
             // A21 客户端抓包中，GIVEUP_GAME/BACK_2_VILLAGE 的 CMD 成功响应
             // body=[01] 位于 USER_STATE 之前。客户端先用 CMD 响应结束副本
@@ -892,6 +919,10 @@ namespace DfoServer.Network.Handlers
                 selection.ReturnAnchor,
                 session.ListenerPort);
             session.Player.UserState = 0x00;
+            // 从副本选择界面返回 → 状态回空闲：同频道在线好友推 USERINFO(0x0002) 更新场景实体状态。
+            if (_sessions != null)
+                await UnitedFriendSystem.NotifyUserStateChanged(
+                    session, _sessions);
 
             await session.SendPacketAsync(
                 BuildReturnToTownSuccessPacket(responsePacketType));

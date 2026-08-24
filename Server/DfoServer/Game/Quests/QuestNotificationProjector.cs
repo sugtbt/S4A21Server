@@ -7,6 +7,7 @@ using DfoServer.Game.CharacterData;
 using DfoServer.Game.Characters;
 using DfoServer.Game.Dungeon;
 using DfoServer.Game.ExpertJob;
+using DfoServer.Game.Friends;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.Game.Session;
@@ -34,6 +35,7 @@ namespace DfoServer.Game.Quests
         private readonly SqliteSubtype1Repository _subtype1Repository;
         private readonly SqliteSelectCharacterDataSource
             _selectCharacterDataSource;
+        private readonly ISessionDirectory _sessionDirectory;
 
         internal QuestNotificationProjector(
             ISessionPacketSender sender,
@@ -45,7 +47,8 @@ namespace DfoServer.Game.Quests
             GrowthCapsuleProgressRepository growthCapsuleRepository,
             IExpertJobStateRepository expertJobStateRepository,
             SqliteSubtype1Repository subtype1Repository,
-            SqliteSelectCharacterDataSource selectCharacterDataSource)
+            SqliteSelectCharacterDataSource selectCharacterDataSource,
+            ISessionDirectory sessionDirectory = null)
         {
             _sender = sender ?? throw new ArgumentNullException(nameof(sender));
             _connectionString = (database
@@ -66,6 +69,7 @@ namespace DfoServer.Game.Quests
                 ?? throw new ArgumentNullException(nameof(subtype1Repository));
             _selectCharacterDataSource = selectCharacterDataSource
                 ?? throw new ArgumentNullException(nameof(selectCharacterDataSource));
+            _sessionDirectory = sessionDirectory;
         }
 
         // Chain 1/2 在 ACK 前刷新 SKILLINFO；chain 20 在 ACK 前发 USERINFO0
@@ -244,6 +248,16 @@ namespace DfoServer.Game.Quests
                     result.PetCreatureEvolution);
             }
 
+            // 等级/职业变化 → 向把 self 加为好友的人重推好友列表（节点数据，跨频道
+            // 不分频道，见设计文档 §4.7）。leveledUp 含副本内任务升级；副本结算升级
+            // 由 SendInDungeonLevelUpFollowups 覆盖，两者路径互斥不重复推。
+            if ((leveledUp || result.ChainType == 1 || result.ChainType == 2)
+                && _sessionDirectory != null)
+            {
+                await UnitedFriendSystem.NotifyFriendListInfoChanged(
+                    player, _sessionDirectory);
+            }
+
             if (sendAcceptableQuestList)
                 await SendAcceptableQuestListAsync();
         }
@@ -283,9 +297,26 @@ namespace DfoServer.Game.Quests
                 return;
 
             var character = _sender.Player;
-            var level = character != null ? character.Level : 1;
-            var job = character != null ? character.Job : 0;
-            var growType = character != null ? character.GrowType : -1;
+            var record = _characterRepository.GetById(characterId);
+            int level = record != null
+                ? record.Level
+                : character != null ? character.Level : 1;
+            int job = record != null
+                ? record.Job
+                : character != null ? character.Job : -1;
+            int growType = record != null
+                ? record.GrowType
+                : character != null ? character.GrowType : -1;
+            if (record != null && character != null)
+            {
+                // GM tools may update characters directly in SQLite while the
+                // session remains online. Keep the projection and all later
+                // task refreshes on the same persisted identity snapshot.
+                character.Level = record.Level;
+                character.Job = record.Job;
+                character.GrowType = record.GrowType;
+                character.GrowupChangeCount = record.GrowupChangeCount;
+            }
             var clearedFlags = new QuestRepository(_connectionString)
                 .LoadClearedFlags(characterId);
             var allowedCreatureKinds = InventoryContext.TryGetLease(characterId, out var lease)

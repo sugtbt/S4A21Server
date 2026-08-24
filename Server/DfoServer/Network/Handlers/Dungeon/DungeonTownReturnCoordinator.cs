@@ -1,6 +1,8 @@
 using System;
 using System.Threading.Tasks;
 using DfoServer.Game.Dungeon;
+using DfoServer.Game.Friends;
+using DfoServer.Game.Session;
 using DfoServer.Network.Builders;
 
 namespace DfoServer.Network.Handlers.Dungeon
@@ -10,15 +12,18 @@ namespace DfoServer.Network.Handlers.Dungeon
         private readonly DungeonInstanceRegistry _instanceRegistry;
         private readonly DungeonProgressNotificationProjector
             _progressNotifications;
+        private readonly ISessionDirectory _sessions;
 
         internal DungeonTownReturnCoordinator(
             DungeonInstanceRegistry instanceRegistry,
-            DungeonProgressNotificationProjector progressNotifications)
+            DungeonProgressNotificationProjector progressNotifications,
+            ISessionDirectory sessions = null)
         {
             _instanceRegistry = instanceRegistry
                 ?? throw new ArgumentNullException(nameof(instanceRegistry));
             _progressNotifications = progressNotifications
                 ?? throw new ArgumentNullException(nameof(progressNotifications));
+            _sessions = sessions;
         }
 
         internal async Task<bool> ReturnAsync(
@@ -46,6 +51,10 @@ namespace DfoServer.Network.Handlers.Dungeon
                 returnAnchor,
                 session.ListenerPort);
             session.Player.UserState = 0x00;
+            // 回城 → 状态回空闲：同频道在线好友推 USERINFO(0x0002) 更新场景实体状态。
+            if (_sessions != null)
+                await UnitedFriendSystem.NotifyUserStateChanged(
+                    session, _sessions);
             var snapshot = TownAreaNotificationBuilder.CreateCurrentSnapshot(
                 session.Player);
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(

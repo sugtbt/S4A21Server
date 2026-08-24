@@ -1,6 +1,7 @@
 using DfoServer.Game.Accounts;
 using DfoServer.Game.Characters;
 using DfoServer.Game.Dungeon;
+using DfoServer.Game.Friends;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.Premium;
 using DfoServer.Game.Progression;
@@ -494,6 +495,10 @@ namespace DfoServer.Network.Handlers.Dungeon
                 return;
             }
             session.Player.UserState = 0x00;
+            // 死亡复活回城 → 状态回空闲：同频道在线好友推 USERINFO(0x0002) 更新场景实体状态。
+            if (_svc.Sessions != null)
+                await UnitedFriendSystem.NotifyUserStateChanged(
+                    session, _svc.Sessions);
 
             var snapshot = TownAreaNotificationBuilder.CreateCurrentSnapshot(session.Player);
 

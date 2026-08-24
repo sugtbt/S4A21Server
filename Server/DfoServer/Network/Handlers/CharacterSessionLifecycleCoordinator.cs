@@ -1,6 +1,7 @@
 using DfoServer.Game.Characters;
 using DfoServer.Game.DailyReset;
 using DfoServer.Game.Dungeon;
+using DfoServer.Game.Friends;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.Game.Session;
@@ -115,6 +116,10 @@ namespace DfoServer.Network.Handlers
                     {
                         try
                         {
+                            // 下线 hook：必须在 unregister 前执行，此时目录仍含本会话，
+                            // 好友推送（0x0112 退出频道 + 同频道 USER_LEAVE）才能判定在线集合。
+                            await UnitedFriendSystem.NotifyPlayerDisconnected(
+                                session, _sessionDirectory);
                             ownsGeneration = await _sessionDirectory
                                 .UnregisterAsync(characterId, session);
                         }
@@ -431,7 +436,8 @@ namespace DfoServer.Network.Handlers
                         session,
                         _database,
                         _characterRepository,
-                        _selectCharacterDataSource);
+                        _selectCharacterDataSource,
+                        _sessionDirectory);
                     await _pvpRoomHandler.HandleLobbyReadyAsync(session);
                     await _inventoryRefreshSender
                         .SendAllEquipmentItemLockListRefresh(session);
@@ -441,6 +447,11 @@ namespace DfoServer.Network.Handlers
                         session,
                         "select_character");
                     await _dungeonRejoin.ProjectCandidateAsync(session);
+                    // 上线 hook：初始好友列表已由 init 包流下发
+                    // （UnitedServerFriendInfoBodyBuilder），这里只做单向推送——
+                    // 0x0112 进入频道 + 同频道补发 0x0111 归零频道文字 + USERINFO 实体。
+                    await UnitedFriendSystem.NotifyPlayerEnteredGame(
+                        session, _sessionDirectory);
                 }
                 catch (Exception ex)
                 {
@@ -540,6 +551,23 @@ namespace DfoServer.Network.Handlers
                 RecordAccountLogout(session, "return_select");
                 session.GameSession = null;
                 session.PendingReturnSelectCharacterId = characterId;
+
+                // 返回选人 = 当前角色离开游戏：EnterCharacterSelectionState 会清零
+                // UserId/CharacterId，必须在清零前（本会话已从目录注销、不会自通知）推
+                // USER_LEAVE + 0x0112，好友端才能看到置灰 + "退出频道"。
+                try
+                {
+                    await UnitedFriendSystem.NotifyPlayerDisconnected(
+                        session,
+                        _sessionDirectory);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[{ProtocolName}] return-select friend offline-notify " +
+                        $"failed cid={characterId}: {ex}");
+                }
+
                 await _characterSelectHandler
                     .Handle_ENUM_CMDPACKET_RETURN_SELECT_CHARACTER(
                         session,
@@ -673,6 +701,22 @@ namespace DfoServer.Network.Handlers
                 RecordAccountLogout(session, "select_character");
                 session.GameSession = null;
                 session.PendingReturnSelectCharacterId = characterId;
+
+                // 选择角色/切换 = 当前角色离开游戏：清零 UserId 前推下线通知，
+                // 好友端置灰 + "退出频道"。
+                try
+                {
+                    await UnitedFriendSystem.NotifyPlayerDisconnected(
+                        session,
+                        _sessionDirectory);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[{ProtocolName}] select-character friend offline-notify " +
+                        $"failed cid={characterId}: {ex}");
+                }
+
                 EnterCharacterSelectionState(session);
                 return true;
             }

@@ -31,7 +31,8 @@ namespace DfoServer.Game.Session
             EnhancedClientSession networkSession,
             IGameDatabase database,
             ICharacterRepository characterRepository = null,
-            SqliteSelectCharacterDataSource selectCharacterDataSource = null)
+            SqliteSelectCharacterDataSource selectCharacterDataSource = null,
+            ISessionDirectory sessionDirectory = null)
         {
             _networkSession = networkSession
                 ?? throw new System.ArgumentNullException(nameof(networkSession));
@@ -42,7 +43,8 @@ namespace DfoServer.Game.Session
                 this,
                 database,
                 characterRepository,
-                selectCharacterDataSource);
+                selectCharacterDataSource,
+                sessionDirectory);
         }
 
         public Task SendPacketAsync(byte[] rawPacket)

@@ -2,6 +2,7 @@ using DfoServer.Game.Accounts;
 using DfoServer.Game.Appearance;
 using DfoServer.Game.DailyReset;
 using DfoServer.Game.Characters;
+using DfoServer.Game.Friends;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.KnightShield;
 using DfoServer.Game.Mercenary;
@@ -100,7 +101,7 @@ namespace DfoServer.Network.Handlers
             _pvpSkillRepository = new Game.Skills.SqlitePvpSkillRepository(
                 _database);
             _initPacketBuilders = new Network.Builders.InitPacketBuilderRegistry(
-                _database);
+                _database, _sessions);
         }
 
         // 按 UserId 找同一游戏频道的在线会话。城镇同屏也按 listener 隔离。
@@ -972,6 +973,10 @@ namespace DfoServer.Network.Handlers
             try
             {
                 _characterRepository.SoftDelete(target.CharacterId);
+                // 删除角色 → 清理好友图/表两方向关系，并向显示它的在线会话推 subcmd=2 删节点。
+                if (_sessions != null)
+                    await UnitedFriendSystem.HandleCharacterDeletedAsync(
+                        name, _sessions);
                 FileLogger.Log($"[{ProtocolName}] DELETE_CHARACTER: soft-deleted character_id={target.CharacterId} name='{name}'");
 
                 var writer = new GamePacketWriter();

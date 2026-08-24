@@ -1,6 +1,7 @@
 using DfoServer.Game.Accounts;
 using DfoServer.Game.CharacterData;
 using DfoServer.Game.Characters;
+using DfoServer.Game.Friends;
 using DfoServer.Game.Party;
 using DfoServer.Infrastructure;
 using DfoServer.Network.Builders;
@@ -636,6 +637,10 @@ namespace DfoServer.Network.Handlers
             if (s?.Player?.CurrentRun == null) return;
             await Dungeon.DungeonRunLifecycle.EndRunToTownAsync(s);
             s.Player.UserState = 0x00;
+            // 队伍跟随回城 → 状态回空闲：同频道在线好友推 USERINFO(0x0002) 更新场景实体状态。
+            if (_sessions != null)
+                await UnitedFriendSystem.NotifyUserStateChanged(
+                    s, _sessions);
 
             var snap = TownAreaNotificationBuilder.CreateCurrentSnapshot(s.Player);
             await s.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0003, EnterSelectDungeonStateBuilder.BuildUserState(s.Player)));

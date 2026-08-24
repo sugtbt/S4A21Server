@@ -23,10 +23,7 @@ namespace DfoServer.Game.Dungeon
         {
             get
             {
-                if (Core == null)
-                    return StackCount;
-
-                return InventoryStackRuleService.IsStackable(Core)
+                return Core == null
                     ? StackCount
                     : unchecked((uint)Core.Value);
             }

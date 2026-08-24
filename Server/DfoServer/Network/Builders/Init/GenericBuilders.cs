@@ -1,4 +1,7 @@
+using DfoServer.Game.Friends;
 using DfoServer.Game.SelectCharacter;
+using DfoServer.Game.Session;
+using DfoServer.Infrastructure;
 using System;
 using System.Collections.Generic;
 
@@ -64,16 +67,54 @@ namespace DfoServer.Network.Builders
             return true;
         }
     }
-    // NOTI 273 (0x0111) 联合服好友信息。客户端有注册 handler(0x00D0DBB0)，
-    // 8 字节零是新角色一直在用的空态基线；跨服好友数据对单机服务端无意义，统一发空态。
+    // NOTI 273 (0x0111) 联合服好友信息。客户端有注册 handler(0x00D0DBB0)。
+    // 选角时会话已注册进目录（RegisterReplacingAsync 先于 init 包流），按 CharacterId
+    // 反查回 self 会话，组真实好友列表（在线频道三态 + 离线 DB 数据，见 UnitedFriendSystem）。
+    // 无好友/self 未水合 → 8 字节空态（[subcmd=0][count=0]）兜底，保持基线总是发包。
     public sealed class UnitedServerFriendInfoBodyBuilder : IInitPacketBuilder
     {
         public ushort NotiType => 0x0111;
 
+        private readonly ISessionDirectory _sessions;
+
+        public UnitedServerFriendInfoBodyBuilder(ISessionDirectory sessions)
+        {
+            _sessions = sessions;
+        }
+
         public bool TryBuild(SelectCharacterDataSnapshot snapshot, int occurrenceIndex, out byte[] body)
         {
             body = new byte[8];
-            return true;
+            if (snapshot?.CharacterRecord == null)
+                return true;
+
+            EnhancedClientSession self = null;
+            try
+            {
+                if (_sessions != null
+                    && _sessions.TryGet(snapshot.CharacterRecord.CharacterId, out var s))
+                    self = s;
+            }
+            catch
+            {
+                self = null;
+            }
+            if (self?.Player == null)
+                return true;
+
+            try
+            {
+                body = UnitedFriendSystem.BuildFriendListInitBody(self, _sessions);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[UnitedFriend] init 好友列表构建失败 " +
+                    $"cid={snapshot.CharacterRecord.CharacterId}: {ex.Message}");
+                body = new byte[8];
+                return true;
+            }
         }
     }
 

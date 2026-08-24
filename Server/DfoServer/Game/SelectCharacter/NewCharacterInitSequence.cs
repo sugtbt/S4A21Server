@@ -89,7 +89,9 @@ namespace DfoServer.Game.SelectCharacter
             Raw(0x00, (ushort)NotiPacketTypeA21.USERINFO, 2); // subtype 6，25B
             Raw(0x01, (ushort)CmdPacketTypeA21.MERCENARY_INFO);
             Raw(0x00, (ushort)NotiPacketTypeA21.CERA);
-            Raw(0x00, 0x0111);
+            // 0x0111 连发两遍（建节点 + 置显示），见 UnitedServerFriendInfoBodyBuilder 注释。
+            Raw(0x00, (ushort)NotiPacketTypeA21.UNITED_SERVER_FRIEND_INFO, 0);
+            Raw(0x00, (ushort)NotiPacketTypeA21.UNITED_SERVER_FRIEND_INFO, 1);
             Raw(0x00, 0x0016);
             Raw(0x00, 0x0077);   // 宠物欢迎语; 无宠物或无缓存时 builder 返回 false 跳过
             // 婚姻/双人房间回放尾段
