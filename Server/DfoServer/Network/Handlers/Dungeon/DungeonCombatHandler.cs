@@ -756,6 +756,16 @@ namespace DfoServer.Network.Handlers.Dungeon
             }
 
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x01,
+                header.type,
+                DropItemBuilder.BuildDropSuccessAck(
+                    (byte)request.ListType,
+                    unchecked((ushort)request.SlotIndex),
+                    request.Count)));
+            if (!session.Player.IsCurrentDungeonRun(runIdentity))
+                return;
+
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
                 0x00,
                 (ushort)NotiPacketType.DROP_ITEM,
                 DropItemBuilder.BuildDrop(
@@ -763,17 +773,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                     request.PositionX,
                     request.PositionY,
                     result.Drop,
-                    session.Player.UserId)));
-            if (!session.Player.IsCurrentDungeonRun(runIdentity))
-                return;
-
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                0x01,
-                header.type,
-                DropItemBuilder.BuildDropSuccessAck(
-                    (byte)request.ListType,
-                    unchecked((ushort)request.SlotIndex),
-                    request.Count)));
+                    0)));
             if (!session.Player.IsCurrentDungeonRun(runIdentity))
                 return;
 

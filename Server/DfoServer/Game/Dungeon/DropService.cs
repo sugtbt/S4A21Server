@@ -395,7 +395,7 @@ namespace DfoServer.Game.Dungeon
                 if (!removed || delete == null || !delete.Success)
                     return InventoryDropResult.InventoryRejected;
 
-                var drop = RegisterInventoryDrop(run, droppedCore, droppedCount);
+                var drop = RegisterInventoryDrop(run, droppedCore, droppedCount, slotIndex);
                 return new InventoryDropResult
                 {
                     Success = true,
@@ -430,7 +430,11 @@ namespace DfoServer.Game.Dungeon
                 || !consume.Success)
                 return InventoryDropResult.InventoryRejected;
 
-            var drop = RegisterInventoryDrop(run, null, count);
+            var drop = RegisterInventoryDrop(
+                run,
+                null,
+                count,
+                InventoryService.MainVirtualCurrencySlotStart);
             return new InventoryDropResult
             {
                 Success = true,
@@ -439,7 +443,11 @@ namespace DfoServer.Game.Dungeon
             };
         }
 
-        private static DropInfo RegisterInventoryDrop(DungeonRun run, ItemCore core, int count)
+        private static DropInfo RegisterInventoryDrop(
+            DungeonRun run,
+            ItemCore core,
+            int count,
+            short sourceSlotIndex)
         {
             lock (run.SyncRoot)
             {
@@ -456,6 +464,7 @@ namespace DfoServer.Game.Dungeon
                     Endurance = core != null ? core.Durability : (ushort)0,
                     UpgradeLevel = core != null ? core.Upgrade : (byte)0,
                     Core = core != null ? core.Copy() : null,
+                    SourceSlotIndex = sourceSlotIndex,
                     IsPlayerDropped = true,
                 };
                 run.Drops[drop.SceneSlot] = drop;

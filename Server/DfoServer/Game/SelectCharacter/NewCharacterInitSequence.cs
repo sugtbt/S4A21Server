@@ -33,6 +33,7 @@ namespace DfoServer.Game.SelectCharacter
             Raw(0x00, 0x0166, 2);                   
             Raw(0x00, 0x0166, 3);                   
             Raw(0x00, 0x0166, 4);                   
+            Raw(0x00, (ushort)NotiPacketTypeA21.STORY_BOOK_INFO);
             Raw(0x00, 0x0167);
             Raw(0x00, (ushort)NotiPacketTypeA21.ACCEPTABLE_QUEST_LIST);
             Raw(0x00, 0x0164);

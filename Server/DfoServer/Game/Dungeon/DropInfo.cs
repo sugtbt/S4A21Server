@@ -14,6 +14,7 @@ namespace DfoServer.Game.Dungeon
         public ushort Endurance;
         public byte UpgradeLevel;
         internal ItemCore Core;
+        public short SourceSlotIndex;
         public bool IsPlayerDropped;
 
         public bool IsGold => TemplateId == 0;

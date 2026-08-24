@@ -20,6 +20,7 @@ namespace DfoServer.Game.Skills
         public ushort SkillId;
         public byte Level;
         public bool HasCmd;
+        public readonly List<byte> CommandBytes = new List<byte>();
     }
 
     public sealed class BuySkillResult
@@ -99,11 +100,11 @@ namespace DfoServer.Game.Skills
             }
 
             if (inventory == null ||
-                !inventory.TryConsumeMainItem(
-                    SkillResetConsumableService.ForgetRiverWaterItemTemplateId,
-                    1,
-                    out var consumed) ||
-                !consumed.Success)
+                !SkillResetConsumableService.TryConsumeRefundConsumable(
+                    inventory,
+                    plan.RefundsOnlyTp,
+                    out var consumedItemTemplateId,
+                    out var consumed))
             {
                 plan.Result.Success = false;
                 plan.Result.ErrorCode = 3;
@@ -111,20 +112,10 @@ namespace DfoServer.Game.Skills
             }
 
             repo.SaveSkillProgress(cid, plan.Snapshot);
-            plan.Result.ConsumedForgetRiverWater = true;
-            plan.Result.ConsumedForgetRiverWaterSlot = consumed.SlotIndex;
-            plan.Result.ConsumedForgetRiverWaterItem = new InventoryMutationResult
-            {
-                ListType = InventoryListType.Main,
-                SlotIndex = consumed.SlotIndex,
-                ItemTemplateId = SkillResetConsumableService.ForgetRiverWaterItemTemplateId,
-                RemainingStackCount = consumed.RemainingCount,
-                InstanceValue = consumed.RemainingCount,
-                RequestedCount = 1,
-                AppliedCount = (short)Math.Min(
-                    short.MaxValue,
-                    consumed.ConsumedCount),
-            };
+            ApplyConsumedRefundItem(
+                plan.Result,
+                consumed,
+                consumedItemTemplateId);
             return plan.Result;
         }
 
@@ -164,8 +155,10 @@ namespace DfoServer.Game.Skills
             if (!preview.Result.Success)
                 return preview.Result;
             if (preview.HasEffectiveRefund
-                && lease.Inventory.CountMainItem(
-                    SkillResetConsumableService.ForgetRiverWaterItemTemplateId) < 1)
+                && !SkillResetConsumableService.TryResolveRefundConsumable(
+                    lease.Inventory,
+                    preview.RefundsOnlyTp,
+                    out _))
             {
                 return Failed(skillTree, 3);
             }
@@ -196,13 +189,13 @@ namespace DfoServer.Game.Skills
                     }
 
                     InventoryMainItemConsumeResult consumed = null;
+                    int consumedItemTemplateId = 0;
                     if (plan.HasEffectiveRefund
-                        && (!lease.Inventory.TryConsumeMainItem(
-                                SkillResetConsumableService
-                                    .ForgetRiverWaterItemTemplateId,
-                                1,
-                                out consumed)
-                            || !consumed.Success))
+                        && !SkillResetConsumableService.TryConsumeRefundConsumable(
+                            lease.Inventory,
+                            plan.RefundsOnlyTp,
+                            out consumedItemTemplateId,
+                            out consumed))
                     {
                         committedResult = Failed(skillTree, 3);
                         return false;
@@ -214,7 +207,10 @@ namespace DfoServer.Game.Skills
                         cid,
                         plan.Snapshot);
                     if (consumed != null)
-                        ApplyConsumedRefundItem(plan.Result, consumed);
+                        ApplyConsumedRefundItem(
+                            plan.Result,
+                            consumed,
+                            consumedItemTemplateId);
                     committedResult = plan.Result;
                     return true;
                 });
@@ -269,6 +265,7 @@ namespace DfoServer.Game.Skills
             public BuySkillResult Result;
             public SkillInfoSnapshot Snapshot;
             public bool HasEffectiveRefund;
+            public bool RefundsOnlyTp;
         }
 
         private static BuySkillExecutionPlan BuildExecutionPlan(
@@ -301,6 +298,7 @@ namespace DfoServer.Game.Skills
 
             var result = new BuySkillResult { Success = true, SkillTree = (byte)skillTree };
             var hasEffectiveRefund = false;
+            var hasNonTpEffectiveRefund = false;
             var occupied = new HashSet<int>();
             foreach (var e in page.Entries) occupied.Add(e.Slot);
 
@@ -423,13 +421,11 @@ namespace DfoServer.Game.Skills
                         });
                     }
 
-                    result.Entries.Add(new BuySkillResultEntry
-                    {
-                        Slot = (byte)(sd.IsSpecial ? 0xFF : slotForEntry),
-                        SkillId = (ushort)req.SkillIndex,
-                        Level = (byte)newLevel,
-                        HasCmd = false,
-                    });
+                    result.Entries.Add(CreateResultEntry(
+                        (byte)(sd.IsSpecial ? 0xFF : slotForEntry),
+                        (ushort)req.SkillIndex,
+                        (byte)newLevel,
+                        existing));
                 }
                 else
                 {
@@ -440,6 +436,8 @@ namespace DfoServer.Game.Skills
                     if (newLevel < baseLevel) newLevel = baseLevel;
                     if (newLevel >= curLevel) continue;
                     hasEffectiveRefund = true;
+                    if (!sd.IsTpSkill)
+                        hasNonTpEffectiveRefund = true;
                     // 退点 100% 返还费用表原值。
                     if (!unlimitedPoints && sd.IsTpSkill)
                     {
@@ -460,13 +458,11 @@ namespace DfoServer.Game.Skills
                         existing.Level = (byte)newLevel;
                     }
 
-                    result.Entries.Add(new BuySkillResultEntry
-                    {
-                        Slot = (byte)(sd.IsSpecial ? 0xFF : refundSlot),
-                        SkillId = (ushort)req.SkillIndex,
-                        Level = (byte)newLevel,
-                        HasCmd = false,
-                    });
+                    result.Entries.Add(CreateResultEntry(
+                        (byte)(sd.IsSpecial ? 0xFF : refundSlot),
+                        (ushort)req.SkillIndex,
+                        (byte)newLevel,
+                        existing));
                 }
             }
 
@@ -488,6 +484,7 @@ namespace DfoServer.Game.Skills
                 Result = result,
                 Snapshot = snapshot,
                 HasEffectiveRefund = hasEffectiveRefund,
+                RefundsOnlyTp = hasEffectiveRefund && !hasNonTpEffectiveRefund,
             };
         }
 
@@ -495,6 +492,36 @@ namespace DfoServer.Game.Skills
         {
             if (value < 0) return 0;
             return value > ushort.MaxValue ? (ushort)ushort.MaxValue : (ushort)value;
+        }
+
+        private static BuySkillResultEntry CreateResultEntry(
+            byte slot,
+            ushort skillId,
+            byte level,
+            SkillInfoEntrySnapshot existing)
+        {
+            var entry = new BuySkillResultEntry
+            {
+                Slot = slot,
+                SkillId = skillId,
+                Level = level,
+            };
+
+            if (level <= 0)
+                return entry;
+
+            if (existing?.ExtraValues != null && existing.ExtraValues.Count > 0)
+            {
+                entry.CommandBytes.AddRange(existing.ExtraValues);
+            }
+            else
+            {
+                // A21 BUY_SKILL 成功 ACK 中 TP 技能实测会带默认命令段 01。
+                entry.CommandBytes.Add(0x01);
+            }
+
+            entry.HasCmd = entry.CommandBytes.Count > 0;
+            return entry;
         }
 
         private static int GetFreeBaselineLevel(byte job, int skillId, int growType, int secondGrowType)
@@ -505,7 +532,8 @@ namespace DfoServer.Game.Skills
 
         private static void ApplyConsumedRefundItem(
             BuySkillResult result,
-            InventoryMainItemConsumeResult consumed)
+            InventoryMainItemConsumeResult consumed,
+            int itemTemplateId)
         {
             if (result == null || consumed == null)
                 return;
@@ -516,8 +544,7 @@ namespace DfoServer.Game.Skills
             {
                 ListType = InventoryListType.Main,
                 SlotIndex = consumed.SlotIndex,
-                ItemTemplateId = SkillResetConsumableService
-                    .ForgetRiverWaterItemTemplateId,
+                ItemTemplateId = itemTemplateId,
                 RemainingStackCount = consumed.RemainingCount,
                 InstanceValue = consumed.RemainingCount,
                 RequestedCount = 1,

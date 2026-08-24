@@ -39,6 +39,7 @@ namespace DfoServer.Network.Builders
             Register(new ItemStateListBodyBuilder(0x00AE));
             Register(new AchievementListBodyBuilder());    
             Register(new TitleBookListBodyBuilder());   
+            Register(new StoryBookInfoBodyBuilder());
             Register(new ChampionBreakSystemBodyBuilder());    
             Register(new DailyScheduleBodyBuilder());             
             Register(new BuyRestrictItemListBodyBuilder());             

@@ -1,4 +1,5 @@
 using System;
+using DfoServer.Game.Inventory;
 
 namespace DfoServer.Network.Builders
 {
@@ -27,39 +28,9 @@ namespace DfoServer.Network.Builders
             w.WriteUInt16(positionX);
             w.WriteUInt16(positionY);
             w.WriteUInt16(drop.SceneSlot);
-            w.WriteUInt32(drop.TemplateId);
-            w.WriteByte(drop.UpgradeLevel);
-            w.WriteUInt32(drop.PacketValue);
-            w.WriteUInt16(drop.Endurance);
-
-            var core = drop.Core;
-            w.WriteUInt32(core != null ? core.SealFlag : 0u);
-            w.WriteByte(core != null ? core.GenuineUpgrade : (byte)0);
-            w.WriteByte(core != null ? core.TradeRestriction : (byte)0);
-            w.WriteUInt16(core != null ? core.AmplifyValue : (ushort)0);
-            w.WriteUInt32(core != null ? unchecked((uint)core.Marker16) : 0u);
-
-            
+            WriteGroundItemEntry(w, drop);
             w.WriteByte(0);
-
-            
-            w.WriteUInt16(0);
-
-            
-            w.WriteByte(0);
-
-            
-            w.WriteByte(0);                    
-            w.WriteByte(0);                    
-            w.WriteByte(0);                    
-            w.WriteUInt16(0);                  
-            w.WriteByte(0);                    
-            w.WriteByte(0);                    
-            w.WriteByte(0);                    
-            w.WriteByte(0);                    
-            w.WriteByte(0);                    
-            w.WriteByte(0);                    
-            w.WriteUInt16(ownerActorId);       
+            w.WriteUInt16(ownerActorId);
 
             return w.ToArray();
         }
@@ -136,6 +107,46 @@ namespace DfoServer.Network.Builders
             destination[offset + 1] = (byte)(value >> 8);
             destination[offset + 2] = (byte)(value >> 16);
             destination[offset + 3] = (byte)(value >> 24);
+        }
+
+        private static void WriteGroundItemEntry(GamePacketWriter writer, Game.Dungeon.DropInfo drop)
+        {
+            var core = CreateGroundItemCore(drop);
+            if (InventoryStackRuleService.IsStackable(core))
+                core.Count = NormalizeStackCount(drop.StackCount);
+
+            ItemListProtocolWriter.WriteCommonEntry84(
+                writer,
+                drop.SourceSlotIndex,
+                core);
+        }
+
+        private static ItemCore CreateGroundItemCore(Game.Dungeon.DropInfo drop)
+        {
+            if (drop.Core != null)
+                return drop.Core.Copy();
+
+            var itemId = unchecked((int)drop.TemplateId);
+            var itemKind = ItemCore.KindConsumable;
+            if (itemId > 0
+                && !ItemMetadataResolver.TryResolveItemKind(itemId, out itemKind))
+            {
+                itemKind = ItemCore.KindConsumable;
+            }
+
+            var core = ItemCore.Create(itemKind, itemId);
+            core.Count = NormalizeStackCount(drop.StackCount);
+            core.Durability = drop.Endurance;
+            core.Upgrade = drop.UpgradeLevel;
+            return core;
+        }
+
+        private static int NormalizeStackCount(uint stackCount)
+        {
+            if (stackCount == 0)
+                return 1;
+
+            return stackCount > int.MaxValue ? int.MaxValue : (int)stackCount;
         }
 
         private static byte[] Hex(string hex)

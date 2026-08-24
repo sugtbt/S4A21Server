@@ -886,7 +886,8 @@ namespace DfoServer.Game.Inventory
 
         private static bool IsEnchantTargetList(InventoryListType listType)
         {
-            return listType == InventoryListType.Main;
+            return listType == InventoryListType.Main
+                || listType == InventoryListType.Equipment;
         }
 
         private static bool TryResolveEquipmentTarget(

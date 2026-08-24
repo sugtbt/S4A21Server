@@ -30,7 +30,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                 packetX,
                 packetY,
                 drop,
-                session.Player.UserId);
+                0);
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
                 0x00,
                 (ushort)NotiPacketType.DROP_ITEM,

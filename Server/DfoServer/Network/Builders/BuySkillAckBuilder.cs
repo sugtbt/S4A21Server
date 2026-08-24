@@ -32,7 +32,20 @@ namespace DfoServer.Network.Builders
                 w.WriteByte(e.Slot);                               
                 w.WriteUInt16(e.SkillId);                          
                 w.WriteByte(e.Level);                              
-                w.WriteByte(e.HasCmd ? (byte)1 : (byte)0);         
+                if (e.HasCmd && e.CommandBytes.Count > 0)
+                {
+                    w.WriteByte(0x01);
+                    var commandCount = e.CommandBytes.Count > byte.MaxValue
+                        ? byte.MaxValue
+                        : e.CommandBytes.Count;
+                    w.WriteByte((byte)commandCount);
+                    for (var index = 0; index < commandCount; index++)
+                        w.WriteByte(e.CommandBytes[index]);
+                }
+                else
+                {
+                    w.WriteByte(0x00);
+                }
             }
             return w.ToArray();
         }
