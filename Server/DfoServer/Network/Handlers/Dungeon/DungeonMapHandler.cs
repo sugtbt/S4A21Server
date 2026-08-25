@@ -831,7 +831,11 @@ namespace DfoServer.Network.Handlers.Dungeon
                 run.Difficulty,
                 run.MazeIndex,
                 out var namedMonsters);
-            DungeonData.PromoteChampions(monsters, champCount, namedMonsters);
+            DungeonData.PromoteChampions(
+                monsters,
+                champCount,
+                namedMonsters,
+                run.DungeonId);
         }
 
         private static int AppendHellPartyTemplateRows(List<DungeonData.MonsterSumInfo> monsters, DungeonData.HellPartyRoomInfo hellRoomInfo)

@@ -1036,6 +1036,94 @@ namespace DfoServer.SelfTests
                 && namedDungeon?.NamedMonster?.Contains(56349) == true
                 && Dungeon.IsNamedMonster(5006, 56349),
                 ref failures);
+
+            var timeBreakPromotionMap =
+                Dungeon.GetDungeonMapMonsterSummaryInformation(
+                    2007,
+                    5,
+                    0,
+                    mazeIndex: 0,
+                    overrideMapId: 17091);
+            Dungeon.PromoteChampions(
+                timeBreakPromotionMap.Monsters,
+                count: 10,
+                dungeonId: 2007);
+            Check(
+                "special-dungeon mechanism actors stay out of random champion promotion",
+                MonsterCaptureDefinitionCatalog
+                    .IsChampionPromotionDisabled(61794)
+                && !MonsterCaptureDefinitionCatalog
+                    .IsChampionPromotionDisabled(56603)
+                && IndependentDropDefinitionCatalog
+                    .HasMonsterDefinition(56603)
+                && IndependentDropDefinitionCatalog
+                    .HasMonsterDefinition(61794)
+                && !IndependentDropDefinitionCatalog
+                    .HasMonsterDefinition(69235)
+                && timeBreakPromotionMap.Monsters
+                    .Where(monster => monster.Code == 56603
+                        || monster.Code == 61794)
+                    .All(monster => monster.Type == 0)
+                && timeBreakPromotionMap.Monsters
+                    .Where(monster => monster.Code == 69235)
+                    .All(monster => monster.Type == 1),
+                ref failures);
+
+            var togPromotionMap =
+                Dungeon.GetDungeonMapMonsterSummaryInformation(
+                    225,
+                    1,
+                    0,
+                    mazeIndex: 0,
+                    overrideMapId: 32210);
+            var medelPromotionMap =
+                Dungeon.GetDungeonMapMonsterSummaryInformation(
+                    231,
+                    3,
+                    0,
+                    mazeIndex: 0,
+                    overrideMapId: 32234);
+            Dungeon.PromoteChampions(
+                togPromotionMap.Monsters,
+                count: 10,
+                dungeonId: 225);
+            Dungeon.PromoteChampions(
+                medelPromotionMap.Monsters,
+                count: 10,
+                dungeonId: 231);
+            Check(
+                "sequential-dungeon mechanism monsters stay normal",
+                SequentialDungeonMonsterCatalog.Contains(225, 56639)
+                && SequentialDungeonMonsterCatalog.Contains(231, 56649)
+                && togPromotionMap.Monsters.Count == 1
+                && togPromotionMap.Monsters[0].Code == 56639
+                && togPromotionMap.Monsters[0].Type == 0
+                && medelPromotionMap.Monsters.Count == 1
+                && medelPromotionMap.Monsters[0].Code == 56649
+                && medelPromotionMap.Monsters[0].Type == 0,
+                ref failures);
+
+            var ordinaryPromotionMap =
+                Dungeon.GetDungeonMapMonsterSummaryInformation(
+                    145,
+                    0,
+                    1,
+                    mazeIndex: 1,
+                    overrideMapId: 55616);
+            Dungeon.PromoteChampions(
+                ordinaryPromotionMap.Monsters,
+                count: 1,
+                dungeonId: 145);
+            Check(
+                "ordinary repeated monsters remain eligible for random champion promotion",
+                ordinaryPromotionMap.Monsters.Count == 4
+                && ordinaryPromotionMap.Monsters
+                    .Count(monster => monster.Code == 65311
+                        && monster.Type == 1) == 1
+                && ordinaryPromotionMap.Monsters
+                    .Count(monster => monster.Code == 65311
+                        && monster.Type == 0) == 3,
+                ref failures);
             Check(
                 "APC actor kinds share the monster experience normalization",
                 DungeonExperienceCalculator.ResolveMonsterKind(5) == 0

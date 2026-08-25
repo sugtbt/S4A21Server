@@ -123,6 +123,7 @@ namespace PvfLib
         public string Item { get; set; }
         public List<MonsterCatchItemInfo> CatchItems { get; set; }
             = new List<MonsterCatchItemInfo>();
+        public bool NoChampion { get; set; }
 
         #endregion
         #region 解析
@@ -221,6 +222,7 @@ namespace PvfLib
                     case "die effect": mob.DieEffect = data; break;
                     case "attack info": mob.AttackInfo = data; break;
                     case "item": mob.Item = data; break;
+                    case "no champion": mob.NoChampion = true; break;
                     case "catch item":
                         ParseCatchItems(node, content, mob.CatchItems);
                         break;

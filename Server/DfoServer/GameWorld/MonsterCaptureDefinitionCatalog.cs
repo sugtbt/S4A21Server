@@ -31,10 +31,8 @@ namespace DfoServer.GameWorld
         private static readonly Lazy<LstFile> MonsterList =
             new Lazy<LstFile>(() => Dungeon.LoadLstFile(
                 Path.Combine("monster", "monster.lst")));
-        private static readonly ConcurrentDictionary<int,
-            IReadOnlyList<MonsterCaptureItemDefinition>> Definitions =
-                new ConcurrentDictionary<int,
-                    IReadOnlyList<MonsterCaptureItemDefinition>>();
+        private static readonly ConcurrentDictionary<int, MonsterDefinition>
+            Definitions = new ConcurrentDictionary<int, MonsterDefinition>();
 
         internal static IReadOnlyList<MonsterCaptureItemDefinition> GetItems(
             int monsterCode)
@@ -42,25 +40,37 @@ namespace DfoServer.GameWorld
             if (monsterCode <= 0)
                 return Empty;
 
-            return Definitions.GetOrAdd(monsterCode, LoadItems);
+            return GetDefinition(monsterCode).CaptureItems;
         }
 
-        private static IReadOnlyList<MonsterCaptureItemDefinition> LoadItems(
+        internal static bool IsChampionPromotionDisabled(int monsterCode)
+        {
+            return monsterCode > 0
+                && GetDefinition(monsterCode).NoChampionPromotion;
+        }
+
+        private static MonsterDefinition GetDefinition(int monsterCode)
+        {
+            if (monsterCode <= 0)
+                return MonsterDefinition.Empty;
+
+            return Definitions.GetOrAdd(monsterCode, LoadDefinition);
+        }
+
+        private static MonsterDefinition LoadDefinition(
             int monsterCode)
         {
             try
             {
                 var entry = MonsterList.Value.GetById(monsterCode);
                 if (entry == null || string.IsNullOrWhiteSpace(entry.FilePath))
-                    return Empty;
+                    return MonsterDefinition.Empty;
 
                 var monster = MonsterFile.Parse(PvfArchiveAccessor.ReadText(
                     Path.Combine("monster", entry.FilePath)));
-                if (monster.CatchItems == null || monster.CatchItems.Count == 0)
-                    return Empty;
-
                 var items = new List<MonsterCaptureItemDefinition>();
-                foreach (var item in monster.CatchItems)
+                foreach (var item in monster.CatchItems
+                    ?? new List<MonsterCatchItemInfo>())
                 {
                     if (item == null
                         || item.ItemId <= 0
@@ -81,18 +91,44 @@ namespace DfoServer.GameWorld
                         item.DropRate));
                 }
 
-                return items.Count == 0
+                var captureItems = items.Count == 0
                     ? Empty
-                    : new ReadOnlyCollection<MonsterCaptureItemDefinition>(
-                        items.ToArray());
+                    : (IReadOnlyList<MonsterCaptureItemDefinition>)
+                        new ReadOnlyCollection<MonsterCaptureItemDefinition>(
+                            items.ToArray());
+                return new MonsterDefinition(
+                    captureItems,
+                    monster.NoChampion);
             }
             catch (Exception ex)
             {
                 FileLogger.Log(
                     $"[MonsterCaptureDefinitionCatalog] load failed: " +
                     $"monster={monsterCode} error={ex.Message}");
-                return Empty;
+                return MonsterDefinition.Empty;
             }
+        }
+
+        private sealed class MonsterDefinition
+        {
+            internal static MonsterDefinition Empty { get; } =
+                new MonsterDefinition(
+                    MonsterCaptureDefinitionCatalog.Empty,
+                    noChampionPromotion: false);
+
+            internal MonsterDefinition(
+                IReadOnlyList<MonsterCaptureItemDefinition> captureItems,
+                bool noChampionPromotion)
+            {
+                CaptureItems = captureItems
+                    ?? MonsterCaptureDefinitionCatalog.Empty;
+                NoChampionPromotion = noChampionPromotion;
+            }
+
+            internal IReadOnlyList<MonsterCaptureItemDefinition> CaptureItems
+            { get; }
+
+            internal bool NoChampionPromotion { get; }
         }
     }
 }

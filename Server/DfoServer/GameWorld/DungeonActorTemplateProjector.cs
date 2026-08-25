@@ -63,6 +63,8 @@ namespace DfoServer.GameWorld
                     Type = monsterType,
                     Level = monsterLevel,
                     IsBlocking = IsBlockingMonster(mapFile, monsterIndex),
+                    NoChampionPromotion = MonsterCaptureDefinitionCatalog
+                        .IsChampionPromotionDisabled(item.MonsterId.Value),
                     X = item.X.GetValueOrDefault(),
                     Y = item.Y.GetValueOrDefault(),
                     Z = item.Z.GetValueOrDefault(),
@@ -169,6 +171,8 @@ namespace DfoServer.GameWorld
                     Y = item.Y.GetValueOrDefault(),
                     Z = item.Z.GetValueOrDefault(),
                     IsBlocking = !conditionalSummon,
+                    NoChampionPromotion = MonsterCaptureDefinitionCatalog
+                        .IsChampionPromotionDisabled(item.MonsterId.Value),
                     TemplateOrder = conditionalSummon && conditionalOrder > 0
                         ? (ushort)Math.Min(conditionalOrder, ushort.MaxValue)
                         : (ushort)0,
@@ -282,6 +286,8 @@ namespace DfoServer.GameWorld
                             ? (byte)Math.Min(spawn.Level, byte.MaxValue)
                             : dungeonBasicLevel,
                         IsBlocking = false,
+                        NoChampionPromotion = MonsterCaptureDefinitionCatalog
+                            .IsChampionPromotionDisabled(spawn.Code),
                         TemplateOrder = (ushort)Math.Min(
                             objectIndex,
                             ushort.MaxValue),

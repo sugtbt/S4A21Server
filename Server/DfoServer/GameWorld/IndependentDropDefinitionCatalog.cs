@@ -189,6 +189,10 @@ namespace DfoServer.GameWorld
             new Lazy<CatalogSnapshot>(
                 LoadSafely,
                 LazyThreadSafetyMode.ExecutionAndPublication);
+        private static readonly Lazy<HashSet<int>> MonsterCodeIndex =
+            new Lazy<HashSet<int>>(
+                LoadMonsterCodeIndex,
+                LazyThreadSafetyMode.ExecutionAndPublication);
 
         internal static void WarmUp()
         {
@@ -224,6 +228,12 @@ namespace DfoServer.GameWorld
 
             entries = Array.Empty<IndependentDropEntryDefinition>();
             return false;
+        }
+
+        internal static bool HasMonsterDefinition(int monsterCode)
+        {
+            return monsterCode > 0
+                && MonsterCodeIndex.Value.Contains(monsterCode);
         }
 
         internal static bool TryResolveExternalPool(
@@ -268,6 +278,26 @@ namespace DfoServer.GameWorld
                 monsterEntries,
                 externalPools,
                 jobMappings);
+        }
+
+        private static HashSet<int> LoadMonsterCodeIndex()
+        {
+            try
+            {
+                var entries = LoadMonsterEntries(
+                    new Dictionary<int, ExternalPoolDefinition>(),
+                    reportMissingExternalPools: false);
+                FileLogger.Log(
+                    $"[IndependentDropDefinition] monster index loaded " +
+                    $"count={entries.Count}");
+                return new HashSet<int>(entries.Keys);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[IndependentDropDefinition] monster index failed: {ex.Message}");
+                return new HashSet<int>();
+            }
         }
 
         private static Dictionary<(int Job, int FirstGrowType), int>
@@ -386,7 +416,8 @@ namespace DfoServer.GameWorld
 
         private static Dictionary<int, IndependentDropEntryDefinition[]>
             LoadMonsterEntries(
-                IReadOnlyDictionary<int, ExternalPoolDefinition> externalPools)
+                IReadOnlyDictionary<int, ExternalPoolDefinition> externalPools,
+                bool reportMissingExternalPools = true)
         {
             var text = PvfArchiveAccessor.ReadText(MainDefinitionPath);
             var sectionStart = text.IndexOf(
@@ -444,7 +475,8 @@ namespace DfoServer.GameWorld
                     poolIndexes = ReadExternalPoolIndexes(queue).ToArray();
                     poolsByJobGroup = BuildMergedExternalPools(
                         poolIndexes,
-                        externalPools);
+                        externalPools,
+                        reportMissingExternalPools);
                 }
 
                 if (type != 0)
@@ -478,16 +510,20 @@ namespace DfoServer.GameWorld
         private static Dictionary<int, IndependentDropWeightedPoolDefinition>
             BuildMergedExternalPools(
                 IEnumerable<int> poolIndexes,
-                IReadOnlyDictionary<int, ExternalPoolDefinition> externalPools)
+                IReadOnlyDictionary<int, ExternalPoolDefinition> externalPools,
+                bool reportMissingPools = true)
         {
             var grouped = new Dictionary<int, List<RawIndependentDropPoolItem>>();
             foreach (var poolIndex in poolIndexes ?? Array.Empty<int>())
             {
                 if (!externalPools.TryGetValue(poolIndex, out var externalPool))
                 {
-                    FileLogger.Log(
-                        $"[IndependentDropDefinition] missing external pool " +
-                        $"index={poolIndex}");
+                    if (reportMissingPools)
+                    {
+                        FileLogger.Log(
+                            $"[IndependentDropDefinition] missing external pool " +
+                            $"index={poolIndex}");
+                    }
                     continue;
                 }
 

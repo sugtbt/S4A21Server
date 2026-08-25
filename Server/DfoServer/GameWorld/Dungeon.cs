@@ -41,6 +41,9 @@ namespace DfoServer.GameWorld
 
             public bool IsBlocking { get; set; }
 
+            // MOB [no champion] blocks only runtime normal -> champion promotion.
+            public bool NoChampionPromotion { get; set; }
+
             // START_MAP 模板/波次字段。深渊隐藏行使用 map [hellparty] 的 order。
             public ushort TemplateOrder { get; set; }
 
@@ -219,21 +222,63 @@ namespace DfoServer.GameWorld
             catch { return 0; }
         }
 
-        public static void PromoteChampions(List<MonsterSumInfo> monsters, int count, int[] namedMonsterCodes = null)
+        public static void PromoteChampions(
+            List<MonsterSumInfo> monsters,
+            int count,
+            int[] namedMonsterCodes = null,
+            int dungeonId = 0)
         {
             if (count <= 0) return;
 
             var namedSet = namedMonsterCodes != null && namedMonsterCodes.Length > 0
                 ? new HashSet<int>(namedMonsterCodes) : null;
+            var visibleNormalCounts = new Dictionary<int, int>();
+            foreach (var monster in monsters)
+            {
+                if (monster.Type != 0
+                    || !monster.IsBlocking
+                    || monster.Flag0 != 0
+                    || monster.Code <= 0)
+                {
+                    continue;
+                }
+
+                visibleNormalCounts.TryGetValue(monster.Code, out var existing);
+                visibleNormalCounts[monster.Code] = existing + 1;
+            }
+
+            var specialDungeon = false;
+            if (dungeonId > 0)
+            {
+                try
+                {
+                    specialDungeon = GetDungeonFile(dungeonId)?.SpecialDungeon == true;
+                }
+                catch
+                {
+                    specialDungeon = false;
+                }
+            }
 
             var normalIndices = new List<int>();
             for (int i = 0; i < monsters.Count; i++)
             {
                 var monster = monsters[i];
+                visibleNormalCounts.TryGetValue(
+                    monster.Code,
+                    out var sameCodeCount);
                 if (monster.Type == 0
                     && monster.IsBlocking
                     && monster.Flag0 == 0
-                    && (namedSet == null || !namedSet.Contains(monster.Code)))
+                    && !monster.NoChampionPromotion
+                    && (namedSet == null || !namedSet.Contains(monster.Code))
+                    && !SequentialDungeonMonsterCatalog.Contains(
+                        dungeonId,
+                        monster.Code)
+                    && !(specialDungeon
+                        && sameCodeCount == 1
+                        && IndependentDropDefinitionCatalog
+                            .HasMonsterDefinition(monster.Code)))
                     normalIndices.Add(i);
             }
 
