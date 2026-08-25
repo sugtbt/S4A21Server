@@ -325,8 +325,23 @@ namespace DfoServer.Game.Skills
                         return new BuySkillExecutionPlan { Result = result, Snapshot = snapshot };
                     }
 
+                    // Resolve the static direction cap through the same PVF owner
+                    // used by skill projection. Do not read sd.MaxLevel here:
+                    // [maximum level] may be a growType-indexed array whose first
+                    // value is not the active profession's cap.
+                    var configuredMaxLevel = sd.GetMaxLearnableLevel(
+                        int.MaxValue,
+                        firstGrow,
+                        secondGrow);
+                    if (configuredMaxLevel <= 0)
+                    {
+                        result.Success = false;
+                        result.ErrorCode = 18;
+                        return new BuySkillExecutionPlan { Result = result, Snapshot = snapshot };
+                    }
+
                     int newLevel = curLevel + levels;
-                    var effectiveMaxLevel = Math.Min(sd.MaxLevel > 0 ? sd.MaxLevel : int.MaxValue, growtypeMaxLevel);
+                    var effectiveMaxLevel = configuredMaxLevel;
                     if (newLevel > effectiveMaxLevel) newLevel = effectiveMaxLevel;
                     if (newLevel <= curLevel) continue;
 

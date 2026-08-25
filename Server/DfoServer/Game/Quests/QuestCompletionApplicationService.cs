@@ -1632,7 +1632,9 @@ namespace DfoServer.Game.Quests
                     skills,
                     grants,
                     job,
-                    characterLevel);
+                    characterLevel,
+                    firstGrow,
+                    secondGrow);
                 progressRepository.SaveSkillProgress(
                     connection,
                     transaction,

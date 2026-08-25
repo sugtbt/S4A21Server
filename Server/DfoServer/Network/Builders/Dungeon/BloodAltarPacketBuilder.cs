@@ -1,5 +1,6 @@
 using DfoServer.Game.Dungeon;
 using DfoServer.Game.Dungeon.BloodAltar;
+using DfoServer.GameWorld;
 using System;
 using System.Collections.Generic;
 
@@ -10,26 +11,40 @@ namespace DfoServer.Network.Builders
         internal const int MaxStandardRewardCards = 10;
         internal const int MaxRewardCards = MaxStandardRewardCards + 1;
 
+        internal static byte[] BuildInfo(
+            int dungeonId,
+            BloodAltarDungeonKind kind)
+        {
+            if (dungeonId <= 0)
+                throw new ArgumentOutOfRangeException(nameof(dungeonId));
+
+            var writer = new GamePacketWriter();
+            writer.WriteUInt32((uint)dungeonId);
+            writer.WriteUInt16(0);
+            writer.WriteUInt16(
+                kind == BloodAltarDungeonKind.Endless
+                    ? (ushort)2
+                    : (ushort)0);
+            writer.WriteUInt32(0);
+            return writer.ToArray();
+        }
+
         internal static byte[] BuildStartMap(
             byte x,
             byte y,
             uint seed,
-            ushort mapId,
-            bool revisit)
+            uint mapId)
         {
             var writer = new GamePacketWriter();
             writer.WriteByte(x);
             writer.WriteByte(y);
             writer.WriteInt32(unchecked((int)seed));
             writer.WriteByte(0);
-            writer.WriteByte(revisit ? (byte)0 : (byte)1);
-            if (!revisit)
-            {
-                writer.WriteUInt16(mapId);
-                writer.WriteByte(0);
-                writer.WriteByte(0);
-                writer.WriteByte(0);
-            }
+            writer.WriteByte(1);
+            writer.WriteUInt32(mapId);
+            writer.WriteByte(0);
+            writer.WriteByte(0);
+            writer.WriteByte(0);
             return writer.ToArray();
         }
 

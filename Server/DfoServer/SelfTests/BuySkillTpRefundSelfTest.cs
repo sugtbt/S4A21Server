@@ -16,8 +16,12 @@ namespace DfoServer.SelfTests
         private const int AccountIdBase = 93000;
         private const int CharacterIdBase = 93100;
         private const int JobSwordman = 0;
+        private const int JobMage = 3;
         private const byte Level = 60;
         private const byte GrowTypeAsura = 4;
+        private const byte LevelElementalIgnite = 99;
+        private const byte GrowTypeElementalist = 1;
+        private const ushort ElementalIgniteSkillId = 29;
         private const ushort BasicAttackUpExSkillId = 161;
         private const ushort GrandWaveExSkillId = 211;
         private const byte BasicAttackUpExSlot = 0x9B;
@@ -29,6 +33,7 @@ namespace DfoServer.SelfTests
             var failures = 0;
 
             VerifyPvfTpSkillData(ref failures);
+            VerifyMultiValueSkillPurchase(ref failures);
             VerifyTpRefundRequiresTpResetBook(ref failures);
             VerifyTpRefundConsumesNormalTpResetBook(ref failures);
             VerifyTpRefundConsumesEventTpResetBook(ref failures);
@@ -59,6 +64,79 @@ namespace DfoServer.SelfTests
                 && basic.TpCostFor(0, 2) == 2
                 && grandWave.TpCostFor(2, 5) == 6,
                 ref failures);
+        }
+
+        private static void VerifyMultiValueSkillPurchase(ref int failures)
+        {
+            var tempDbPath = BuildTempDatabasePath("multi-value-skill");
+            const int accountId = AccountIdBase + 10;
+            const int characterId = CharacterIdBase + 10;
+
+            try
+            {
+                var database = CreateSeededDatabase(
+                    tempDbPath,
+                    accountId,
+                    characterId,
+                    "buy-skill-multi-value",
+                    JobMage,
+                    GrowTypeElementalist,
+                    LevelElementalIgnite);
+                var repo = new SqliteCharacterProgressRepository(database);
+                var snapshot = new SkillInfoSnapshot();
+                var page0 = new SkillInfoPageSnapshot();
+                page0.Entries.Add(new SkillInfoEntrySnapshot
+                {
+                    Slot = 0,
+                    SkillId = 16,
+                    Level = 1,
+                });
+                page0.Entries.Add(new SkillInfoEntrySnapshot
+                {
+                    Slot = 1,
+                    SkillId = 18,
+                    Level = 1,
+                });
+                snapshot.Pages.Add(page0);
+                snapshot.Pages.Add(new SkillInfoPageSnapshot());
+                repo.SaveSkillProgress(characterId, snapshot);
+
+                var result = BuySkillService.Execute(
+                    repo,
+                    characterId,
+                    accountId,
+                    JobMage,
+                    skillTree: 0,
+                    entries: new List<BuySkillEntry>
+                    {
+                        new BuySkillEntry
+                        {
+                            SkillIndex = ElementalIgniteSkillId,
+                            IsRefund = 0,
+                            Level = 20,
+                        },
+                    },
+                    bonusSp: 100000,
+                    level: LevelElementalIgnite,
+                    growType: GrowTypeElementalist);
+
+                Check(
+                    "BUY_SKILL applies the active growType maximum-level cap",
+                    result != null
+                    && result.Success
+                    && result.Entries.Count == 1
+                    && result.Entries[0].SkillId == ElementalIgniteSkillId
+                    && result.Entries[0].Level == 20
+                    && ReadSkillLevel(
+                        repo,
+                        characterId,
+                        ElementalIgniteSkillId) == 20,
+                    ref failures);
+            }
+            finally
+            {
+                TryDeleteDatabase(tempDbPath);
+            }
         }
 
         private static void VerifyTpRefundRequiresTpResetBook(ref int failures)
@@ -292,7 +370,10 @@ namespace DfoServer.SelfTests
             string tempDbPath,
             int accountId,
             int characterId,
-            string name)
+            string name,
+            int job = JobSwordman,
+            int growType = GrowTypeAsura,
+            int level = Level)
         {
             var database = new GameDatabase(tempDbPath, ServerPaths.SchemaFilePath);
             using (var connection = database.OpenConnection())
@@ -306,9 +387,9 @@ VALUES (@cid, @aid, @name, @job, @grow, @level);";
                 command.Parameters.AddWithValue("@aid", accountId);
                 command.Parameters.AddWithValue("@cid", characterId);
                 command.Parameters.AddWithValue("@name", name);
-                command.Parameters.AddWithValue("@job", JobSwordman);
-                command.Parameters.AddWithValue("@grow", GrowTypeAsura);
-                command.Parameters.AddWithValue("@level", Level);
+                command.Parameters.AddWithValue("@job", job);
+                command.Parameters.AddWithValue("@grow", growType);
+                command.Parameters.AddWithValue("@level", level);
                 command.ExecuteNonQuery();
             }
 

@@ -55,7 +55,10 @@ namespace DfoServer.Game.Skills
                     // fixed level skill: 自动等级按角色等级派生, 不消耗 SP
                     if (sd.IsFixedLevelSkill)
                     {
-                        var fixedLevel = sd.GetFixedLevel(level);
+                        var fixedLevel = sd.GetFixedLevel(
+                            level,
+                            growType,
+                            secondGrowType);
                         if (fixedLevel > baseLevel) baseLevel = (byte)System.Math.Min(fixedLevel, byte.MaxValue);
                     }
                     if (entry.Level <= baseLevel)

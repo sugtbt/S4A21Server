@@ -1328,25 +1328,42 @@ namespace DfoServer.Network.Handlers.Dungeon
             if (!s.Player.IsCurrentDungeonRun(runIdentity))
                 return;
 
-            await s.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x001C, DungeonNotificationBuilder.BuildDungeonInfo(
-                dungeonId: req.DungeonId,
-                difficulty: req.Difficulty,
-                mazeIndex: selectedMazeIndex,
-                bossX: bossPos != null ? (byte)bossPos[0] : (byte)0,
-                bossY: bossPos != null ? (byte)bossPos[1] : (byte)0,
-                hellPartyRoomX: run.HellMode ? run.HellMapX : (byte)0xFF,
-                hellPartyRoomY: run.HellMode ? run.HellMapY : (byte)0xFF,
-                dungeonMode: 0,
-                extraPairGroups: extraPairGroups,
-                hellPartyEnabled: run.HellMode ? (ushort)1 : (ushort)0,
-                value2: run.HellMode ? (byte)0x0B : (byte)0,
-                flagA: extraPairGroups != null ? (byte)1 : (byte)0)));
-            if (!s.Player.IsCurrentDungeonRun(runIdentity))
-                return;
+            var bloodAltar = run.Instance.Mechanisms.BloodAltar;
+            var tournament = run.Instance.Mechanisms.Tournament;
+            if (bloodAltar != null)
+            {
+                await s.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketTypeA21.BLOOD_INFO,
+                    BloodAltarPacketBuilder.BuildInfo(
+                        bloodAltar.Definition.DungeonId,
+                        bloodAltar.Definition.Kind)));
+            }
+            else if (tournament == null)
+            {
+                await s.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketTypeA21.DUNGEON_INFO,
+                    DungeonNotificationBuilder.BuildDungeonInfo(
+                        dungeonId: req.DungeonId,
+                        difficulty: req.Difficulty,
+                        mazeIndex: selectedMazeIndex,
+                        bossX: bossPos != null ? (byte)bossPos[0] : (byte)0,
+                        bossY: bossPos != null ? (byte)bossPos[1] : (byte)0,
+                        hellPartyRoomX: run.HellMode ? run.HellMapX : (byte)0xFF,
+                        hellPartyRoomY: run.HellMode ? run.HellMapY : (byte)0xFF,
+                        dungeonMode: 0,
+                        extraPairGroups: extraPairGroups,
+                        hellPartyEnabled: run.HellMode ? (ushort)1 : (ushort)0,
+                        value2: run.HellMode ? (byte)0x0B : (byte)0,
+                        flagA: extraPairGroups != null ? (byte)1 : (byte)0)));
+                if (!s.Player.IsCurrentDungeonRun(runIdentity))
+                    return;
 
-            await DungeonMechanismCoordinator.SendSelectionStateAsync(
-                s,
-                "after_dungeon_info");
+                await DungeonMechanismCoordinator.SendSelectionStateAsync(
+                    s,
+                    "after_dungeon_info");
+            }
             if (!s.Player.IsCurrentDungeonRun(runIdentity))
                 return;
             var hasSelectedStart = run.MazeStartX >= 0 && run.MazeStartY >= 0;

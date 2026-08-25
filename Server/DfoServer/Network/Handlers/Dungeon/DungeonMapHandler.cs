@@ -305,7 +305,6 @@ namespace DfoServer.Network.Handlers.Dungeon
             var sentMapY = maze.Y;
             var sentActorCount = 0;
             var sentTrackedCount = 0;
-            var startMapRevisit = false;
             DungeonInstanceRoom pendingStandardRoom = null;
             DungeonData.MazeSumInfo pendingStandardMaze = default;
             ushort pendingFirstActorSequence = 0;
@@ -323,7 +322,6 @@ namespace DfoServer.Network.Handlers.Dungeon
             run.RoomKey = roomKey;
             if (run.RoomStates.TryGetValue(roomKey, out var cached))
             {
-                startMapRevisit = true;
                 if (run.Tower == null && cached.InstanceRoom != null)
                 {
                     cached.InstanceRoom.CopyKilledActorSequenceIdsTo(
@@ -513,7 +511,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                 var startMapFogFlag = run.HellMode ? (byte)1 : (byte)0;
 
                 startMapBody = Array.Empty<byte>();
-                if (!isBloodAltarMap)
+                if (!isBloodAltarMap && !isTournamentMap)
                 {
                     pendingStandardRoom = instanceRoom;
                     pendingStandardMaze = startMapMaze;
@@ -579,15 +577,55 @@ namespace DfoServer.Network.Handlers.Dungeon
                     (byte)Math.Max(0, Math.Min(byte.MaxValue, sentMapX)),
                     (byte)Math.Max(0, Math.Min(byte.MaxValue, sentMapY)),
                     run.Seed,
-                    (ushort)sentMapId,
-                    startMapRevisit);
+                    (uint)sentMapId);
             }
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                0x00,
-                isBloodAltarMap
-                    ? (ushort)NotiPacketType.START_BLOOD_MAP
-                    : (ushort)NotiPacketType.START_MAP,
-                startMapBody));
+            var tournament = run.Instance.Mechanisms.Tournament;
+            var sendTournamentProjection = tournament != null
+                && sentMapId == tournament.Definition.MapId;
+            if (tournament != null && !sendTournamentProjection)
+            {
+                FileLogger.Log(
+                    $"[Tournament] special projection rejected: " +
+                    $"cid={session.Player.CharacterId} dungeon={run.DungeonId} " +
+                    $"expectedMap={tournament.Definition.MapId} actualMap={sentMapId}");
+                return null;
+            }
+            if (sendTournamentProjection)
+            {
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketTypeA21.TOURNAMENT_INFO,
+                    TournamentPacketBuilder.BuildTournamentInfo(
+                        tournament,
+                        run.Difficulty,
+                        run.RoomStartSequence)));
+                if (!session.Player.IsCurrentDungeonParticipantRoom(roomIdentity))
+                    return null;
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketTypeA21.TOURNAMENT_MAP_INFO,
+                    TournamentPacketBuilder.BuildTournamentMapInfo(
+                        (byte)sentMapX,
+                        (byte)sentMapY,
+                        run.Seed,
+                        (uint)tournament.Definition.MapId,
+                        revisit: !isFirstRunStartMap)));
+                FileLogger.Log(
+                    $"[Tournament] START_MAP projection sent: " +
+                    $"cid={session.Player.CharacterId} " +
+                    $"dungeon={run.DungeonId} map={sentMapId} " +
+                    $"firstSeq={run.RoomStartSequence} " +
+                    $"revisit={!isFirstRunStartMap}");
+            }
+            else
+            {
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    isBloodAltarMap
+                        ? (ushort)NotiPacketTypeA21.START_BLOOD_MAP
+                        : (ushort)NotiPacketTypeA21.START_MAP,
+                    startMapBody));
+            }
             if (!session.Player.IsCurrentDungeonRun(runIdentity)
                 || !session.Player.IsCurrentDungeonParticipantRoom(roomIdentity))
             {
@@ -636,38 +674,6 @@ namespace DfoServer.Network.Handlers.Dungeon
                 || !session.Player.IsCurrentDungeonParticipantRoom(roomIdentity))
             {
                 return null;
-            }
-
-            var tournament = run.Instance.Mechanisms.Tournament;
-            if (tournament != null
-                && sentMapId == tournament.Definition.MapId)
-            {
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                    0x00,
-                    (ushort)NotiPacketType.TOURNAMENT_INFO,
-                    TournamentPacketBuilder.BuildTournamentInfo(
-                        tournament,
-                        run.Difficulty,
-                        run.RoomStartSequence)));
-                if (!session.Player.IsCurrentDungeonParticipantRoom(roomIdentity))
-                    return null;
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                    0x00,
-                    (ushort)NotiPacketType.TOURNAMENT_MAP_INFO,
-                    TournamentPacketBuilder.BuildTournamentMapInfo(
-                        (byte)sentMapX,
-                        (byte)sentMapY,
-                        run.Seed,
-                        (ushort)tournament.Definition.MapId,
-                        revisit: !isFirstRunStartMap)));
-                if (!session.Player.IsCurrentDungeonParticipantRoom(roomIdentity))
-                    return null;
-                FileLogger.Log(
-                    $"[Tournament] START_MAP projection sent: " +
-                    $"cid={session.Player.CharacterId} " +
-                    $"dungeon={run.DungeonId} map={sentMapId} " +
-                    $"firstSeq={run.RoomStartSequence} " +
-                    $"revisit={!isFirstRunStartMap}");
             }
 
             if (hellPartyMonsterInfoAfterStartMap != null && hellPartyMonsterInfoAfterStartMap.Count > 0)

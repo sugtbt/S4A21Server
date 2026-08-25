@@ -12,7 +12,7 @@ namespace DfoServer.Network.Builders
             ushort firstMonsterSequence)
         {
             var writer = new GamePacketWriter();
-            writer.WriteInt16((short)runtime.Definition.DungeonId);
+            writer.WriteUInt32((uint)runtime.Definition.DungeonId);
             writer.WriteByte(difficulty);
             writer.WriteByte((byte)runtime.Definition.PartyLimit);
             foreach (var round in runtime.Rounds)
@@ -55,7 +55,7 @@ namespace DfoServer.Network.Builders
             byte x,
             byte y,
             uint seed,
-            ushort mapId,
+            uint mapId,
             bool revisit)
         {
             var writer = new GamePacketWriter();
@@ -66,7 +66,7 @@ namespace DfoServer.Network.Builders
             writer.WriteByte(revisit ? (byte)0 : (byte)1);
             if (!revisit)
             {
-                writer.WriteUInt16(mapId);
+                writer.WriteUInt32(mapId);
                 writer.WriteByte(0);
                 writer.WriteByte(0);
                 writer.WriteByte(0);

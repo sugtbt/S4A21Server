@@ -21,6 +21,9 @@ namespace PvfLib
         public int SkillClass { get; set; } = -1;
         public string Icon { get; set; }
         public int MaximumLevel { get; set; } = -1;
+        // [maximum level] may contain one value or a growType-indexed list.
+        // Keep the original text so consumers do not lose per-direction caps.
+        public string MaximumLevelValues { get; set; }
         
         public string GrowtypeMaximumLevel { get; set; }
 
@@ -134,7 +137,10 @@ namespace PvfLib
                     case "type": skl.Type = StripBacktick(data); break;
                     case "skill class": skl.SkillClass = ParseInt(data); break;
                     case "icon": skl.Icon = data; break;
-                    case "maximum level": skl.MaximumLevel = ParseInt(data); break;
+                    case "maximum level":
+                        skl.MaximumLevel = ParseInt(data);
+                        skl.MaximumLevelValues = data;
+                        break;
                     case "growtype maximum level": skl.GrowtypeMaximumLevel = data; break;
 
                     

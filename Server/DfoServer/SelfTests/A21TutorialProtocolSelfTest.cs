@@ -2047,10 +2047,12 @@ namespace DfoServer.SelfTests
                     10100158,
                     1,
                     ItemCreateReason.QuestReward);
+            ItemMetadataResolver.TryResolveItemKind(
+                10100158,
+                out var xilanItemKind);
             Check(
-                "quest depend-give items use the task inventory family without " +
-                "changing generic PVF item classification",
-                xilanEventGrant.ItemKindOverride == ItemCore.KindQuest
+                "quest depend-give items retain the PVF item classification",
+                xilanItemKind == ItemCore.KindConsumable
                 && xilanMetadata != null
                 && xilanMetadata.ItemKind == "stackable"
                 && xilanMetadata.StackableType != null
@@ -2084,14 +2086,42 @@ namespace DfoServer.SelfTests
                     },
                     out var eventPlan);
             Check(
-                "quest event item planning ignores a full ordinary consumable range",
+                "quest event item planning follows the ordinary consumable range",
                 eventPlanCreated
                 && eventPlan != null
                 && eventPlan.Success
                 && eventPlan.Entries.Count == 1
                 && eventPlan.Entries[0].ListType == InventoryListType.Main
-                && eventPlan.Entries[0].SlotIndex >= 177
-                && eventPlan.Entries[0].SlotIndex <= 232,
+                && eventPlan.Entries[0].SlotIndex >= 0
+                && eventPlan.Entries[0].SlotIndex <= 120,
+                ref failures);
+
+            var trapMetadata = ItemMetadataResolver.Resolve(6056);
+            var trapEventGrant =
+                InventoryRewardGrantRequest.CreateQuestEventItem(
+                    6056,
+                    1,
+                    ItemCreateReason.QuestReward);
+            var trapPlanCreated = InventoryRewardGrantService.TryPlanBatch(
+                new InventoryService(1005, 1005),
+                new List<InventoryRewardGrantRequest> { trapEventGrant },
+                out var trapPlan);
+            Check(
+                "PVF throw quest consumables enter the ordinary consumable range",
+                trapMetadata != null
+                && trapMetadata.StackableType != null
+                && trapMetadata.StackableType.IndexOf(
+                    "[throw]",
+                    StringComparison.OrdinalIgnoreCase) >= 0
+                && trapPlanCreated
+                && trapPlan != null
+                && trapPlan.Success
+                && trapPlan.Entries.Count == 1
+                && trapPlan.Entries[0].Core != null
+                && trapPlan.Entries[0].Core.ItemKind == ItemCore.KindConsumable
+                && trapPlan.Entries[0].ListType == InventoryListType.Main
+                && trapPlan.Entries[0].SlotIndex >= 0
+                && trapPlan.Entries[0].SlotIndex <= 120,
                 ref failures);
 
             Check(
@@ -2946,6 +2976,24 @@ namespace DfoServer.SelfTests
                 && callDaimus.IsTrialTransferSkill(0, 0)
                 && callDaimus.GetMaxLearnableLevel(15, 0, 0) == 1
                 && callDaimus.GetMaxLearnableLevel(15, 3, 0) == 1,
+                ref failures);
+
+            var elementalIgnite = SkillDataProvider.GetSkill(3, 29);
+            Check(
+                "PVF multi-value skill maximum levels follow the active growType",
+                elementalIgnite != null
+                && elementalIgnite.MaximumLevels != null
+                && elementalIgnite.MaximumLevels.Length == 6
+                && elementalIgnite.MaximumLevels[0] == 15
+                && elementalIgnite.MaximumLevels[1] == 30
+                && elementalIgnite.GrowtypeMaxLevels != null
+                && elementalIgnite.GrowtypeMaxLevels.Length == 6
+                && elementalIgnite.GrowtypeMaxLevels[0] == 5
+                && elementalIgnite.GrowtypeMaxLevels[1] == 20
+                && elementalIgnite.GetMaxLevelFor(0, 0) == 5
+                && elementalIgnite.GetMaxLevelFor(1, 0) == 20
+                && elementalIgnite.GetMaxLearnableLevel(99, 0, 0) == 5
+                && elementalIgnite.GetMaxLearnableLevel(99, 1, 0) == 20,
                 ref failures);
 
             var atGunnerNitroMotor = SkillDataProvider.GetSkill(5, 16);

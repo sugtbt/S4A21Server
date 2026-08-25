@@ -1205,13 +1205,12 @@ namespace DfoServer.Network.Handlers.Dungeon
 
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
                 0x00,
-                (ushort)NotiPacketType.START_BLOOD_MAP,
+                (ushort)NotiPacketTypeA21.START_BLOOD_MAP,
                 BloodAltarPacketBuilder.BuildStartMap(
                     (byte)Math.Max(0, Math.Min(byte.MaxValue, room.RoomKey.X)),
                     (byte)Math.Max(0, Math.Min(byte.MaxValue, room.RoomKey.Y)),
                     room.RoomState.Seed,
-                    (ushort)runtime.CurrentMapId,
-                    revisit: true)));
+                    (uint)runtime.CurrentMapId)));
             if (!session.Player.IsCurrentDungeonRun(run.CaptureIdentity()))
                 return;
 

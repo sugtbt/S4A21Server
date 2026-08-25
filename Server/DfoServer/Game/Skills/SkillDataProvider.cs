@@ -26,6 +26,8 @@ namespace DfoServer.Game.Skills
         public int[] PreRequiredSkills;
         public int[] SpCostPerLevel;
         public int[] TpCostPerLevel;
+        // [maximum level] may be scalar or indexed by growType.
+        public int[] MaximumLevels;
         // 逐 growType 等级上限(6槽, 按 growType 0-5 索引); 上限 0 = 该方向不可学
         public int[] GrowtypeMaxLevels;
         // [skill fitness growtype] 是 PVF 的技能分组/适配元数据，不能直接
@@ -43,12 +45,18 @@ namespace DfoServer.Game.Skills
         public int FixedLevelInterval = 1;
         public int FixedLevelAddPerInterval = 1;
 
-        public int GetFixedLevel(int charLevel)
+        public int GetFixedLevel(
+            int charLevel,
+            int growType = 0,
+            int secondGrowType = 0)
         {
             if (!IsFixedLevelSkill) return 0;
             if (charLevel < RequiredLevel) return 0;
             var level = FixedLevelBase + (charLevel - RequiredLevel) / FixedLevelInterval * FixedLevelAddPerInterval;
-            var maxLv = MaxLevel > 0 ? MaxLevel : int.MaxValue;
+            var maxLv = Math.Min(
+                GetStaticMaximumLevelFor(growType),
+                GetMaxLevelFor(growType, secondGrowType));
+            if (maxLv <= 0) return 0;
             return Math.Min(level, maxLv);
         }
 
@@ -76,9 +84,9 @@ namespace DfoServer.Game.Skills
             return sum;
         }
 
-        // 该 (growType, 觉醒段) 下的等级上限:
+        // 该 (growType, 觉醒段) 下的方向等级上限:
         // 觉醒段>0 先查 12 槽表(growType*2+段-1), 值为 0 再回落 6 槽表;
-        // 两表都缺省(数组为空)时回落 MaxLevel; 最终 0 = 该方向不可学。
+        // 两表都缺省(数组为空)时回落 [maximum level]; 最终 0 = 该方向不可学。
         public int GetMaxLevelFor(int growType, int secondGrowType)
         {
             var configuredMaximum = GetConfiguredMaxLevelFor(
@@ -108,6 +116,23 @@ namespace DfoServer.Game.Skills
             {
                 return growType >= 0 && growType < GrowtypeMaxLevels.Length
                     ? GrowtypeMaxLevels[growType]
+                    : 0;
+            }
+
+            return GetStaticMaximumLevelFor(growType);
+        }
+
+        // [maximum level] is normally scalar, but some skills provide one
+        // value per growType. A multi-value row must be indexed by the
+        // current direction instead of being truncated to the first value.
+        private int GetStaticMaximumLevelFor(int growType)
+        {
+            if (MaximumLevels != null && MaximumLevels.Length > 0)
+            {
+                if (MaximumLevels.Length == 1)
+                    return MaximumLevels[0];
+                return growType >= 0 && growType < MaximumLevels.Length
+                    ? MaximumLevels[growType]
                     : 0;
             }
 
@@ -148,7 +173,7 @@ namespace DfoServer.Game.Skills
                 return 0;
 
             var staticMaximum = Math.Min(
-                MaxLevel > 0 ? MaxLevel : int.MaxValue,
+                GetStaticMaximumLevelFor(growType),
                 growtypeMaximum);
             if (RequiredLevel <= 0)
                 return staticMaximum;
@@ -236,6 +261,7 @@ namespace DfoServer.Game.Skills
                 PreRequiredSkills = ParseInts(skl.PreRequiredSkill),
                 SpCostPerLevel = ParseInts(skl.PurchaseCost),
                 TpCostPerLevel = ParseInts(skl.SpecialPurchaseCost),
+                MaximumLevels = ParseInts(skl.MaximumLevelValues),
                 GrowtypeMaxLevels = ParseInts(skl.GrowtypeMaximumLevel),
                 SkillFitnessGrowtypes = ParseInts(skl.SkillFitnessGrowtype),
                 SecondGrowtypeMaxLevels = ParseInts(skl.SecondGrowtypeMaximumLevel),

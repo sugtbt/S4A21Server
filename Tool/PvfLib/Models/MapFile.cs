@@ -710,22 +710,54 @@ namespace PvfLib
             var values = data.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
             for (var index = 0; index + 9 < values.Length;)
             {
-                var typeToken = StripBacktick(values[index + 9]);
+                var typeIndex = index + 9;
+                var typeToken = StripBacktick(values[typeIndex]);
                 int? npcId = null;
-                var recordLength = 10;
+                var malformedRecord = false;
 
                 // Quest maps can bind a monster actor to the NPC it becomes after
                 // the encounter: ... [fixed] [NPC] npcId [boss].
-                if (string.Equals(typeToken, "[NPC]", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(typeToken, "NPC", StringComparison.OrdinalIgnoreCase))
+                while (true)
                 {
-                    if (index + 11 >= values.Length)
-                        break;
+                    if (string.Equals(typeToken, "[NPC]", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(typeToken, "NPC", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (typeIndex + 2 >= values.Length)
+                        {
+                            malformedRecord = true;
+                            break;
+                        }
 
-                    npcId = ParseNullableInt(values[index + 10]);
-                    typeToken = StripBacktick(values[index + 11]);
-                    recordLength = 12;
+                        npcId = ParseNullableInt(values[typeIndex + 1]);
+                        typeIndex += 2;
+                        typeToken = StripBacktick(values[typeIndex]);
+                        continue;
+                    }
+
+                    if (string.Equals(typeToken, "[dummy]", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(typeToken, "dummy", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Boss maps commonly append a non-rendered dummy marker before
+                        // the actual type: ... [fixed] [dummy] [boss].  Consume every
+                        // such marker so the following actor remains aligned.
+                        typeIndex++;
+                        if (typeIndex >= values.Length)
+                        {
+                            malformedRecord = true;
+                            break;
+                        }
+
+                        typeToken = StripBacktick(values[typeIndex]);
+                        continue;
+                    }
+
+                    break;
                 }
+
+                if (malformedRecord)
+                    break;
+
+                var recordLength = typeIndex - index + 1;
 
                 result.Add(new MonsterInfo
                 {
