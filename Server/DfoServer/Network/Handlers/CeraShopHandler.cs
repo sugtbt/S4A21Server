@@ -54,7 +54,7 @@ namespace DfoServer.Network.Handlers
             var now = DateTime.UtcNow;
             var ts = new DateTimeOffset(now).ToUnixTimeSeconds();
             var s = $"1234{ts:D10}00000";
-            writer.WriteUtf8Dstr(s);
+            writer.WriteClientDstr(s);
             writer.WriteUInt32(123456);
             return session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x01, header.type, writer.ToArray()));
         }

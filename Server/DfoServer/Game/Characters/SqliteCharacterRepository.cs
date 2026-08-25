@@ -257,27 +257,25 @@ WHERE character_id = @id;";
 
         public CharacterRecord GetByName(string name)
         {
-            var nameBytes = System.Text.Encoding.UTF8.GetBytes(name ?? "");
-            using (var conn = Open())
-            using (var cmd = conn.CreateCommand())
-            {
-                cmd.CommandText = SelectColumns + " WHERE (name = @name OR name = @nameBytes) AND delete_flag = 0;";
-                cmd.Parameters.AddWithValue("@name", name);
-                cmd.Parameters.AddWithValue("@nameBytes", nameBytes);
-                using (var reader = cmd.ExecuteReader())
-                    return reader.Read() ? Map(reader) : null;
-            }
+            return FindByName(name, includeDeleted: false);
         }
 
         public CharacterRecord GetByNameIncludingDeleted(string name)
         {
-            var nameBytes = System.Text.Encoding.UTF8.GetBytes(name ?? "");
+            return FindByName(name, includeDeleted: true);
+        }
+
+        private CharacterRecord FindByName(string name, bool includeDeleted)
+        {
+            var gbkBytes = ClientTextEncoding.GetBytes(name ?? string.Empty);
             using (var conn = Open())
             using (var cmd = conn.CreateCommand())
             {
-                cmd.CommandText = SelectColumns + " WHERE name = @name OR name = @nameBytes ORDER BY delete_flag ASC LIMIT 1;";
-                cmd.Parameters.AddWithValue("@name", name);
-                cmd.Parameters.AddWithValue("@nameBytes", nameBytes);
+                cmd.CommandText = includeDeleted
+                    ? SelectColumns + " WHERE name = @name OR name = @gbkBytes ORDER BY delete_flag ASC LIMIT 1;"
+                    : SelectColumns + " WHERE (name = @name OR name = @gbkBytes) AND delete_flag = 0;";
+                cmd.Parameters.AddWithValue("@name", name ?? string.Empty);
+                cmd.Parameters.AddWithValue("@gbkBytes", gbkBytes);
                 using (var reader = cmd.ExecuteReader())
                     return reader.Read() ? Map(reader) : null;
             }
@@ -383,7 +381,7 @@ FROM characters";
         {
             var val = r.GetValue(ordinal);
             if (val is byte[] b) return b;
-            if (val is string s) return System.Text.Encoding.GetEncoding(936).GetBytes(s);
+            if (val is string s) return ClientTextEncoding.GetBytes(s);
             return null;
         }
 

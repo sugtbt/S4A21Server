@@ -33,6 +33,7 @@ namespace DfoServer
             ("--selftest-compound-item-ack", SelfTests.CompoundItemAckSelfTest.Run),
             ("--selftest-daily-reset-account", SelfTests.DailyResetAccountSelfTest.Run),
             ("--selftest-a21-daily-challenge", SelfTests.A21DailyChallengeSelfTest.Run),
+            ("--selftest-a21-joust-event", SelfTests.A21JoustEventSelfTest.Run),
             ("--selftest-a21-death-tower-protocol", SelfTests.A21DeathTowerProtocolSelfTest.Run),
             ("--selftest-item-state", SelfTests.ItemStateSelfTest.Run),
             ("--selftest-titlebook-use-item", SelfTests.TitleBookUseItemAchievementSelfTest.Run),
@@ -132,6 +133,7 @@ namespace DfoServer
 
         static void Main(string[] args)
         {
+            Infrastructure.ClientTextEncoding.EnsureInitialized();
             args ??= Array.Empty<string>();
 
             if (Array.IndexOf(args, "--selftest-all") >= 0)

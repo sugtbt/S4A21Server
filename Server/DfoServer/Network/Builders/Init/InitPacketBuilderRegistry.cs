@@ -74,7 +74,7 @@ namespace DfoServer.Network.Builders
             Register(new DungeonPermissionBodyBuilder());                                
 
             
-            Register(new EventInfoBodyBuilder());                                       
+            Register(new EventInfoBodyBuilder(_database));
             Register(new HotkeyConfigBodyBuilder());                                    
             Register(new CharacterOptionBodyBuilder());
 

@@ -1044,6 +1044,150 @@ CREATE TABLE IF NOT EXISTS united_friend_relations (
 CREATE INDEX IF NOT EXISTS idx_united_friend_relations_friend
     ON united_friend_relations(friend_name);
 
+CREATE TABLE IF NOT EXISTS game_event_state (
+    event_id INTEGER PRIMARY KEY,
+    state INTEGER NOT NULL DEFAULT 0 CHECK(state IN (0, 1))
+);
+
+CREATE TABLE IF NOT EXISTS game_event_info_details (
+    event_id INTEGER PRIMARY KEY,
+    unknown0 INTEGER NOT NULL DEFAULT 0,
+    start_notice TEXT NOT NULL DEFAULT '',
+    end_notice TEXT NOT NULL DEFAULT '',
+    detail_flag INTEGER NOT NULL DEFAULT 0 CHECK(detail_flag IN (0, 1)),
+    flag_a INTEGER NOT NULL DEFAULT 0 CHECK(flag_a >= 0 AND flag_a <= 255),
+    flag_b INTEGER NOT NULL DEFAULT 0 CHECK(flag_b >= 0 AND flag_b <= 255),
+    title TEXT NOT NULL DEFAULT '',
+    short_name TEXT NOT NULL DEFAULT '',
+    reserved_or_icon TEXT NOT NULL DEFAULT '',
+    start_unix_time INTEGER NOT NULL DEFAULT 0,
+    end_unix_time INTEGER NOT NULL DEFAULT 0,
+    link_key TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    detail_enabled INTEGER NOT NULL DEFAULT 0 CHECK(detail_enabled IN (0, 1)),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (event_id) REFERENCES game_event_state(event_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS game_event_info_extra (
+    event_id INTEGER PRIMARY KEY,
+    param0 INTEGER NOT NULL DEFAULT 0,
+    param1 INTEGER NOT NULL DEFAULT 0,
+    param2 INTEGER NOT NULL DEFAULT 0,
+    param3 INTEGER NOT NULL DEFAULT 0,
+    param4 INTEGER NOT NULL DEFAULT 0,
+    param5 INTEGER NOT NULL DEFAULT 0,
+    param6 INTEGER NOT NULL DEFAULT 0,
+    param7 INTEGER NOT NULL DEFAULT 0,
+    param8 INTEGER NOT NULL DEFAULT 0,
+    param9 INTEGER NOT NULL DEFAULT 0,
+    param10 INTEGER NOT NULL DEFAULT 0,
+    param11 INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (event_id) REFERENCES game_event_state(event_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS event_joust_rules (
+    event_id INTEGER PRIMARY KEY,
+    current_round INTEGER NOT NULL DEFAULT 1 CHECK(current_round > 0),
+    current_day_id INTEGER NOT NULL DEFAULT 0,
+    current_schedule_index INTEGER NOT NULL DEFAULT -1,
+    start_hour INTEGER NOT NULL DEFAULT 10 CHECK(start_hour >= 0 AND start_hour < 24),
+    rounds_per_day INTEGER NOT NULL DEFAULT 7 CHECK(rounds_per_day > 0),
+    round_interval_minutes INTEGER NOT NULL DEFAULT 120 CHECK(round_interval_minutes > 0),
+    betting_duration_minutes INTEGER NOT NULL DEFAULT 90 CHECK(betting_duration_minutes > 0),
+    stop_betting_minutes INTEGER NOT NULL DEFAULT 10 CHECK(stop_betting_minutes >= 0),
+    result_stage_count INTEGER NOT NULL DEFAULT 3 CHECK(result_stage_count = 3),
+    result_stage_interval_seconds INTEGER NOT NULL DEFAULT 200 CHECK(result_stage_interval_seconds > 0),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (event_id) REFERENCES game_event_state(event_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS event_joust_round_slots (
+    round_no INTEGER NOT NULL,
+    slot_no INTEGER NOT NULL CHECK(slot_no >= 0 AND slot_no < 8),
+    knight_index INTEGER NOT NULL,
+    is_black INTEGER NOT NULL DEFAULT 0 CHECK(is_black IN (0, 1)),
+    attack_type INTEGER NOT NULL DEFAULT 0,
+    condition_index INTEGER NOT NULL DEFAULT 0 CHECK(condition_index >= 0 AND condition_index <= 4),
+    global_bet_amount INTEGER NOT NULL DEFAULT 0 CHECK(global_bet_amount >= 0),
+    round_day_id INTEGER NOT NULL DEFAULT 0,
+    schedule_index INTEGER NOT NULL DEFAULT -1,
+    round_start_unix_time INTEGER NOT NULL DEFAULT 0,
+    created_at_unix INTEGER NOT NULL DEFAULT 0,
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (round_no, slot_no),
+    UNIQUE (round_no, knight_index)
+);
+
+CREATE TABLE IF NOT EXISTS event_joust_knight_stats (
+    knight_index INTEGER PRIMARY KEY,
+    win_count INTEGER NOT NULL DEFAULT 0 CHECK(win_count >= 0),
+    loss_count INTEGER NOT NULL DEFAULT 0 CHECK(loss_count >= 0),
+    updated_at_unix INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS event_joust_character_bets (
+    round_no INTEGER NOT NULL,
+    character_id INTEGER NOT NULL,
+    slot_no INTEGER NOT NULL CHECK(slot_no >= 0 AND slot_no < 8),
+    knight_index INTEGER NOT NULL,
+    bet_amount INTEGER NOT NULL DEFAULT 0 CHECK(bet_amount >= 0),
+    reward_mail_sent INTEGER NOT NULL DEFAULT 0 CHECK(reward_mail_sent IN (0, 1)),
+    reward_mail_sent_at INTEGER NOT NULL DEFAULT 0,
+    created_at_unix INTEGER NOT NULL DEFAULT 0,
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (round_no, character_id, slot_no),
+    FOREIGN KEY (round_no, slot_no)
+        REFERENCES event_joust_round_slots(round_no, slot_no)
+        ON DELETE CASCADE,
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_joust_bets_reward
+    ON event_joust_character_bets(round_no, reward_mail_sent);
+
+CREATE TABLE IF NOT EXISTS event_joust_results (
+    round_no INTEGER PRIMARY KEY,
+    stage_index INTEGER NOT NULL DEFAULT -1,
+    slot0 INTEGER NOT NULL DEFAULT 0,
+    slot1 INTEGER NOT NULL DEFAULT 0,
+    slot2 INTEGER NOT NULL DEFAULT 0,
+    slot3 INTEGER NOT NULL DEFAULT 0,
+    slot4 INTEGER NOT NULL DEFAULT 0,
+    slot5 INTEGER NOT NULL DEFAULT 0,
+    slot6 INTEGER NOT NULL DEFAULT 0,
+    slot7 INTEGER NOT NULL DEFAULT 0,
+    slot8 INTEGER NOT NULL DEFAULT 0,
+    slot9 INTEGER NOT NULL DEFAULT 0,
+    slot10 INTEGER NOT NULL DEFAULT 0,
+    slot11 INTEGER NOT NULL DEFAULT 0,
+    slot12 INTEGER NOT NULL DEFAULT 0,
+    slot13 INTEGER NOT NULL DEFAULT 0,
+    updated_at_unix INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS event_joust_match_results (
+    round_no INTEGER NOT NULL,
+    stage_index INTEGER NOT NULL CHECK(stage_index >= 0 AND stage_index < 3),
+    match_index INTEGER NOT NULL CHECK(match_index >= 0 AND match_index < 4),
+    winner_slot_no INTEGER NOT NULL CHECK(winner_slot_no >= 0 AND winner_slot_no < 8),
+    loser_slot_no INTEGER NOT NULL CHECK(loser_slot_no >= 0 AND loser_slot_no < 8),
+    winner_knight_index INTEGER NOT NULL,
+    loser_knight_index INTEGER NOT NULL,
+    resolved_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (round_no, stage_index, match_index)
+);
+
+CREATE TABLE IF NOT EXISTS event_joust_history (
+    round_no INTEGER PRIMARY KEY,
+    winner_horse_id INTEGER NOT NULL,
+    odds_x10 INTEGER NOT NULL DEFAULT 80,
+    settled_at_unix INTEGER NOT NULL DEFAULT 0
+);
+
 -- 服务端协议默认配置，不包含玩家账号或角色数据。
 INSERT OR IGNORE INTO get_userinfo_template (
     id,

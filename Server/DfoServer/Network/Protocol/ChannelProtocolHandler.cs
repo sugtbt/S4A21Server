@@ -410,7 +410,7 @@ namespace DfoServer.Network
             string value,
             int size)
         {
-            var bytes = Encoding.UTF8.GetBytes(value ?? string.Empty);
+            var bytes = ClientTextEncoding.GetBytes(value ?? string.Empty);
             target.AddRange(bytes.Take(size));
             if (bytes.Length < size)
                 target.AddRange(new byte[size - bytes.Length]);

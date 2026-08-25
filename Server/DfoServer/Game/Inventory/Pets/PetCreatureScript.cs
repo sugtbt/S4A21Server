@@ -6,7 +6,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 
 namespace DfoServer.Game.Inventory
 {
@@ -111,7 +110,7 @@ namespace DfoServer.Game.Inventory
                 entry.CreatureId,
                 entry.CreatureFilePath,
                 entry.ScriptFilePath,
-                Encoding.UTF8.GetBytes(line));
+                ClientTextEncoding.GetBytes(line));
             return true;
         }
 

@@ -34,6 +34,7 @@ namespace DfoServer.Network.Handlers
         private readonly DungeonRejoinCoordinator _dungeonRejoin;
         private readonly LotteryItemHandler _lotteryItemHandler;
         private readonly CraneMiniGameHandler _craneMiniGameHandler;
+        private readonly EventJoustHandler _eventJoustHandler;
         private readonly PvpRoomHandler _pvpRoomHandler;
         private readonly InventoryRefreshSender _inventoryRefreshSender;
         private readonly IGameDatabase _database;
@@ -52,6 +53,7 @@ namespace DfoServer.Network.Handlers
             DungeonRejoinCoordinator dungeonRejoin,
             LotteryItemHandler lotteryItemHandler,
             CraneMiniGameHandler craneMiniGameHandler,
+            EventJoustHandler eventJoustHandler,
             PvpRoomHandler pvpRoomHandler,
             InventoryRefreshSender inventoryRefreshSender,
             IGameDatabase database,
@@ -69,6 +71,7 @@ namespace DfoServer.Network.Handlers
             _dungeonRejoin = dungeonRejoin;
             _lotteryItemHandler = lotteryItemHandler;
             _craneMiniGameHandler = craneMiniGameHandler;
+            _eventJoustHandler = eventJoustHandler;
             _pvpRoomHandler = pvpRoomHandler;
             _inventoryRefreshSender = inventoryRefreshSender;
             _database = database ?? throw new ArgumentNullException(nameof(database));
@@ -447,6 +450,8 @@ namespace DfoServer.Network.Handlers
                         session,
                         "select_character");
                     await _dungeonRejoin.ProjectCandidateAsync(session);
+                    if (_eventJoustHandler != null)
+                        await _eventJoustHandler.NotifyStateOnLoginAsync(session);
                     // 上线 hook：初始好友列表已由 init 包流下发
                     // （UnitedServerFriendInfoBodyBuilder），这里只做单向推送——
                     // 0x0112 进入频道 + 同频道补发 0x0111 归零频道文字 + USERINFO 实体。

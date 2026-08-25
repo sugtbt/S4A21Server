@@ -2,7 +2,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using DfoServer.Game.Characters;
@@ -10,6 +9,7 @@ using DfoServer.Game.Dungeon;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.Raid;
 using DfoServer.Game.Session;
+using DfoServer.Infrastructure;
 using DfoServer.Network.Builders;
 using DfoServer.Network.Builders.Raid;
 using PvfLib;
@@ -407,7 +407,7 @@ public sealed partial class RaidHandler
 
 	private static byte[] BuildDefaultTitle(uint characterId)
 	{
-		return Encoding.UTF8.GetBytes($"Raid: {characterId}");
+		return ClientTextEncoding.GetBytes($"Raid: {characterId}");
 	}
 
 

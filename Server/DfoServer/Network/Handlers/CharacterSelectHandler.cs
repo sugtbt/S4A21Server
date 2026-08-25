@@ -15,7 +15,6 @@ using DfoServer.Network.Parsers;
 using Microsoft.Data.Sqlite;
 using System;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace DfoServer.Network.Handlers
@@ -941,7 +940,9 @@ namespace DfoServer.Network.Handlers
                 return;
             }
 
-            var name = Encoding.UTF8.GetString(body, 5, nameLen);
+            var nameRaw = new byte[nameLen];
+            Buffer.BlockCopy(body, 5, nameRaw, 0, nameLen);
+            var name = ClientTextEncoding.GetString(nameRaw);
             var accountId = session.Account?.AccountId ?? 1;
 
             var list = _characterRepository.ListByAccount(accountId);
@@ -952,7 +953,7 @@ namespace DfoServer.Network.Handlers
             }
 
             var target = list[slotIndex];
-            if (!NameBytesEqual(target.Name, Encoding.UTF8.GetBytes(name)))
+            if (!NameBytesEqual(target.Name, nameRaw))
             {
                 FileLogger.Log($"[{ProtocolName}] DELETE_CHARACTER: name mismatch slot={slotIndex} expected='{target.DisplayName}' got='{name}'");
                 await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x01, 0x0006, new byte[] { 0x15 }));

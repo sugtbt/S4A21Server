@@ -1,5 +1,5 @@
+using DfoServer.Infrastructure;
 using System;
-using System.Text;
 
 namespace DfoServer.Game.Characters
 {
@@ -37,12 +37,9 @@ namespace DfoServer.Game.Characters
         {
             get
             {
-                if (Name == null || Name.Length == 0) return "";
-                var s = Encoding.UTF8.GetString(Name).TrimEnd('\0');
-                if (s.IndexOf('�') < 0) return s;
-                try { return Encoding.GetEncoding(936).GetString(Name).TrimEnd('\0'); } catch { }
-                try { return Encoding.GetEncoding(932).GetString(Name).TrimEnd('\0'); } catch { }
-                return s;
+                if (Name == null || Name.Length == 0)
+                    return string.Empty;
+                return ClientTextEncoding.GetString(Name);
             }
         }
     }

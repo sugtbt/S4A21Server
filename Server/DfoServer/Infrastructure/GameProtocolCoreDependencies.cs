@@ -1,6 +1,7 @@
 using DfoServer.Game.Accounts;
 using DfoServer.Game.DailyReset;
 using DfoServer.Game.Dungeon;
+using DfoServer.Game.Events;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.Characters;
 using DfoServer.Game.SelectCharacter;
@@ -22,7 +23,8 @@ namespace DfoServer.Infrastructure
             DungeonPersistentEffectApplicationService dungeonPersistentEffects,
             ExperienceItemUseService experienceItemUseService,
             SqliteSelectCharacterDataSource selectCharacterDataSource,
-            GetUserInfoTemplate getUserInfoTemplate)
+            GetUserInfoTemplate getUserInfoTemplate,
+            EventManager eventManager)
         {
             Database = database ?? throw new ArgumentNullException(nameof(database));
             AccountRepository = accountRepository ?? throw new ArgumentNullException(nameof(accountRepository));
@@ -33,6 +35,7 @@ namespace DfoServer.Infrastructure
             ExperienceItemUseService = experienceItemUseService ?? throw new ArgumentNullException(nameof(experienceItemUseService));
             SelectCharacterDataSource = selectCharacterDataSource ?? throw new ArgumentNullException(nameof(selectCharacterDataSource));
             GetUserInfoTemplate = getUserInfoTemplate;
+            EventManager = eventManager ?? throw new ArgumentNullException(nameof(eventManager));
         }
 
         internal IGameDatabase Database { get; }
@@ -52,5 +55,7 @@ namespace DfoServer.Infrastructure
         internal SqliteSelectCharacterDataSource SelectCharacterDataSource { get; }
 
         internal GetUserInfoTemplate GetUserInfoTemplate { get; }
+
+        internal EventManager EventManager { get; }
     }
 }

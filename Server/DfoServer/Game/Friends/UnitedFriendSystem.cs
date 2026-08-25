@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using DfoServer.Game.Characters;
 using DfoServer.Game.Session;
@@ -736,7 +735,7 @@ namespace DfoServer.Game.Friends
 
             foreach (var name in friends)
             {
-                var nameBytes = Encoding.UTF8.GetBytes(name);
+                var nameBytes = ClientTextEncoding.GetBytes(name);
                 w.WriteByte(1);                    // 大区 sR=1
                 w.WriteUInt16(onlineByName.TryGetValue(name, out var os)
                     ? (IsSameChannel(self, os) ? (ushort)0 : ResolveChannel(os))
@@ -798,7 +797,7 @@ namespace DfoServer.Game.Friends
             if (self?.Player == null || string.IsNullOrWhiteSpace(deletedName))
                 return;
 
-            var nameBytes = Encoding.UTF8.GetBytes(deletedName);
+            var nameBytes = ClientTextEncoding.GetBytes(deletedName);
             var w = new GamePacketWriter();
             w.WriteInt32(2);                    // subcmd=2 删除
             w.WriteUInt32(1);                   // count=1
@@ -856,7 +855,7 @@ namespace DfoServer.Game.Friends
             var w = new GamePacketWriter();
             w.WriteUInt16(channel);              // 频道：0=退出频道, 真实频道=进入频道
             w.WriteByte(1);                      // 大区 sR=1（同区命中 0x29E/0x29F 文案）
-            var nameBytes = Encoding.UTF8.GetBytes(name);
+            var nameBytes = ClientTextEncoding.GetBytes(name);
             w.WriteUInt32((uint)nameBytes.Length);
             w.WriteBytes(nameBytes);             // name
             w.WriteByte(0);                      // oF=0x00 → 不进黑名单
@@ -868,7 +867,7 @@ namespace DfoServer.Game.Friends
             if (p?.Name == null)
                 return null;
 
-            var name = Encoding.UTF8.GetString(p.Name).TrimEnd('\0');
+            var name = ClientTextEncoding.GetString(p.Name);
             return string.IsNullOrWhiteSpace(name) ? null : name;
         }
 
@@ -877,13 +876,7 @@ namespace DfoServer.Game.Friends
             return GetPlayerName(s?.Player);
         }
 
-        /// <summary>
-        /// 0x0122 ADD_UNITED_SERVER_FRIEND (290) 添加好友协议处理器。
-        /// 请求 body 格式 (实机确认): [uint16 targetUserID][uint8 operation][uint32 nameLen][UTF-8 name]
-        ///   例: 添加 "abc"   -> FF-FF-01-03-00-00-00-61-62-63 (10B)
-        ///       targetUserID=0xFFFF (本地缓存未命中), operation=0x01 (添加), nameLen=3, name="abc"
-        ///       添加 "你好"  -> FF-FF-01-06-00-00-00-E4-BD-A0-E5-A5-BD (13B, UTF-8)
-        /// </summary>
+        /// 0x0122 添加好友。名字段为 GBK。
         public static async Task HandleAddUnitedServerFriend(
             EnhancedClientSession session,
             GamePacketHeader header,
@@ -900,7 +893,7 @@ namespace DfoServer.Game.Friends
                 operation = body[2];
                 nameLen = BitConverter.ToUInt32(body, 3);
                 if (nameLen > 0 && body.Length >= 7 + (int)nameLen)
-                    targetName = Encoding.UTF8.GetString(body, 7, (int)nameLen);
+                    targetName = ClientTextEncoding.GetString(body, 7, (int)nameLen);
             }
 
             FileLogger.Log(
@@ -1035,15 +1028,7 @@ namespace DfoServer.Game.Friends
             }
         }
 
-        /// <summary>
-        /// 0x0123 DELETE_UNITED_SERVER_FRIEND 删除好友协议处理器。
-        /// 请求 body 格式（与 ADD 不同构，血泪坑见设计文档 §6.3）：
-        ///   [operation:u8][targetCharId:u32][name:UTF-8 到 body 尾]
-        ///   无 u16 targetUserID 前缀、无 nameLen 长度前缀，name 直接到尾部。
-        /// 成功路径: RemoveFriendship(单向 a→b) + 13B 成功 ACK + subcmd=2 删节点 + subcmd=0 全量刷新。
-        /// 失败路径: [0x00, errorCode] 2B；"对方不在好友名单中"(0x18E) 由客户端本地检查
-        ///           0x14DCAF0 自己弹（根本不会发请求），服务端 not-exists 分支仅防御性回包。
-        /// </summary>
+        /// 0x0123 删除好友。名字段为 GBK，无长度前缀，读到 body 尾。
         public static async Task HandleDeleteUnitedServerFriend(
             EnhancedClientSession session,
             GamePacketHeader header,
@@ -1058,7 +1043,7 @@ namespace DfoServer.Game.Friends
                 operation = body[0];
                 targetCharId = BitConverter.ToUInt32(body, 1);
                 if (body.Length > 5)
-                    targetName = Encoding.UTF8.GetString(body, 5, body.Length - 5);
+                    targetName = ClientTextEncoding.GetString(body, 5, body.Length - 5);
             }
 
             FileLogger.Log(

@@ -3,6 +3,8 @@ using DfoServer.Game.CharacterData;
 using DfoServer.Game.Characters;
 using DfoServer.Game.DailyReset;
 using DfoServer.Game.Dungeon;
+using DfoServer.Game.Events;
+using DfoServer.Game.Events.Joust;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.ExpertJob;
 using DfoServer.Game.KnightShield;
@@ -156,6 +158,8 @@ namespace DfoServer.Infrastructure
                 dailyResetService);
             var getUserInfoTemplate = new SqliteUserInfoBlobRepository(Database)
                 .LoadGetUserInfoTemplate();
+            var eventManager = new EventManager(Database);
+            eventManager.Initialize();
 
             _gameProtocolCore = new GameProtocolCoreDependencies(
                 Database,
@@ -166,7 +170,8 @@ namespace DfoServer.Infrastructure
                 dungeonPersistentEffects,
                 experienceItemUseService,
                 selectCharacterDataSource,
-                getUserInfoTemplate);
+                getUserInfoTemplate,
+                eventManager);
             return _gameProtocolCore;
         }
 
@@ -691,6 +696,16 @@ namespace DfoServer.Infrastructure
                     inventory.MailboxService));
             mercenaryService.RegisterDeliveryClock(ClockService.Instance);
             PetCreatureRuntimeService.EnsureClockRegistered();
+            var joustService = new JoustService(
+                core.Database,
+                inventory.MailboxService);
+            joustService.Initialize();
+            joustService.RegisterClock(ClockService.Instance);
+            var eventJoustHandler = new EventJoustHandler(
+                joustService,
+                inventory.InventoryRefreshSender,
+                world.Sessions);
+            eventJoustHandler.RegisterClock(ClockService.Instance);
 
             return new GameProtocolFeatureHandlers(
                 lotteryItem,
@@ -745,7 +760,8 @@ namespace DfoServer.Infrastructure
                     inventory.InventoryRefreshSender),
                 new CraneMiniGameHandler(
                     inventory.InventoryRefreshSender,
-                    inventory.OverflowRewardSink));
+                    inventory.OverflowRewardSink),
+                eventJoustHandler);
         }
 
         internal CharacterSessionLifecycleCoordinator
@@ -854,6 +870,7 @@ namespace DfoServer.Infrastructure
                 socialHandlers.DungeonRejoin,
                 featureHandlers.LotteryItem,
                 featureHandlers.CraneMiniGame,
+                featureHandlers.EventJoust,
                 socialHandlers.PvpRoom,
                 inventory.InventoryRefreshSender,
                 core.Database,

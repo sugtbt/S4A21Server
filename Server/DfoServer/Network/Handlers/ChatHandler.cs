@@ -7,11 +7,8 @@ using System.Threading.Tasks;
 
 namespace DfoServer.Network.Handlers
 {
-    /// <summary>
-    /// Handles the legacy 8.6 SEND_MESSAGE request.  The client sends
-    /// mode:u8 + targetUid:u16 + targetCharacterId:u32 + message:dstr and,
-    /// for direct-message modes, may append targetName:dstr.
-    /// </summary>
+    /// 8.6 SEND_MESSAGE：mode:u8 + targetUid:u16 + targetCharacterId:u32 + message:dstr；
+    /// 私聊还可跟 targetName:dstr。
     public sealed class ChatHandler : IDisposable
     {
         private const int MaximumMessageBytes = 256;

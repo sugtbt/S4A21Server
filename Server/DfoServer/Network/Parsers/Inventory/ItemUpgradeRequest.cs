@@ -1,6 +1,6 @@
 using DfoServer.Game.ItemUpgrade;
+using DfoServer.Infrastructure;
 using System;
-using System.Text;
 
 namespace DfoServer.Network.Parsers.Inventory
 {
@@ -38,7 +38,7 @@ namespace DfoServer.Network.Parsers.Inventory
                 TargetItemTemplateId = BitConverter.ToInt32(body, 4),
                 MaterialSlotIndex = BitConverter.ToInt16(body, 8),
                 OptionalTicketSlotIndex = BitConverter.ToInt16(body, 10),
-                TargetItemName = nameLength > 0 ? Encoding.UTF8.GetString(body, 16, nameLength) : string.Empty,
+                TargetItemName = nameLength > 0 ? ClientTextEncoding.GetString(body, 16, nameLength) : string.Empty,
             };
             return true;
         }

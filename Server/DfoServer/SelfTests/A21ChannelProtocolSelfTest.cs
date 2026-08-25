@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
+using DfoServer.Infrastructure;
 using DfoServer.Network;
 
 namespace DfoServer.SelfTests
@@ -195,14 +195,12 @@ namespace DfoServer.SelfTests
             return failures == 0 ? 0 : 1;
         }
 
-        private static string ReadFixedUtf8(
+        private static string ReadFixedClientText(
             byte[] bytes,
             int offset,
             int count)
         {
-            return Encoding.UTF8
-                .GetString(bytes, offset, count)
-                .TrimEnd('\0');
+            return ClientTextEncoding.GetString(bytes, offset, count);
         }
 
         private static bool TryReadChannelEntry(
@@ -211,14 +209,14 @@ namespace DfoServer.SelfTests
             out ParsedChannelEntry entry)
         {
             entry = null;
-            if (!TryReadFixedUtf8(
+            if (!TryReadFixedClientText(
                     bytes,
                     ref cursor,
                     ChannelProtocolHandler.ChannelListNameSize,
                     out var name)
                 || !TryReadInt32(bytes, ref cursor, out var field1)
                 || !TryReadInt32(bytes, ref cursor, out var field2)
-                || !TryReadFixedUtf8(
+                || !TryReadFixedClientText(
                     bytes,
                     ref cursor,
                     ChannelProtocolHandler.ChannelListAddressSize,
@@ -239,7 +237,7 @@ namespace DfoServer.SelfTests
             return true;
         }
 
-        private static bool TryReadFixedUtf8(
+        private static bool TryReadFixedClientText(
             byte[] bytes,
             ref int cursor,
             int count,
@@ -254,7 +252,7 @@ namespace DfoServer.SelfTests
                 return false;
             }
 
-            value = ReadFixedUtf8(bytes, cursor, count);
+            value = ReadFixedClientText(bytes, cursor, count);
             cursor += count;
             return true;
         }

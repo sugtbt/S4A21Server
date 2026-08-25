@@ -1,5 +1,5 @@
+using DfoServer.Infrastructure;
 using System;
-using System.Text;
 
 namespace DfoServer.Game.Names
 {
@@ -9,7 +9,7 @@ namespace DfoServer.Game.Names
         Null,
         TooShort,
         TooLong,
-        InvalidUtf8,
+        InvalidEncoding,
         DisallowedUnicodeRange,
         Slang,
         DisallowedCharacter,
@@ -18,8 +18,6 @@ namespace DfoServer.Game.Names
     public static class NameInputValidator
     {
         public const byte InvalidNameErrorCode = 0x9F;
-
-        private static readonly UTF8Encoding StrictUtf8 = new UTF8Encoding(false, true);
 
         public static bool TryValidateRawName(
             byte[] nameBytes,
@@ -54,13 +52,9 @@ namespace DfoServer.Game.Names
                 return true;
             }
 
-            try
+            if (!ClientTextEncoding.TryGetStringStrict(nameBytes, out text))
             {
-                text = StrictUtf8.GetString(nameBytes);
-            }
-            catch (DecoderFallbackException)
-            {
-                failure = NameInputValidationFailure.InvalidUtf8;
+                failure = NameInputValidationFailure.InvalidEncoding;
                 return false;
             }
 

@@ -51,6 +51,7 @@ namespace DfoServer.Network
         private readonly GrowthCapsuleHandler _growthCapsuleHandler;
         private readonly GoldLimitHandler _goldLimitHandler;
         private readonly CraneMiniGameHandler _craneMiniGameHandler;
+        private readonly EventJoustHandler _eventJoustHandler;
         private readonly ExpertJobStoreHandler _expertJobStoreHandler;
         private readonly ExpertJobExtractionHandler _expertJobExtractionHandler;
         private readonly ExpertJobCompoundHandler _expertJobCompoundHandler;
@@ -205,6 +206,7 @@ namespace DfoServer.Network
             _growthCapsuleHandler = featureHandlers.GrowthCapsule;
             _goldLimitHandler = featureHandlers.GoldLimit;
             _craneMiniGameHandler = featureHandlers.CraneMiniGame;
+            _eventJoustHandler = featureHandlers.EventJoust;
             _pvpChannelInfoHandler = socialHandlers.PvpChannelInfo;
             _pvpRoomHandler = socialHandlers.PvpRoom;
             _characterSessionLifecycle = characterSessionLifecycle;
@@ -240,6 +242,7 @@ namespace DfoServer.Network
                 "shop-coin-event",
                 d => d[0x00CF] = _shopCoinEventHandler.HandleShopCoinEvent);
             _cmdDispatch.RegisterGroup("friend", RegisterFriendHandlers);
+            _cmdDispatch.RegisterGroup("event-joust", RegisterEventJoustHandlers);
         }
 
         public void Dispose()
@@ -889,6 +892,17 @@ namespace DfoServer.Network
             d[(ushort)CmdPacketTypeA21.DELETE_UNITED_SERVER_FRIEND] =
                 (s, h, b) => UnitedFriendSystem.HandleDeleteUnitedServerFriend(
                     s, h, b, _worldDependencies.Sessions);
+        }
+
+        private void RegisterEventJoustHandlers(
+            GameCommandRegistry.GameCommandRegistrationGroup d)
+        {
+            d[(ushort)CmdPacketTypeA21.JOUST_INFO] =
+                _eventJoustHandler.HandleInfoAsync;
+            d[(ushort)CmdPacketTypeA21.JOUST_BETTING] =
+                _eventJoustHandler.HandleBettingAsync;
+            d[(ushort)CmdPacketTypeA21.JOUST_MATCH_HISTORY] =
+                _eventJoustHandler.HandleMatchHistoryAsync;
         }
 
         private void RegisterMiscHandlers(GameCommandRegistry.GameCommandRegistrationGroup d)

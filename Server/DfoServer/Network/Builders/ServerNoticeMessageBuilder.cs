@@ -6,7 +6,7 @@ namespace DfoServer.Network.Builders
         {
             var writer = new GamePacketWriter();
             writer.WriteByte(mode);
-            writer.WriteUtf8Dstr(message ?? string.Empty);
+            writer.WriteClientDstr(message ?? string.Empty);
             return writer.ToArray();
         }
     }

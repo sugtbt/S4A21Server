@@ -1,3 +1,4 @@
+using DfoServer.Infrastructure;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -41,6 +42,11 @@ namespace DfoServer.Network
             _buffer.AddRange(BitConverter.GetBytes(value));
         }
 
+        public void WriteSingle(float value)
+        {
+            _buffer.AddRange(BitConverter.GetBytes(value));
+        }
+
         public void WriteZeroBytes(int count)
         {
             if (count <= 0)
@@ -49,9 +55,9 @@ namespace DfoServer.Network
             _buffer.AddRange(new byte[count]);
         }
 
-        public void WriteUtf8Dstr(string value)
+        public void WriteClientDstr(string value)
         {
-            var bytes = Encoding.UTF8.GetBytes(value ?? string.Empty);
+            var bytes = ClientTextEncoding.GetBytes(value ?? string.Empty);
             WriteInt32(bytes.Length);
             WriteBytes(bytes);
         }

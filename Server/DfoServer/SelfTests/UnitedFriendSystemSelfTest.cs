@@ -334,7 +334,7 @@ PRAGMA user_version = 7;";
             var record = new CharacterRecord
             {
                 CharacterId = 0x0102,   // 258
-                Name = Encoding.UTF8.GetBytes("测试"),
+                Name = ClientTextEncoding.GetBytes("测试"),
                 Job = 2,
                 GrowType = 1,
                 Level = 50,

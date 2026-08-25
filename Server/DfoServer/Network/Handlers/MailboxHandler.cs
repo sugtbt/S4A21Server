@@ -1408,33 +1408,10 @@ namespace DfoServer.Network.Handlers
 
         private static void WriteMailboxString(GamePacketWriter writer, string value, int maxBytes)
         {
-            // 本客户端邮件字符串用 UTF-8；长度按缓冲区预留结尾 0。
-            var bytes = TruncateUtf8(value ?? string.Empty, Math.Max(0, maxBytes - 1));
+            // 邮件字符串用 GBK；长度按缓冲区预留结尾 0。
+            var bytes = ClientTextEncoding.Truncate(value ?? string.Empty, Math.Max(0, maxBytes - 1));
             writer.WriteInt32(bytes.Length);
             writer.WriteBytes(bytes);
-        }
-
-        private static byte[] TruncateUtf8(string value, int maxBytes)
-        {
-            if (string.IsNullOrEmpty(value) || maxBytes <= 0)
-                return Array.Empty<byte>();
-
-            var bytes = Encoding.UTF8.GetBytes(value);
-            if (bytes.Length <= maxBytes)
-                return bytes;
-
-            var count = 0;
-            foreach (var rune in value.EnumerateRunes())
-            {
-                var runeLength = rune.Utf8SequenceLength;
-                if (count + runeLength > maxBytes)
-                    break;
-                count += runeLength;
-            }
-
-            var truncated = new byte[count];
-            Buffer.BlockCopy(bytes, 0, truncated, 0, count);
-            return truncated;
         }
 
         private static string ReadMailboxName(byte[] body)
@@ -1446,7 +1423,7 @@ namespace DfoServer.Network.Handlers
             if (length <= 0 || body.Length < 4 + length)
                 return string.Empty;
 
-            return Encoding.UTF8.GetString(body, 4, length).TrimEnd('\0');
+            return ClientTextEncoding.GetString(body, 4, length);
         }
 
         private static bool TryParseSendMailboxRequest(byte[] body, MailboxSendFormat format, out SendMailboxRequest request, out string error)
@@ -1599,7 +1576,7 @@ namespace DfoServer.Network.Handlers
                 return false;
             }
 
-            value = Encoding.UTF8.GetString(body, offset, length).TrimEnd('\0');
+            value = ClientTextEncoding.GetString(body, offset, length);
             offset += length;
             return true;
         }
@@ -1640,50 +1617,12 @@ namespace DfoServer.Network.Handlers
         {
             var nameBytes = character.Name != null && character.Name.Length > 0
                 ? character.Name
-                : Encoding.UTF8.GetBytes(fallbackName ?? string.Empty);
+                : ClientTextEncoding.GetBytes(fallbackName ?? string.Empty);
 
-            var length = ClampUtf8PrefixLength(nameBytes, QueryCharacterInfoNameSize);
+            var length = ClientTextEncoding.ClampPrefixLength(nameBytes, QueryCharacterInfoNameSize);
             var response = new byte[length];
             Buffer.BlockCopy(nameBytes, 0, response, 0, length);
             return response;
-        }
-
-        private static int ClampUtf8PrefixLength(byte[] bytes, int maxBytes)
-        {
-            if (bytes == null || bytes.Length == 0 || maxBytes <= 0)
-                return 0;
-
-            if (bytes.Length <= maxBytes)
-                return bytes.Length;
-
-            var length = maxBytes;
-            var start = length - 1;
-            while (start > 0 && IsUtf8ContinuationByte(bytes[start]))
-                start--;
-
-            var expectedLength = GetUtf8SequenceLength(bytes[start]);
-            if (expectedLength <= 0 || start + expectedLength > length)
-                return start;
-
-            return length;
-        }
-
-        private static bool IsUtf8ContinuationByte(byte value)
-        {
-            return (value & 0xC0) == 0x80;
-        }
-
-        private static int GetUtf8SequenceLength(byte lead)
-        {
-            if ((lead & 0x80) == 0)
-                return 1;
-            if ((lead & 0xE0) == 0xC0)
-                return 2;
-            if ((lead & 0xF0) == 0xE0)
-                return 3;
-            if ((lead & 0xF8) == 0xF0)
-                return 4;
-            return 0;
         }
 
         private enum MailboxSendFormat

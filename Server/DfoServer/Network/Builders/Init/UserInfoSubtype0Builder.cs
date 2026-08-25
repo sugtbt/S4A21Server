@@ -3,6 +3,7 @@ using DfoServer.Game.Characters;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.ItemUpgrade;
 using DfoServer.Game.SelectCharacter;
+using DfoServer.Infrastructure;
 using System;
 using System.Collections.Generic;
 using DfoServer.Network;
@@ -70,7 +71,7 @@ namespace DfoServer.Network.Builders
             {
                 // A21 无宠物固定为 -1 +「没有宠物」+ alive=0xFF。
                 writer.WriteUInt32(0xFFFFFFFFu);
-                writer.WriteDstr(System.Text.Encoding.UTF8.GetBytes("没有宠物"));
+                writer.WriteDstr(ClientTextEncoding.GetBytes("没有宠物"));
                 writer.WriteByte(0xFF);
             }
             else

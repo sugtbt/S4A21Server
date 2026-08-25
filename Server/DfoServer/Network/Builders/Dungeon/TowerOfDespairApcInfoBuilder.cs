@@ -54,7 +54,7 @@ namespace DfoServer.Network.Builders
             }
 
             var tail = player.Subtype0Tail;
-            writer.WriteDstr(tail?.EquippedCreatureNameBytes ?? Array.Empty<byte>());
+            writer.WriteDstr(tail?.EquippedCreatureNameBytes);
             writer.WriteUInt32(tail?.EquippedCreatureItemId ?? 0);
             return writer.ToArray();
         }

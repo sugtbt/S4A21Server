@@ -326,7 +326,7 @@ namespace DfoServer.Network.Handlers.Pets
 
             try
             {
-                return Encoding.UTF8.GetString(nameBytes);
+                return ClientTextEncoding.GetString(nameBytes);
             }
             catch
             {
