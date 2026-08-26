@@ -154,7 +154,8 @@ namespace DfoServer.Game.Inventory
             {
                 var core = pair.Value;
                 var avatarDetail = resolveAvatarDetail?.Invoke(core);
-                if (InventoryItemExpirationService.IsExpired(core, avatarDetail, nowUnixTime))
+                var creatureDetail = resolveCreatureDetail?.Invoke(core);
+                if (InventoryItemExpirationService.IsExpired(core, avatarDetail, creatureDetail, nowUnixTime))
                     continue;
 
                 var entry = BuildEquippedEntry(pair.Key, core);
@@ -167,7 +168,7 @@ namespace DfoServer.Game.Inventory
                 if (entry.Core.ItemKind == ItemCore.KindCreature)
                     snapshot.SetCreatureDetail(
                         entry.Core.Value,
-                        CopyCreatureDetail(resolveCreatureDetail?.Invoke(core), entry.Core));
+                        CopyCreatureDetail(creatureDetail, entry.Core));
             }
 
             return snapshot;

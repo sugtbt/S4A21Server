@@ -2617,7 +2617,6 @@ namespace DfoServer.Network.Handlers.Dungeon
                     return false;
                 await LuckyStarClientNotifier.NotifyRewardAsync(
                     session,
-                    _svc.SelectCharacterDataSource,
                     characterId,
                     1,
                     result.NewTotal,

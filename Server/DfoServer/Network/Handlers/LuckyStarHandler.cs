@@ -113,7 +113,6 @@ namespace DfoServer.Network.Handlers
 
             await LuckyStarClientNotifier.SyncPurchaseAsync(
                 session,
-                _dataSource,
                 characterId,
                 (ushort)buyCount,
                 newLuckyStar,

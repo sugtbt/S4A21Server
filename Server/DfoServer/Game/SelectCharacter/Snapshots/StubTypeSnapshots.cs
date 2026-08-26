@@ -86,8 +86,7 @@ namespace DfoServer.Game.SelectCharacter
             return false;
         }
 
-        // 旧 character_init_bodies(0x0357) 存储编码。生产读写已迁到 character_rental_items 表;
-        // 保留解析仅供迁移 22 与自测使用。
+        // Legacy character_init_bodies(0x0357) storage codec. Runtime rental state is rebuilt from inventory.
         public static void ParseStorageBody(byte[] body, RentalInfoSnapshot rental)
         {
             if (rental == null)

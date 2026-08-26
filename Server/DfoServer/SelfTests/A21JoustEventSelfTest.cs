@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
 using DfoServer.Game.Events;
 using DfoServer.Game.Events.Joust;
 using DfoServer.Game.Mailbox;
@@ -471,15 +470,15 @@ INSERT INTO event_joust_rules (
             }
 
             var body = EventInfoBodyBuilder.Build(snapshot);
-            var titleBytes = Encoding.UTF8.GetBytes("骑士马战大竞猜");
+            var titleBytes = ClientTextEncoding.GetBytes("骑士马战大竞猜");
             var descriptionBytes =
-                Encoding.UTF8.GetBytes("活动时间每天10：00开始，共7期");
+                ClientTextEncoding.GetBytes("活动时间每天10：00开始，共7期");
             Check(
-                "joust EVENT_INFO body contains UTF-8 title bytes",
+                "joust EVENT_INFO body contains GBK title bytes",
                 Contains(body, titleBytes),
                 ref failures);
             Check(
-                "joust EVENT_INFO body contains UTF-8 description bytes",
+                "joust EVENT_INFO body contains GBK description bytes",
                 Contains(body, descriptionBytes),
                 ref failures);
         }

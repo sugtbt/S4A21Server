@@ -187,7 +187,10 @@ namespace DfoServer.Network.Builders
             AvatarDetail avatarDetail = null;
             if (core.ItemKind == ItemCore.KindAvatar)
                 avatarDetail = inventory.AvatarDetails.GetDetail(core.Value);
-            if (InventoryItemExpirationService.IsExpired(core, avatarDetail, nowUnixTime))
+            CreatureDetail creatureDetail = null;
+            if (core.ItemKind == ItemCore.KindCreature)
+                creatureDetail = inventory.CreatureDetails.GetDetail(core.Value);
+            if (InventoryItemExpirationService.IsExpired(core, avatarDetail, creatureDetail, nowUnixTime))
                 return false;
 
             if (core.ItemKind == ItemCore.KindAvatar)
@@ -202,7 +205,7 @@ namespace DfoServer.Network.Builders
                     writer,
                     slotIndex,
                     core,
-                    inventory.CreatureDetails.GetDetail(core.Value));
+                    creatureDetail);
                 return true;
             }
 

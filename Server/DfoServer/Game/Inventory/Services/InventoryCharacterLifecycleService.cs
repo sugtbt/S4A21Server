@@ -80,7 +80,7 @@ namespace DfoServer.Game.Inventory
             }
         }
 
-        internal int DeleteExpiredRentalEquipment(int characterId, int accountId)
+        internal int DeleteExpiredNameTagState(int characterId)
         {
             using (var connection = new SqliteConnection(_connectionString))
             {
@@ -88,12 +88,7 @@ namespace DfoServer.Game.Inventory
                 using (var transaction = connection.BeginTransaction())
                 {
                     var now = _timeProvider.UtcNowUnixSeconds();
-                    var count = DeleteExpiredRentalEquipmentFromNewItems(
-                        connection,
-                        transaction,
-                        characterId,
-                        now);
-                    count += DeleteExpiredNameTagState(
+                    var count = DeleteExpiredNameTagState(
                         connection,
                         transaction,
                         characterId,
@@ -290,89 +285,6 @@ ORDER BY list_type, slot_index;";
             return result;
         }
 
-        private static int DeleteExpiredRentalEquipmentFromNewItems(
-            SqliteConnection connection,
-            SqliteTransaction transaction,
-            int characterId,
-            uint now)
-        {
-            var persistedRentalTemplateIds = LoadPersistedRentalTemplateIds(
-                connection,
-                transaction,
-                characterId);
-            var expired = new List<(InventoryListType listType, short slotIndex, int itemTemplateId, int expireTime)>();
-            using (var command = connection.CreateCommand())
-            {
-                command.Transaction = transaction;
-                command.CommandText = @"
-SELECT list_type, slot_index, item_core
-FROM character_inventory_items
-WHERE character_id = @characterId
-  AND list_type IN (@mainList, @equipmentList)
-ORDER BY list_type, slot_index;";
-                command.Parameters.AddWithValue("@characterId", characterId);
-                command.Parameters.AddWithValue("@mainList", (int)InventoryListType.Main);
-                command.Parameters.AddWithValue("@equipmentList", (int)InventoryListType.Equipment);
-                using (var reader = command.ExecuteReader())
-                {
-                    while (reader.Read())
-                    {
-                        var listType = (InventoryListType)reader.GetInt32(0);
-                        var slotIndex = Convert.ToInt16(reader.GetInt32(1));
-                        if (listType == InventoryListType.Main
-                            && (slotIndex < RentalMainSlotStart || slotIndex > RentalMainSlotEnd))
-                            continue;
-
-                        var core = ReadItemCore(reader[2]);
-                        if (core == null
-                            || core.ExpireTime <= 0
-                            || core.ExpireTime > now
-                            || !IsRentalTemplateForCleanup(core.ItemId, persistedRentalTemplateIds))
-                            continue;
-
-                        expired.Add((listType, slotIndex, core.ItemId, core.ExpireTime));
-                    }
-                }
-            }
-
-            foreach (var item in expired)
-            {
-                InventoryItemRepository.DeleteCharacterSlot(
-                    connection,
-                    transaction,
-                    characterId,
-                    item.listType,
-                    item.slotIndex);
-                RemoveExpiredRentalFromOnlineInventory(characterId, item.listType, item.slotIndex, item.itemTemplateId, item.expireTime);
-                FileLogger.Log($"[RentalExpire] DELETE new inventory char={characterId} list={item.listType} slot={item.slotIndex} item=0x{item.itemTemplateId:X8} expire={item.expireTime}");
-            }
-
-            return expired.Count;
-        }
-
-        private static void RemoveExpiredRentalFromOnlineInventory(
-            int characterId,
-            InventoryListType listType,
-            short slotIndex,
-            int itemTemplateId,
-            int expireTime)
-        {
-            if (!InventoryContext.TryGetLease(characterId, out var lease))
-                return;
-
-            lock (lease.SyncRoot)
-            {
-                var core = lease.Inventory.GetItem(listType, slotIndex);
-                if (core == null
-                    || core.ItemId != itemTemplateId
-                    || core.ExpireTime != expireTime
-                    || !RentalWeaponInventoryMapper.IsValidInventoryTemplate(core.ItemId))
-                    return;
-
-                lease.Inventory.RemoveItem(listType, slotIndex);
-            }
-        }
-
         private static int DeleteExpiredNameTagState(
             SqliteConnection connection,
             SqliteTransaction transaction,
@@ -394,42 +306,6 @@ ORDER BY list_type, slot_index;";
 
             FileLogger.Log($"[NameTagExpire] CLEAR name tag state char={characterId}");
             return 1;
-        }
-
-        private static HashSet<int> LoadPersistedRentalTemplateIds(
-            SqliteConnection connection,
-            SqliteTransaction transaction,
-            int characterId)
-        {
-            var result = new HashSet<int>();
-            using (var command = connection.CreateCommand())
-            {
-                command.Transaction = transaction;
-                command.CommandText = @"
-SELECT inventory_template_id
-FROM character_rental_items
-WHERE character_id = @characterId;";
-                command.Parameters.AddWithValue("@characterId", characterId);
-                using (var reader = command.ExecuteReader())
-                {
-                    while (reader.Read())
-                    {
-                        var itemTemplateId = reader.GetInt32(0);
-                        if (itemTemplateId > 0)
-                            result.Add(itemTemplateId);
-                    }
-                }
-            }
-
-            return result;
-        }
-
-        private static bool IsRentalTemplateForCleanup(
-            int itemTemplateId,
-            HashSet<int> persistedRentalTemplateIds)
-        {
-            return RentalWeaponInventoryMapper.IsValidInventoryTemplate(itemTemplateId)
-                || persistedRentalTemplateIds.Contains(itemTemplateId);
         }
 
         private static ItemCore ReadItemCore(object value)

@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using DfoServer.Game.Inventory;
+using DfoServer.Game.ItemUpgrade;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.Infrastructure;
 using DfoServer.Network.Builders;
@@ -361,6 +362,115 @@ PRAGMA user_version = 6;";
                 && inventory.GetItem(InventoryListType.Main, 12) == null
                 && inventory.GetItem(InventoryListType.Main, 13)?.ItemId == 73003,
                 ref failures);
+
+            Check(
+                "ItemCore ExpireTime zero is treated as active",
+                !InventoryItemLifecycleService.IsExpired(
+                    CreateStackableCore(73004, 1, 0),
+                    now),
+                ref failures);
+
+            var cleanupInventory = new InventoryService(72004, 72005);
+            cleanupInventory.SetListParam16(InventoryListType.AccountCargo, 8);
+            cleanupInventory.SetItem(
+                InventoryListType.Main,
+                14,
+                CreateStackableCore(74000, 1, 0));
+            cleanupInventory.SetItem(
+                InventoryListType.Equipment,
+                (short)EquipmentType.Weapon,
+                CreateCore(ItemCore.KindEquipment, 74001, 1, (int)now - 1));
+            cleanupInventory.SetItem(
+                InventoryListType.PersonalCargo,
+                0,
+                CreateStackableCore(74002, 1, (int)now - 1));
+            cleanupInventory.SetItem(
+                InventoryListType.AccountCargo,
+                0,
+                CreateStackableCore(74003, 1, (int)now - 1));
+            cleanupInventory.SetItem(
+                InventoryListType.Pet,
+                (short)ItemSlotBoundService.PetEquipmentSlotStart,
+                CreateCore(ItemCore.KindCreatureEquipment, 74004, 1, (int)now - 1));
+
+            cleanupInventory.SetItem(
+                InventoryListType.Avatar,
+                0,
+                CreateCore(ItemCore.KindAvatar, 74010, 9101, (int)now - 1));
+            cleanupInventory.AvatarDetails.Attach(CreateAvatarDetail(9101, 74010, (int)now + 100));
+            cleanupInventory.SetItem(
+                InventoryListType.Avatar,
+                1,
+                CreateCore(ItemCore.KindAvatar, 74011, 9102, (int)now + 100));
+            cleanupInventory.AvatarDetails.Attach(CreateAvatarDetail(9102, 74011, (int)now - 1));
+
+            cleanupInventory.SetItem(
+                InventoryListType.Pet,
+                0,
+                CreateCore(ItemCore.KindCreature, 74020, 9201, (int)now - 1));
+            cleanupInventory.CreatureDetails.Attach(CreateCreatureDetail(9201, (int)now + 100));
+            cleanupInventory.SetItem(
+                InventoryListType.Pet,
+                1,
+                CreateCore(ItemCore.KindCreature, 74021, 9202, (int)now + 100));
+            cleanupInventory.CreatureDetails.Attach(CreateCreatureDetail(9202, (int)now - 1));
+            cleanupInventory.ClearDirtyState();
+
+            var cleanupChanges = new InventoryMutationSet();
+            var cleanupRemoved = InventoryItemLifecycleService.RemoveExpiredItems(
+                cleanupInventory,
+                now,
+                cleanupChanges);
+            Check(
+                "lifecycle cleanup removes core-expired equipment and cargo items",
+                cleanupRemoved == 6
+                && cleanupChanges.HasChanges
+                && cleanupInventory.GetItem(InventoryListType.Main, 14)?.ItemId == 74000
+                && cleanupInventory.GetItem(InventoryListType.Equipment, (short)EquipmentType.Weapon) == null
+                && cleanupInventory.GetItem(InventoryListType.PersonalCargo, 0) == null
+                && cleanupInventory.GetItem(InventoryListType.AccountCargo, 0) == null
+                && cleanupInventory.GetItem(InventoryListType.Pet, (short)ItemSlotBoundService.PetEquipmentSlotStart) == null,
+                ref failures);
+            Check(
+                "avatar cleanup uses avatar detail expire dates",
+                cleanupInventory.GetItem(InventoryListType.Avatar, 0)?.ItemId == 74010,
+                ref failures);
+            Check(
+                "avatar cleanup removes expired avatar slot",
+                cleanupInventory.GetItem(InventoryListType.Avatar, 1) == null,
+                ref failures);
+            Check(
+                "avatar cleanup keeps active avatar detail",
+                cleanupInventory.AvatarDetails.GetDetail(9101) != null,
+                ref failures);
+            Check(
+                "avatar cleanup removes expired avatar detail",
+                cleanupInventory.AvatarDetails.GetDetail(9102) == null,
+                ref failures);
+            Check(
+                "avatar cleanup marks one avatar detail deleted",
+                cleanupInventory.AvatarDetails.DeletedDetailUids.Count == 1,
+                ref failures);
+            Check(
+                "pet cleanup uses creature detail expire dates",
+                cleanupInventory.GetItem(InventoryListType.Pet, 0)?.ItemId == 74020,
+                ref failures);
+            Check(
+                "pet cleanup removes expired pet slot",
+                cleanupInventory.GetItem(InventoryListType.Pet, 1) == null,
+                ref failures);
+            Check(
+                "pet cleanup keeps active creature detail",
+                cleanupInventory.CreatureDetails.GetDetail(9201) != null,
+                ref failures);
+            Check(
+                "pet cleanup removes expired creature detail",
+                cleanupInventory.CreatureDetails.GetDetail(9202) == null,
+                ref failures);
+            Check(
+                "pet cleanup marks one creature detail deleted",
+                cleanupInventory.CreatureDetails.DeletedDetailUids.Count == 1,
+                ref failures);
         }
 
         private static void SeedAccount(GameDatabase database, int accountId, string mid)
@@ -473,6 +583,49 @@ WHERE character_id = @cid AND state_kind = @kind AND item_id = @itemId;";
                 Count = count,
                 Durability = 0,
                 ExpireTime = expireTime,
+            };
+        }
+
+        private static ItemCore CreateCore(
+            byte itemKind,
+            int itemId,
+            int value,
+            int expireTime)
+        {
+            return new ItemCore
+            {
+                ItemKind = itemKind,
+                ItemId = itemId,
+                Value = value,
+                ExpireTime = expireTime,
+            };
+        }
+
+        private static AvatarDetail CreateAvatarDetail(
+            int avatarUid,
+            int itemId,
+            int expireDate)
+        {
+            return new AvatarDetail
+            {
+                AvatarUid = avatarUid,
+                OwnerId = 72005,
+                CharacterId = 72004,
+                ItemId = itemId,
+                ExpireDate = expireDate,
+            };
+        }
+
+        private static CreatureDetail CreateCreatureDetail(
+            int creatureKey,
+            int expireDate)
+        {
+            return new CreatureDetail
+            {
+                Uid = creatureKey,
+                Field04 = 100,
+                FieldAfterValue32 = 1,
+                ExpireDate = expireDate,
             };
         }
 

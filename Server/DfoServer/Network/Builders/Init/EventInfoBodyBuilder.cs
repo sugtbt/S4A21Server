@@ -1,5 +1,4 @@
 using System;
-using System.Text;
 using DfoServer.Game.Events;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.Infrastructure;
@@ -8,9 +7,6 @@ namespace DfoServer.Network.Builders
 {
     public sealed class EventInfoBodyBuilder : IInitPacketBuilder
     {
-        // Keep database TEXT readable; encode only at the EVENT_INFO wire edge.
-        private static readonly Encoding DstrEncoding =
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
         private readonly GameEventRepository _repository;
 
         public EventInfoBodyBuilder()
@@ -85,7 +81,7 @@ namespace DfoServer.Network.Builders
 
         private static void WriteDstr(GamePacketWriter writer, string value)
         {
-            writer.WriteDstr(DstrEncoding.GetBytes(value ?? string.Empty));
+            writer.WriteDstr(ClientTextEncoding.GetBytes(value ?? string.Empty));
         }
     }
 }

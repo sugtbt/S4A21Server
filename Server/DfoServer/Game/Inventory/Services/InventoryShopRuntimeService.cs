@@ -193,7 +193,7 @@ namespace DfoServer.Game.Inventory
             if (inventory == null
                 || itemTemplateId <= 0
                 || !RentalWeaponInventoryMapper.IsValidInventoryTemplate(itemTemplateId)
-                || !ItemMetadataResolver.TryResolveItemKind(itemTemplateId, out var itemKind))
+                || !ItemMetadataResolver.TryResolveItemKind(itemTemplateId, out _))
             {
                 return false;
             }
@@ -214,19 +214,12 @@ namespace DfoServer.Game.Inventory
                 return true;
             }
 
-            var core = InventoryCreateService.CreateCore(
-                itemKind,
-                itemTemplateId,
-                ItemCreateReason.NpcShopPurchase,
-                1);
-            ApplyRentalWeaponFields(core, expireTime);
-
-            if (!InventoryRewardGrantService.TryInsertExisting(
+            if (!InventoryRewardGrantService.TryCreateAndInsert(
                     inventory,
-                    core,
-                    1,
+                    itemTemplateId,
                     ItemCreateReason.NpcShopPurchase,
-                    null,
+                    1,
+                    CreateRentalWeaponOptions(expireTime),
                     out var grant)
                 || grant == null
                 || !grant.Success)
@@ -333,7 +326,7 @@ namespace DfoServer.Game.Inventory
             if (inventory == null
                 || itemTemplateId <= 0
                 || !RentalWeaponInventoryMapper.IsValidInventoryTemplate(itemTemplateId)
-                || !ItemMetadataResolver.TryResolveItemKind(itemTemplateId, out var itemKind))
+                || !ItemMetadataResolver.TryResolveItemKind(itemTemplateId, out _))
             {
                 return false;
             }
@@ -342,15 +335,12 @@ namespace DfoServer.Game.Inventory
                 || FindExistingItem(inventory, InventoryListType.Main, itemTemplateId))
                 return true;
 
-            var core = InventoryCreateService.CreateCore(
-                itemKind,
-                itemTemplateId,
-                ItemCreateReason.NpcShopPurchase,
-                1);
-            ApplyRentalWeaponFields(core, 0);
             var requests = new[]
             {
-                InventoryRewardGrantRequest.Existing(core, 1, ItemCreateReason.NpcShopPurchase)
+                InventoryRewardGrantRequest.Create(
+                    itemTemplateId,
+                    1,
+                    ItemCreateReason.NpcShopPurchase)
             };
             return InventoryRewardGrantService.TryPlanBatch(inventory, requests, out var plan)
                 && plan != null
@@ -578,7 +568,7 @@ namespace DfoServer.Game.Inventory
                     continue;
 
                 var updated = core.Copy();
-                ApplyRentalWeaponFields(updated, expireTime);
+                ApplyRentalWeaponRenewalFields(updated, expireTime);
                 if (!inventory.SetItem(listType, pair.Key, updated))
                     return false;
 
@@ -616,15 +606,24 @@ namespace DfoServer.Game.Inventory
             return false;
         }
 
-        private static void ApplyRentalWeaponFields(ItemCore core, int expireTime)
+        private static InventoryCreateOptions CreateRentalWeaponOptions(int expireTime)
+        {
+            return new InventoryCreateOptions
+            {
+                ExpireTime = expireTime,
+            };
+        }
+
+        private static void ApplyRentalWeaponRenewalFields(ItemCore core, int expireTime)
         {
             if (core == null)
                 return;
 
-            core.InstanceValue = RentalWeaponRequestCodec.RentalWeaponQualitySeed;
-            core.Durability = RentalWeaponRequestCodec.RentalWeaponDurability;
             core.ExpireTime = expireTime;
             core.Marker16 = ItemCore.Marker16Default;
+            var metadata = ItemMetadataResolver.Resolve(core.ItemId);
+            if (metadata != null && metadata.Durability > 0)
+                core.Durability = metadata.Durability;
         }
 
         private static InventoryMutationResult ToMutationResult(

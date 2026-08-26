@@ -8,6 +8,7 @@ namespace DfoServer.Game.Inventory
     {
         private Dictionary<int, CreatureDetail> _details = new Dictionary<int, CreatureDetail>();
         private readonly HashSet<int> _dirtyDetailUids = new HashSet<int>();
+        private readonly HashSet<int> _deletedDetailUids = new HashSet<int>();
         private readonly IGameDatabase _database;
         private int _characterId;
 
@@ -19,6 +20,8 @@ namespace DfoServer.Game.Inventory
         public IReadOnlyCollection<CreatureDetail> Details => _details.Values;
 
         public IReadOnlyCollection<int> DirtyDetailUids => _dirtyDetailUids;
+
+        public IReadOnlyCollection<int> DeletedDetailUids => _deletedDetailUids;
 
         public void LoadForCharacter(int characterId)
         {
@@ -34,6 +37,7 @@ namespace DfoServer.Game.Inventory
             _characterId = characterId;
             _details = CreatureDetailRepository.LoadForCharacter(connection, characterId);
             _dirtyDetailUids.Clear();
+            _deletedDetailUids.Clear();
         }
 
         internal void BindCharacter(int characterId)
@@ -58,6 +62,7 @@ namespace DfoServer.Game.Inventory
             if (detail == null || detail.Uid <= 0)
                 return;
 
+            _deletedDetailUids.Remove(detail.Uid);
             _details[detail.Uid] = detail;
         }
 
@@ -69,7 +74,10 @@ namespace DfoServer.Game.Inventory
                 detail,
                 _database);
             if (saved && detail != null)
+            {
                 _dirtyDetailUids.Remove(detail.Uid);
+                _deletedDetailUids.Remove(detail.Uid);
+            }
             return saved;
         }
 
@@ -138,6 +146,17 @@ namespace DfoServer.Game.Inventory
                 return false;
 
             _dirtyDetailUids.Remove(creatureKey);
+            _deletedDetailUids.Remove(creatureKey);
+            return _details.Remove(creatureKey);
+        }
+
+        internal bool RemoveDirty(int creatureKey)
+        {
+            if (creatureKey <= 0)
+                return false;
+
+            _dirtyDetailUids.Remove(creatureKey);
+            _deletedDetailUids.Add(creatureKey);
             return _details.Remove(creatureKey);
         }
 
@@ -147,6 +166,7 @@ namespace DfoServer.Game.Inventory
                 return false;
 
             _dirtyDetailUids.Remove(creatureKey);
+            _deletedDetailUids.Remove(creatureKey);
             var removed = _details.Remove(creatureKey);
             InventoryPersistenceService.DeleteCreatureDetailImmediately(
                 _characterId,
@@ -158,7 +178,10 @@ namespace DfoServer.Game.Inventory
         internal void MarkDirty(int creatureKey)
         {
             if (creatureKey > 0)
+            {
+                _deletedDetailUids.Remove(creatureKey);
                 _dirtyDetailUids.Add(creatureKey);
+            }
         }
 
         internal IReadOnlyList<CreatureDetail> GetDirtyDetails()
@@ -176,6 +199,7 @@ namespace DfoServer.Game.Inventory
         internal void ClearDirtyState()
         {
             _dirtyDetailUids.Clear();
+            _deletedDetailUids.Clear();
         }
     }
 }

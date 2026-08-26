@@ -325,13 +325,13 @@ namespace DfoServer.Game.Inventory
             if (source == null
                 || source.ItemId <= 0
                 || (expectedItemTemplateId > 0 && source.ItemId != expectedItemTemplateId)
-                || !IsExpired(source, nowUnixSeconds))
+                || !IsExpired(inventory, listType, source, nowUnixSeconds))
             {
                 return false;
             }
 
             var snapshot = source.Copy();
-            if (!inventory.RemoveItem(listType, slotIndex))
+            if (!RemoveItemWithDetails(inventory, listType, slotIndex, source))
                 return false;
 
             mutation = BuildExpiredRemovalMutation(listType, slotIndex, snapshot);
@@ -354,10 +354,10 @@ namespace DfoServer.Game.Inventory
                 foreach (var pair in items)
                 {
                     var item = pair.Value;
-                    if (!IsExpired(item, nowUnixSeconds))
+                    if (!IsExpired(inventory, listType, item, nowUnixSeconds))
                         continue;
 
-                    if (!inventory.RemoveItem(listType, pair.Key))
+                    if (!RemoveItemWithDetails(inventory, listType, pair.Key, item))
                         continue;
 
                     removed++;
@@ -383,10 +383,10 @@ namespace DfoServer.Game.Inventory
             {
                 var slotIndex = (short)slot;
                 var item = inventory.GetItem(listType, slotIndex);
-                if (!IsExpired(item, nowUnixSeconds))
+                if (!IsExpired(inventory, listType, item, nowUnixSeconds))
                     continue;
 
-                if (!inventory.RemoveItem(listType, slotIndex))
+                if (!RemoveItemWithDetails(inventory, listType, slotIndex, item))
                     continue;
 
                 removed++;
@@ -402,6 +402,56 @@ namespace DfoServer.Game.Inventory
                 && item.ItemId > 0
                 && item.ExpireTime > 0
                 && item.ExpireTime <= nowUnixSeconds;
+        }
+
+        internal static bool IsExpired(
+            InventoryService inventory,
+            InventoryListType listType,
+            ItemCore item,
+            long nowUnixSeconds)
+        {
+            if (item == null || item.ItemId <= 0)
+                return false;
+
+            if (item.ItemKind == ItemCore.KindAvatar)
+            {
+                var detail = inventory?.AvatarDetails.GetDetail(item.Value);
+                return detail != null
+                    && detail.ExpireDate > 0
+                    && detail.ExpireDate <= nowUnixSeconds;
+            }
+
+            if (item.ItemKind == ItemCore.KindCreature)
+            {
+                var detail = inventory?.CreatureDetails.GetDetail(item.Value);
+                return detail != null
+                    && detail.ExpireDate > 0
+                    && detail.ExpireDate <= nowUnixSeconds;
+            }
+
+            return IsExpired(item, nowUnixSeconds);
+        }
+
+        private static bool RemoveItemWithDetails(
+            InventoryService inventory,
+            InventoryListType listType,
+            short slotIndex,
+            ItemCore item)
+        {
+            if (inventory == null || item == null)
+                return false;
+
+            var itemKind = item.ItemKind;
+            var detailKey = item.Value;
+            if (!inventory.RemoveItem(listType, slotIndex))
+                return false;
+
+            if (itemKind == ItemCore.KindAvatar && detailKey > 0)
+                inventory.AvatarDetails.RemoveDirty(detailKey);
+            else if (itemKind == ItemCore.KindCreature && detailKey > 0)
+                inventory.CreatureDetails.RemoveDirty(detailKey);
+
+            return true;
         }
 
         private static InventoryItemLifecycleUsePlan Reject(

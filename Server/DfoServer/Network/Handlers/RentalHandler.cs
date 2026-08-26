@@ -85,12 +85,6 @@ namespace DfoServer.Network.Handlers
                         return false;
                     }
 
-                    var rental = _dataSource.LoadRentalInfo(
-                        connection,
-                        transaction,
-                        characterId);
-                    rental.UpsertItem(inventoryTemplateId, inventoryTemplateId, (uint)expireTime);
-                    _dataSource.SaveRentalInfo(connection, transaction, characterId, rental);
                     luckyStar = (ushort)Math.Max(0, currentLuckyStar - starCost);
 
                     if (!InventoryShopRuntimeService.TryRentWeapon(
@@ -119,7 +113,7 @@ namespace DfoServer.Network.Handlers
             FileLogger.Log($"[Rental] RENT_WEAPON: char={characterId} item=0x{inventoryTemplateId:X8} cost={starCost} starsLeft={luckyStar} expire={expireTime}");
 
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x01, CommandType, RentalWeaponPacketBuilder.BuildSuccessAck()));
-            await RentalInfoPanelNotifier.SyncAsync(session, _dataSource, characterId, luckyStar, _rentalTimeProvider);
+            await RentalInfoPanelNotifier.SyncAsync(session, characterId, luckyStar, _rentalTimeProvider);
 
             if (_refresh != null && rentResult.SlotIndex >= 0)
                 await _refresh.SendUpdateItemList(session, rentResult.ListType, rentResult.SlotIndex);

@@ -10,10 +10,7 @@ namespace DfoServer.Game.Inventory
         public const int RequestBodySize = 22;
         public const int ItemTemplateOffset = 14;
         public const int ClientContextOffset = 18;
-        public const ushort RentalWeaponDurability = 100;
         public const int RentalDurationSeconds = 86400;
-        /// 租赁武器固定品级种子，写入 ItemCore.InstanceValue，与请求 body 字段无关。
-        public const int RentalWeaponQualitySeed = (int)ItemQuality.TopQualitySeed;
 
         public static bool TryParse(
             byte[] body,

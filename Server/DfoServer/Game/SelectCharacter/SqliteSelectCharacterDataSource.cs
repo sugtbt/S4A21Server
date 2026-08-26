@@ -38,7 +38,6 @@ namespace DfoServer.Game.SelectCharacter
             _dungeonDifficultyPermissions;
         private readonly Infrastructure.IGameDatabase _database;
         private readonly string _connectionString;
-        private readonly IRentalTimeProvider _rentalTimeProvider;
         private readonly Quests.DailyChallengeService _dailyChallengeService;
 
         public SqliteSelectCharacterDataSource(
@@ -69,14 +68,14 @@ namespace DfoServer.Game.SelectCharacter
 
             _database = database;
             _connectionString = database.ConnectionString;
-            _rentalTimeProvider = rentalTimeProvider ?? SystemRentalTimeProvider.Instance;
+            var resolvedRentalTimeProvider = rentalTimeProvider ?? SystemRentalTimeProvider.Instance;
             _dailyResetService = dailyResetService ?? new DailyReset.DailyResetService(database);
             _lotteryDoubleRewardPolicy = new LotteryDoubleRewardPolicy(
                 _dailyResetService,
                 _connectionString);
             _inventoryLifecycle = inventoryLifecycle ?? new InventoryCharacterLifecycleService(
                 database,
-                _rentalTimeProvider);
+                resolvedRentalTimeProvider);
             _initDataRepository = new SqliteCharacterProgressRepository(database);
             _darkKnightComboSkillRepository = new SqliteDarkKnightComboSkillRepository(database);
             _knightShieldDeckRepository = KnightShieldDeckRepository.FromConnectionString(_connectionString);
@@ -226,7 +225,7 @@ namespace DfoServer.Game.SelectCharacter
 
         public SelectCharacterDataSnapshot Load(int characterId, int accountId)
         {
-            _inventoryLifecycle.DeleteExpiredRentalEquipment(characterId, accountId);
+            _inventoryLifecycle.DeleteExpiredNameTagState(characterId);
 
             var initSnapshot = new SelectCharacterInitializationSnapshot();
 
@@ -314,7 +313,6 @@ namespace DfoServer.Game.SelectCharacter
                 accountId,
                 initSnapshot.RentalInfo);
             initSnapshot.RentalInfo.ReplaceItems(rebuiltRentalInfo.Items);
-            SaveRentalInfo(characterId, initSnapshot.RentalInfo);
 
             using (var conn = new SqliteConnection(_connectionString))
             {
@@ -718,119 +716,6 @@ ON CONFLICT(character_id) DO UPDATE SET manage_level=excluded.manage_level;";
             => _accountSettingsRepository.Load(accountId)?.MainGameOption;
 
 
-        public void SaveRentalInfo(SqliteConnection connection, SqliteTransaction transaction, int characterId, RentalInfoSnapshot rental)
-        {
-            if (characterId <= 0 || connection == null || transaction == null || rental == null)
-                return;
-
-            using (var del = new SqliteCommand(
-                "DELETE FROM character_rental_items WHERE character_id=@cid", connection, transaction))
-            {
-                del.Parameters.AddWithValue("@cid", characterId);
-                del.ExecuteNonQuery();
-            }
-
-            foreach (var item in rental.Items)
-            {
-                if (item == null || item.ItemId == 0)
-                    continue;
-
-                using (var cmd = new SqliteCommand(
-                    @"INSERT INTO character_rental_items (character_id, shop_entry_id, inventory_template_id, expire_time)
-                      VALUES (@cid, @sid, @inv, @exp)", connection, transaction))
-                {
-                    cmd.Parameters.AddWithValue("@cid", characterId);
-                    cmd.Parameters.AddWithValue("@sid", (long)item.ItemId);
-                    cmd.Parameters.AddWithValue("@inv", (long)item.InventoryTemplateId);
-                    cmd.Parameters.AddWithValue("@exp", (long)item.ExpireTime);
-                    cmd.ExecuteNonQuery();
-                }
-            }
-        }
-
-        public RentalInfoSnapshot LoadRentalInfo(int characterId)
-        {
-            var rental = new RentalInfoSnapshot();
-            LoadRentalItems(characterId, rental);
-            return rental;
-        }
-
-        public RentalInfoSnapshot LoadRentalInfo(
-            SqliteConnection connection,
-            SqliteTransaction transaction,
-            int characterId)
-        {
-            var rental = new RentalInfoSnapshot();
-            if (connection == null || characterId <= 0)
-                return rental;
-
-            using (var command = connection.CreateCommand())
-            {
-                command.Transaction = transaction;
-                command.CommandText = @"
-SELECT shop_entry_id, inventory_template_id, expire_time
-FROM character_rental_items
-WHERE character_id=@cid;";
-                command.Parameters.AddWithValue("@cid", characterId);
-                using (var reader = command.ExecuteReader())
-                {
-                    while (reader.Read())
-                    {
-                        rental.Items.Add(new RentalItemSnapshot
-                        {
-                            ItemId = (uint)reader.GetInt64(0),
-                            InventoryTemplateId = (uint)reader.GetInt64(1),
-                            ExpireTime = (uint)reader.GetInt64(2),
-                        });
-                    }
-                }
-            }
-
-            return rental;
-        }
-
-        private void LoadRentalItems(int characterId, RentalInfoSnapshot rental)
-        {
-            rental.Items.Clear();
-            using (var conn = new SqliteConnection(_connectionString))
-            {
-                conn.Open();
-                using (var cmd = new SqliteCommand(
-                    "SELECT shop_entry_id, inventory_template_id, expire_time FROM character_rental_items WHERE character_id=@cid", conn))
-                {
-                    cmd.Parameters.AddWithValue("@cid", characterId);
-                    using (var reader = cmd.ExecuteReader())
-                    {
-                        while (reader.Read())
-                        {
-                            rental.Items.Add(new RentalItemSnapshot
-                            {
-                                ItemId = (uint)reader.GetInt64(0),
-                                InventoryTemplateId = (uint)reader.GetInt64(1),
-                                ExpireTime = (uint)reader.GetInt64(2),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        private void SaveRentalInfo(int characterId, RentalInfoSnapshot rental)
-        {
-            if (characterId <= 0 || rental == null)
-                return;
-
-            using (var connection = new SqliteConnection(_connectionString))
-            {
-                connection.Open();
-                using (var transaction = connection.BeginTransaction())
-                {
-                    SaveRentalInfo(connection, transaction, characterId, rental);
-                    transaction.Commit();
-                }
-            }
-        }
-
         public void InitializeNewCharacter(int characterId, int accountId, byte job)
         {
             _inventoryLifecycle.EnsureContainerState(characterId, accountId);
@@ -914,9 +799,6 @@ WHERE character_id=@cid;";
 
         private void LoadInitFieldsFromPacketTemplates(int characterId, SelectCharacterInitializationSnapshot snap)
         {
-            LoadRentalItems(characterId, snap.RentalInfo);
-            snap.RentalInfo.RemoveExpired(_rentalTimeProvider.UtcNowUnixSeconds());
-
             LoadCrystalContract(characterId, snap);
         }
 

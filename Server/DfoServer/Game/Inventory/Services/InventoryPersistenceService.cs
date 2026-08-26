@@ -281,7 +281,8 @@ namespace DfoServer.Game.Inventory
                 return true;
             if (inventory.AvatarDetails.DirtyDetailUids.Count > 0
                 || inventory.AvatarDetails.DeletedDetailUids.Count > 0
-                || inventory.CreatureDetails.DirtyDetailUids.Count > 0)
+                || inventory.CreatureDetails.DirtyDetailUids.Count > 0
+                || inventory.CreatureDetails.DeletedDetailUids.Count > 0)
                 return true;
             if (inventory.Cargo.DirtySlots.Count > 0
                 || inventory.Cargo.IsStateDirty
@@ -469,6 +470,9 @@ namespace DfoServer.Game.Inventory
             SqliteTransaction transaction,
             InventoryService inventory)
         {
+            foreach (var creatureKey in inventory.CreatureDetails.DeletedDetailUids)
+                CreatureDetailRepository.Delete(connection, transaction, inventory.CharacterId, creatureKey);
+
             foreach (var detail in inventory.CreatureDetails.GetDirtyDetails())
                 CreatureDetailRepository.Upsert(connection, transaction, inventory.CharacterId, detail);
         }

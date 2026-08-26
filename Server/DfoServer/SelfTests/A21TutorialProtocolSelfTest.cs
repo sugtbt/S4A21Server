@@ -175,18 +175,28 @@ namespace DfoServer.SelfTests
                     totalLuckyStar: 9,
                     requestBody: null);
             Check(
-                "A21 dungeon lucky-star ACK uses mode 2/count/total",
+                "A21 dungeon lucky-star ACK uses mode 2/success-flag-0/total",
                 (ushort)CmdPacketTypeA21.CHARGE_RENTPOINT == 0x03D0
                 && settlementLuckyStar.Length == 13
                 && settlementLuckyStar[0] == 1
                 && BitConverter.ToInt32(settlementLuckyStar, 1) == 2
-                && BitConverter.ToInt32(settlementLuckyStar, 5) == 1
+                && BitConverter.ToInt32(settlementLuckyStar, 5) == 0
                 && BitConverter.ToInt32(settlementLuckyStar, 9) == 9,
                 ref failures);
 
             var chargeRequest = new byte[RentalCatalogCodec.ChargeRentPointRequestSize];
-            Buffer.BlockCopy(BitConverter.GetBytes(1), 0, chargeRequest, 0, 4);
-            Buffer.BlockCopy(BitConverter.GetBytes(3), 0, chargeRequest, 4, 4);
+            Buffer.BlockCopy(
+                BitConverter.GetBytes(1),
+                0,
+                chargeRequest,
+                RentalCatalogCodec.ChargeRentPointModeOffset,
+                4);
+            Buffer.BlockCopy(
+                BitConverter.GetBytes(3),
+                0,
+                chargeRequest,
+                RentalCatalogCodec.ChargeRentPointQuantityOffset,
+                4);
             var purchaseParsed = RentalCatalogCodec.TryParseShopPacketBuyCount(
                 chargeRequest,
                 out var purchaseCount);
@@ -246,6 +256,43 @@ namespace DfoServer.SelfTests
                 && secondRentalItem == 401030032u
                 && secondRentalContext == 11u
                 && secondRentalCost == 3,
+                ref failures);
+
+            var rentalInventory = new InventoryService(1003, 1003);
+            var rentalExpireTime = 2_000_000_000;
+            var rentalMetadata = ItemMetadataResolver.Resolve(401000037);
+            var rentalGrantOk = InventoryShopRuntimeService.TryRentWeapon(
+                rentalInventory,
+                401000037,
+                rentalExpireTime,
+                out var rentalGrant);
+            var rentalCore = rentalGrantOk && rentalGrant != null
+                ? rentalInventory.GetItem(rentalGrant.ListType, rentalGrant.SlotIndex)
+                : null;
+            Check(
+                "A21 rental weapon normal-create metadata is available",
+                rentalMetadata != null,
+                ref failures);
+            Check(
+                "A21 rental weapon normal-create grant succeeds",
+                rentalGrantOk
+                && rentalGrant != null,
+                ref failures);
+            Check(
+                "A21 rental weapon normal-create inserts the requested item",
+                rentalCore != null
+                && rentalCore.ItemId == 401000037,
+                ref failures);
+            Check(
+                "A21 rental weapon normal-create uses PVF durability",
+                rentalMetadata != null
+                && rentalCore != null
+                && rentalCore.Durability == rentalMetadata.Durability,
+                ref failures);
+            Check(
+                "A21 rental weapon normal-create writes ItemCore expire",
+                rentalCore != null
+                && rentalCore.ExpireTime == rentalExpireTime,
                 ref failures);
 
             var rentalSuccess = RentalWeaponPacketBuilder.BuildSuccessAck();

@@ -25,19 +25,34 @@ namespace DfoServer.Game.Inventory
 
         internal static bool IsExpired(InventoryItem item, AvatarDetail avatarDetail, long nowUnixTime)
         {
-            return IsExpired(item?.Core, avatarDetail, nowUnixTime);
+            return IsExpired(item?.Core, avatarDetail, null, nowUnixTime);
         }
 
         internal static bool IsExpired(ItemCore core, AvatarDetail avatarDetail, long nowUnixTime)
         {
+            return IsExpired(core, avatarDetail, null, nowUnixTime);
+        }
+
+        internal static bool IsExpired(
+            ItemCore core,
+            AvatarDetail avatarDetail,
+            CreatureDetail creatureDetail,
+            long nowUnixTime)
+        {
             if (core == null)
                 return true;
 
-            var expireDate = core.ItemKind == ItemCore.KindAvatar && avatarDetail != null
-                ? avatarDetail.ExpireDate
-                : core.ExpireTime;
+            if (core.ItemKind == ItemCore.KindAvatar)
+                return avatarDetail != null
+                    && avatarDetail.ExpireDate > 0
+                    && avatarDetail.ExpireDate <= nowUnixTime;
 
-            return expireDate > 0 && expireDate <= nowUnixTime;
+            if (core.ItemKind == ItemCore.KindCreature)
+                return creatureDetail != null
+                    && creatureDetail.ExpireDate > 0
+                    && creatureDetail.ExpireDate <= nowUnixTime;
+
+            return core.ExpireTime > 0 && core.ExpireTime <= nowUnixTime;
         }
     }
 }
