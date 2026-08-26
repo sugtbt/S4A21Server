@@ -120,6 +120,8 @@ namespace DfoServer.Game.Dungeon
         internal int TotalRoomCount { get; set; } = 1;
         internal int EntryPartyMemberCount { get; set; } = 1;
         internal int ChronicleDropJobGroup { get; set; } = -1;
+        internal int DimensionDropJob { get; set; } = -1;
+        internal int DimensionDropGrowType { get; set; } = -1;
         internal int LinkedDungeonNextId { get; set; }
         internal int LinkedDungeonNextRate { get; set; }
         internal int LinkedDungeonNextCondition { get; set; }

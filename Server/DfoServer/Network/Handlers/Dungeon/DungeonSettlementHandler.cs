@@ -757,6 +757,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                 .UsesStandardResultProjection(presentationKind);
             var shouldScheduleCardRewardFlow = standardPresentation
                 && ShouldScheduleCardRewardFlow(run.DungeonId);
+            var isDimensionDungeon = DungeonData.IsDimensionDungeon(run.DungeonId);
             var dungeonLevel = DungeonData.GetDungeonBasicLv(run.DungeonId);
             if (dungeonLevel <= 0)
                 throw new InvalidOperationException(
@@ -793,6 +794,10 @@ namespace DfoServer.Network.Handlers.Dungeon
                     partyEventBonusRate: 0.0);
 
             var lcg = run.RoomLcg ?? new DnfLcg(run.Seed);
+            var characterJob = session.Player != null ? session.Player.Job : -1;
+            var characterGrowType = session.Player != null
+                ? session.Player.GrowType
+                : -1;
             var rewardContext = new ClearRewardGenerationContext(
                 dungeonLevel,
                 run.Difficulty,
@@ -811,9 +816,24 @@ namespace DfoServer.Network.Handlers.Dungeon
             var freeGold = shouldScheduleCardRewardFlow
                 ? ClearRewardGenerator.GenerateFreeGoldCard(rewardContext, lcg)
                 : default;
-            var freeItem = shouldScheduleCardRewardFlow
-                ? ClearRewardGenerator.GenerateFreeItemCard(rewardContext, lcg)
-                : default;
+            var freeItem = default(ClearRewardGenerator.CardReward);
+            if (shouldScheduleCardRewardFlow)
+            {
+                if (isDimensionDungeon)
+                {
+                    DimensionDropSystem.TryCreateFreeCard(
+                        characterJob,
+                        characterGrowType,
+                        lcg,
+                        out freeItem);
+                }
+                else
+                {
+                    freeItem = ClearRewardGenerator.GenerateFreeItemCard(
+                        rewardContext,
+                        lcg);
+                }
+            }
             var towerRewardCandidates = isTowerOfDespair
                 ? BuildTowerOfDespairRewardCandidates(
                     towerOfDespairFloor,
@@ -833,9 +853,20 @@ namespace DfoServer.Network.Handlers.Dungeon
                 && ShouldGeneratePaidCardRewards(run.DungeonId))
             {
                 paidCardCost = ClearRewardGenerator.GetPaidCardCost(dungeonLevel);
-                paidItem = ClearRewardGenerator.GeneratePaidItemCard(
-                    rewardContext,
-                    lcg);
+                if (isDimensionDungeon)
+                {
+                    DimensionDropSystem.TryCreatePaidCard(
+                        characterJob,
+                        characterGrowType,
+                        lcg,
+                        out paidItem);
+                }
+                else
+                {
+                    paidItem = ClearRewardGenerator.GeneratePaidItemCard(
+                        rewardContext,
+                        lcg);
+                }
             }
 
             run.PaidCardCost = paidCardCost;
@@ -858,6 +889,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                 FileLogger.Log(
                     $"[ClearReward] dungeon={run.DungeonId} level={dungeonLevel} " +
                     $"difficulty={run.Difficulty} party={rewardContext.PartyMemberCount} " +
+                    $"dimension={isDimensionDungeon} " +
                     $"rooms={rewardContext.VisitedRoomCount}/{rewardContext.TotalRoomCount} " +
                     $"kills={rewardContext.NormalKillCount}/" +
                     $"{rewardContext.ChampionKillCount}/" +

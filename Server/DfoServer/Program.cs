@@ -201,6 +201,7 @@ namespace DfoServer
                 FileLogger.Log(
                     $"[Startup] ITEM_METADATA_WARMUP totalMs={itemMetadataWarmupTimer.Elapsed.TotalMilliseconds:F3}");
                 Game.Dungeon.ClearRewardGenerator.WarmUp();
+                Game.Dungeon.DimensionDropSystem.WarmUp();
                 GameWorld.DungeonExperienceDefinitionCatalog.WarmUp();
                 Game.Dungeon.PassiveObjectDropPlanningService.WarmUp();
                 Game.Inventory.EquipmentRegenerationCandidateCatalog.Warmup();

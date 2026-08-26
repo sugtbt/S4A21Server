@@ -551,6 +551,8 @@ namespace DfoServer.SelfTests
                 && grandineStartMap == 42001,
                 ref failures);
 
+            VerifyQuestMazeMapEntranceAffinity(ref failures);
+
             var maze = new Dungeon.MazeSumInfo
             {
                 X = 0,
@@ -3526,6 +3528,88 @@ namespace DfoServer.SelfTests
                     ? "A21_TUTORIAL_PROTOCOL selftest passed."
                     : $"A21_TUTORIAL_PROTOCOL selftest failed: {failures}");
             return failures == 0 ? 0 : 1;
+        }
+
+        private static void VerifyQuestMazeMapEntranceAffinity(ref int failures)
+        {
+            var dungeon = Dungeon.GetDungeonFile(72);
+            var maze = dungeon?.Mazes?.FirstOrDefault(candidate =>
+                candidate?.QuestConnection != null
+                && candidate.QuestConnection.Length >= 2
+                && candidate.QuestConnection[0] == 0
+                && candidate.QuestConnection[1] == 15145);
+
+            var resolved = maze == null
+                ? -1
+                : DungeonMapResolver.ResolveMapId(
+                    72,
+                    1,
+                    2,
+                    maze,
+                    0,
+                    maze.BossMap);
+
+            var allExplicitRoomsKeepGateTopology = maze != null;
+            if (allExplicitRoomsKeepGateTopology)
+            {
+                var roomKeys = new HashSet<long>();
+                foreach (var specification in maze.MapSpecifications)
+                {
+                    if (specification == null
+                        || !roomKeys.Add(
+                            ((long)specification.X << 32)
+                            | (uint)specification.Y))
+                    {
+                        continue;
+                    }
+
+                    var mapId = DungeonMapResolver.ResolveMapId(
+                        72,
+                        specification.X,
+                        specification.Y,
+                        maze,
+                        0,
+                        maze.BossMap);
+                    if (!DungeonMapResolver.TryGetMazeCellGreed(
+                            maze,
+                            specification.X,
+                            specification.Y,
+                            out var roomGreed)
+                        || !DungeonMapResolver.TryDecodeGreedSymbol(
+                            roomGreed,
+                            out var roomMask)
+                        || !DungeonMapResolver.TryGetMapEntranceMask(
+                            mapId,
+                            out var mapMask)
+                        || roomMask != mapMask)
+                    {
+                        allExplicitRoomsKeepGateTopology = false;
+                        break;
+                    }
+                }
+            }
+
+            Check(
+                "quest Maze 15145 selects the MAP whose gate layout matches the maze",
+                maze != null
+                && resolved == 32986
+                && DungeonMapResolver.TryGetMazeCellGreed(
+                    maze,
+                    1,
+                    2,
+                    out var cellGreed)
+                && DungeonMapResolver.TryDecodeGreedSymbol(
+                    cellGreed,
+                    out var expectedMask)
+                && DungeonMapResolver.TryGetMapEntranceMask(
+                    resolved,
+                    out var resolvedMask)
+                && expectedMask == resolvedMask,
+                ref failures);
+            Check(
+                "quest Maze 15145 explicit rooms keep PVF gate topology",
+                allExplicitRoomsKeepGateTopology,
+                ref failures);
         }
 
         private static void FillSkillPagesFromCapturedFinishBody(

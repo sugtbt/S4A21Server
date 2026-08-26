@@ -196,6 +196,8 @@ namespace DfoServer.Game.Dungeon
         public int TotalRoomCount { get => Selection.TotalRoomCount; set => Selection.TotalRoomCount = value; }
         public int EntryPartyMemberCount { get => Selection.EntryPartyMemberCount; set => Selection.EntryPartyMemberCount = value; }
         internal int ChronicleDropJobGroup { get => Selection.ChronicleDropJobGroup; set => Selection.ChronicleDropJobGroup = value; }
+        internal int DimensionDropJob { get => Selection.DimensionDropJob; set => Selection.DimensionDropJob = value; }
+        internal int DimensionDropGrowType { get => Selection.DimensionDropGrowType; set => Selection.DimensionDropGrowType = value; }
         public int LinkedDungeonNextId { get => Selection.LinkedDungeonNextId; set => Selection.LinkedDungeonNextId = value; }
         public int LinkedDungeonNextRate { get => Selection.LinkedDungeonNextRate; set => Selection.LinkedDungeonNextRate = value; }
         public int LinkedDungeonNextCondition { get => Selection.LinkedDungeonNextCondition; set => Selection.LinkedDungeonNextCondition = value; }

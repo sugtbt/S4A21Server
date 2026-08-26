@@ -12,12 +12,14 @@ namespace DfoServer.Game.Dungeon
         AreaMaterials = 1 << 3,
         Independent = 1 << 4,
         World = 1 << 5,
+        Dimension = 1 << 6,
         All = Gold
             | GenericItems
             | MonsterTemplateItems
             | AreaMaterials
             | Independent
-            | World,
+            | World
+            | Dimension,
     }
 
     public enum DungeonDropDefinitionKind
@@ -38,7 +40,8 @@ namespace DfoServer.Game.Dungeon
         public static DungeonDropPolicy Impossible { get; } =
             new DungeonDropPolicy(
                 DungeonMonsterDropSource.Gold
-                | DungeonMonsterDropSource.Independent);
+                | DungeonMonsterDropSource.Independent
+                | DungeonMonsterDropSource.Dimension);
 
         private DungeonDropPolicy(DungeonMonsterDropSource allowedSources)
         {

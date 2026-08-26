@@ -40,6 +40,21 @@ namespace DfoServer.GameWorld
         internal static DungeonFile GetDungeonFile(int dungeonId)
             => GetDungeonFileWithPath(dungeonId).File;
 
+        internal static bool IsDimensionDungeon(int dungeonId)
+        {
+            if (dungeonId <= 0)
+                return false;
+
+            try
+            {
+                return GetDungeonFile(dungeonId)?.DimensionDungeon == true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         internal static (DungeonFile File, string FilePath)
             GetDungeonFileWithPath(int dungeonId)
         {

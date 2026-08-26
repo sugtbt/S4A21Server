@@ -554,7 +554,8 @@ namespace DfoServer.GameWorld
             if (isBossRoom)
             {
                 var bossActorMapIds = new List<int>();
-                int[] firstCandidates = null;
+                var firstCandidates = new List<int>();
+                var allowRandomFallback = false;
 
                 foreach (var item in maze.MapSpecifications)
                 {
@@ -568,24 +569,31 @@ namespace DfoServer.GameWorld
                     var candidates = item.MapCandidates != null && item.MapCandidates.Length > 0
                         ? item.MapCandidates
                         : new[] { item.Index };
-                    if (firstCandidates == null)
-                        firstCandidates = candidates;
+                    allowRandomFallback |= item.MapCandidates != null
+                        && item.MapCandidates.Length > 1;
+                    AddDistinctPositiveMapIds(firstCandidates, candidates);
 
                     foreach (var cid in candidates)
                     {
                         if (cid > 0 && HasBossActor(maplst, cid))
-                            bossActorMapIds.Add(cid);
+                            AddDistinctPositiveMapId(bossActorMapIds, cid);
                     }
                 }
 
                 if (bossActorMapIds.Count > 0)
-                    return bossActorMapIds.Count > 1
-                        ? bossActorMapIds[Infrastructure.ServerRandom.Next(bossActorMapIds.Count)]
-                        : bossActorMapIds[0];
-                if (firstCandidates != null && firstCandidates.Length > 0)
-                    return firstCandidates.Length > 1
-                        ? firstCandidates[Infrastructure.ServerRandom.Next(firstCandidates.Length)]
-                        : firstCandidates[0];
+                    return SelectMapSpecificationCandidate(
+                        maze,
+                        x,
+                        y,
+                        bossActorMapIds,
+                        allowRandomFallback);
+                if (firstCandidates.Count > 0)
+                    return SelectMapSpecificationCandidate(
+                        maze,
+                        x,
+                        y,
+                        firstCandidates,
+                        allowRandomFallback);
 
                 // The boss-only lookup at the start of ResolveMapId must not fall
                 // through to an ordinary "map" specification. Returning the normal
@@ -595,16 +603,97 @@ namespace DfoServer.GameWorld
                     return -1;
             }
 
+            var mapCandidates = new List<int>();
+            var allowRandomFallbackForMaps = false;
             foreach (var item in maze.MapSpecifications)
             {
                 if (item.X != x || item.Y != y) continue;
                 if (string.Equals(item.Type, "boss", StringComparison.OrdinalIgnoreCase)) continue;
-                if (item.MapCandidates != null && item.MapCandidates.Length > 1)
-                    return item.MapCandidates[Infrastructure.ServerRandom.Next(item.MapCandidates.Length)];
-                return item.Index;
+                allowRandomFallbackForMaps |= item.MapCandidates != null
+                    && item.MapCandidates.Length > 1;
+                AddDistinctPositiveMapIds(
+                    mapCandidates,
+                    item.MapCandidates != null && item.MapCandidates.Length > 0
+                        ? item.MapCandidates
+                        : new[] { item.Index });
             }
 
-            return -1;
+            return SelectMapSpecificationCandidate(
+                maze,
+                x,
+                y,
+                mapCandidates,
+                allowRandomFallbackForMaps);
+        }
+
+        private static int SelectMapSpecificationCandidate(
+            MazeInfo maze,
+            int x,
+            int y,
+            IReadOnlyList<int> candidates,
+            bool allowRandomFallback)
+        {
+            if (candidates == null || candidates.Count == 0)
+                return -1;
+
+            var expectedMask = TryGetMazeCellGreed(maze, x, y, out var cellGreed)
+                && TryDecodeGreedSymbol(cellGreed, out var decodedMask)
+                    ? (int?)decodedMask
+                    : null;
+
+            if (expectedMask.HasValue)
+            {
+                var compatible = new List<int>();
+                foreach (var mapId in candidates)
+                {
+                    if (mapId <= 0
+                        || !TryGetMapEntranceMask(mapId, out var entranceMask)
+                        || entranceMask != expectedMask.Value)
+                    {
+                        continue;
+                    }
+
+                    AddDistinctPositiveMapId(compatible, mapId);
+                }
+
+                if (compatible.Count > 0)
+                {
+                    return compatible.Count > 1
+                        ? compatible[Infrastructure.ServerRandom.Next(compatible.Count)]
+                        : compatible[0];
+                }
+
+                FileLogger.Log(
+                    $"[DungeonMapResolver] MAP_SPEC_GREED_MISMATCH: " +
+                    $"room=({x},{y}) expected={cellGreed} " +
+                    $"candidates={string.Join(",", candidates)}");
+            }
+
+            return allowRandomFallback && candidates.Count > 1
+                ? candidates[Infrastructure.ServerRandom.Next(candidates.Count)]
+                : candidates[0];
+        }
+
+        private static void AddDistinctPositiveMapIds(
+            List<int> destination,
+            IEnumerable<int> mapIds)
+        {
+            if (destination == null || mapIds == null)
+                return;
+
+            foreach (var mapId in mapIds)
+                AddDistinctPositiveMapId(destination, mapId);
+        }
+
+        private static void AddDistinctPositiveMapId(
+            List<int> destination,
+            int mapId)
+        {
+            if (destination == null || mapId <= 0)
+                return;
+
+            if (!destination.Contains(mapId))
+                destination.Add(mapId);
         }
 
         // --- Step 2+3: Directory Index ---

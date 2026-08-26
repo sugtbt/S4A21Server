@@ -106,6 +106,18 @@ namespace DfoServer.Game.Dungeon
                 run.ChronicleDropJobGroup,
                 run.DropPolicy,
                 ref slotCounter, dropPool);
+            if (run.DropPolicy.Allows(DungeonMonsterDropSource.Dimension))
+            {
+                var dimensionDrops = DimensionDropSystem.GenerateMonsterDrops(
+                    run.DungeonId,
+                    request.MonsterCode,
+                    run.DimensionDropJob,
+                    run.DimensionDropGrowType,
+                    run.RoomLcg,
+                    ref slotCounter);
+                if (dimensionDrops.Count > 0)
+                    result.drops.AddRange(dimensionDrops);
+            }
 
             run.SceneSlotCounter = slotCounter;
             RegisterDrops(run, result.drops);

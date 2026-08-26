@@ -73,11 +73,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                     throw new InvalidOperationException(
                         "Participant experience bonus snapshot was already frozen.");
                 }
-                newRun.ChronicleDropJobGroup =
-                    GameWorld.IndependentDropDefinitionCatalog
-                        .ResolveChronicleDropJobGroup(
-                            session.Player.Job,
-                            session.Player.GrowType);
+                ConfigureDropCharacterContext(session, newRun);
                 newRun.QuestSnapshot = questSnapshot;
                 newRun.TownReturnAnchor = returnAnchor;
                 newRun.TryBeginSelecting();
@@ -147,11 +143,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                     throw new InvalidOperationException(
                         "Participant experience bonus snapshot was already frozen.");
                 }
-                newRun.ChronicleDropJobGroup =
-                    GameWorld.IndependentDropDefinitionCatalog
-                        .ResolveChronicleDropJobGroup(
-                            session.Player.Job,
-                            session.Player.GrowType);
+                ConfigureDropCharacterContext(session, newRun);
                 newRun.QuestSnapshot = questSnapshot;
                 newRun.TownReturnAnchor = returnAnchor;
                 newRun.Tower = tower;
@@ -273,14 +265,27 @@ namespace DfoServer.Network.Handlers.Dungeon
                 throw new InvalidOperationException(
                     "Participant experience bonus snapshot was already frozen.");
             }
-            run.ChronicleDropJobGroup =
-                GameWorld.IndependentDropDefinitionCatalog
-                    .ResolveChronicleDropJobGroup(
-                        session.Player.Job,
-                        session.Player.GrowType);
+            ConfigureDropCharacterContext(session, run);
             run.QuestSnapshot = questSnapshot;
             run.TownReturnAnchor = returnAnchor;
             run.IsA21TutorialEntry = isA21TutorialEntry;
+        }
+
+        private static void ConfigureDropCharacterContext(
+            EnhancedClientSession session,
+            DungeonRun run)
+        {
+            var player = session?.Player;
+            if (run == null || player == null)
+                return;
+
+            run.ChronicleDropJobGroup =
+                GameWorld.IndependentDropDefinitionCatalog
+                    .ResolveChronicleDropJobGroup(
+                        player.Job,
+                        player.GrowType);
+            run.DimensionDropJob = player.Job;
+            run.DimensionDropGrowType = player.GrowType;
         }
 
         private static bool FinalizeNormalRunStart(

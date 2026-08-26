@@ -17,6 +17,9 @@ namespace DfoServer.GameWorld
         public static DungeonFile GetDungeonFile(int dungeonId)
             => DungeonCatalog.GetDungeonFile(dungeonId);
 
+        internal static bool IsDimensionDungeon(int dungeonId)
+            => DungeonCatalog.IsDimensionDungeon(dungeonId);
+
         internal static string ResolveFilePath(LstFile lstFile, int id, string description)
             => DungeonCatalog.ResolveFilePath(lstFile, id, description);
 
