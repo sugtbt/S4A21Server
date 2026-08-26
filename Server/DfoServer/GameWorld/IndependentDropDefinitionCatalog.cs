@@ -1,6 +1,7 @@
 using PvfLib;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 
@@ -303,12 +304,24 @@ namespace DfoServer.GameWorld
         private static Dictionary<(int Job, int FirstGrowType), int>
             LoadJobMappings()
         {
-            var text = PvfArchiveAccessor.ReadText(JobMappingPath);
+            var result = new Dictionary<(int, int), int>();
+            string text;
+            try
+            {
+                text = PvfArchiveAccessor.ReadText(JobMappingPath);
+            }
+            catch (FileNotFoundException ex)
+            {
+                FileLogger.Log(
+                    $"[IndependentDropDefinition] optional job mapping skipped " +
+                    $"path={JobMappingPath}: {ex.Message}");
+                return result;
+            }
+
             var tokens = ReadSectionTokens(
                 text,
                 "[chronicle drop job mapping table]",
                 "[/chronicle drop job mapping table]");
-            var result = new Dictionary<(int, int), int>();
 
             if (tokens.Length % 3 != 0)
             {
@@ -343,8 +356,19 @@ namespace DfoServer.GameWorld
             LoadExternalPools()
         {
             var result = new Dictionary<int, ExternalPoolDefinition>();
-            var lst = LstFile.Parse(
-                PvfArchiveAccessor.ReadText(ExternalPoolListPath));
+            LstFile lst;
+            try
+            {
+                lst = LstFile.Parse(
+                    PvfArchiveAccessor.ReadText(ExternalPoolListPath));
+            }
+            catch (FileNotFoundException ex)
+            {
+                FileLogger.Log(
+                    $"[IndependentDropDefinition] optional external pool list skipped " +
+                    $"path={ExternalPoolListPath}: {ex.Message}");
+                return result;
+            }
 
             foreach (var entry in lst.Entries)
             {

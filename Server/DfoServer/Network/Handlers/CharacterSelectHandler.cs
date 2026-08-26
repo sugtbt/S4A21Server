@@ -932,16 +932,19 @@ namespace DfoServer.Network.Handlers
                 return;
             }
 
-            var slotIndex = body[0];
-            var nameLen = BitConverter.ToInt32(body, 1);
-            if (nameLen <= 0 || nameLen > 30 || 5 + nameLen > body.Length)
+            // wire 格式实测：DELETE_CHARACTER 请求 = [slot:u16 LE][nameLen:u32 LE][name]，
+            // 如 01 00 03 00 00 00 34 34 34 = slot1, len3, "444"。
+            // 旧解析 [slot:u8][nameLen@1] 会把 nameLen 错读为 768 → 恒触发 nameLen>30 静默拦截。
+            var slotIndex = BitConverter.ToUInt16(body, 0);
+            var nameLen = BitConverter.ToInt32(body, 2);
+            if (nameLen <= 0 || nameLen > 30 || 6 + nameLen > body.Length)
             {
                 await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x01, 0x0006, new byte[] { 0x02 }));
                 return;
             }
 
             var nameRaw = new byte[nameLen];
-            Buffer.BlockCopy(body, 5, nameRaw, 0, nameLen);
+            Buffer.BlockCopy(body, 6, nameRaw, 0, nameLen);
             var name = ClientTextEncoding.GetString(nameRaw);
             var accountId = session.Account?.AccountId ?? 1;
 
@@ -973,17 +976,34 @@ namespace DfoServer.Network.Handlers
 
             try
             {
-                _characterRepository.SoftDelete(target.CharacterId);
+                // 软删 + 前移 slot 在同一事务内原子完成: 被删 slot 之后所有活跃角色 slot 前移一位,
+                // 保持账号内 slot 连续。客户端会话内列表刷新(创建/删除后补发列表)要求 slot 连续,
+                // 空洞 slot 会被当数组索引访问越界崩溃。用 DB 实际 slot(target.SlotIndex)而非客户端
+                // 索引, 保证即使列表带空洞压缩也正确。两步非事务时, 软删成功但前移失败会留下空洞。
+                _characterRepository.SoftDeleteAndCompactSlots(accountId, target.CharacterId, target.SlotIndex);
                 // 删除角色 → 清理好友图/表两方向关系，并向显示它的在线会话推 subcmd=2 删节点。
                 if (_sessions != null)
                     await UnitedFriendSystem.HandleCharacterDeletedAsync(
                         name, _sessions);
-                FileLogger.Log($"[{ProtocolName}] DELETE_CHARACTER: soft-deleted character_id={target.CharacterId} name='{name}'");
+                FileLogger.Log($"[{ProtocolName}] DELETE_CHARACTER: soft-deleted character_id={target.CharacterId} name='{name}' slot={target.SlotIndex} compacted");
 
-                var writer = new GamePacketWriter();
-                writer.WriteByte(0x00);
-                writer.WriteUInt16((ushort)target.CharacterId);
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x01, 0x0006, writer.ToArray()));
+                // 删除 ACK = [0x01][flag:1][slotIndex:u16]（逆向定论）：
+                //   body[0]=0x01 Ok（必须非 0；0x00 → 客户端判 Error，ErrCode=body[1] 崩溃）；
+                //   body[1]=flag：0 = 不设删除残留态（保守）；
+                //   body[2..3]=客户端本地列表 0-based slotIndex（回显请求值，勿用 charId）。
+                // 旧 [00][charId] ACK → 客户端判 Error 且把 charId 低字节当 ErrCode → 闪退。
+                var ackBody = new byte[]
+                {
+                    0x01,
+                    0x00,
+                    (byte)(slotIndex & 0xFF),
+                    (byte)((slotIndex >> 8) & 0xFF),
+                };
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x01, 0x0006, ackBody));
+
+                // 删除后【不补发角色列表】：客户端 ACK Ok 分支已从本地角色向量擦除该角色并后移
+                // 压缩，本地自管理刷新。服务端重发列表反而与客户端本地状态对账冲突。
             }
             catch (Exception ex)
             {

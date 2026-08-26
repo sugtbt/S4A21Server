@@ -1,7 +1,10 @@
 using DfoServer.Game.Dungeon;
 using DfoServer.Game.Inventory;
+using DfoServer.GameWorld;
 using DfoServer.Network.Builders;
 using System;
+using System.IO;
+using System.Linq;
 
 namespace DfoServer.SelfTests
 {
@@ -52,6 +55,8 @@ namespace DfoServer.SelfTests
                 && ReadUInt16(body, 110) == 0,
                 ref failures);
 
+            VerifyRealPvfIndependentDrop(ref failures);
+
             Console.WriteLine(
                 failures == 0
                     ? "A21_DUNGEON_DROP_ITEM selftest passed."
@@ -88,5 +93,43 @@ namespace DfoServer.SelfTests
 
         private static int ReadInt32(byte[] data, int offset)
             => BitConverter.ToInt32(data, offset);
+
+        private static void VerifyRealPvfIndependentDrop(ref int failures)
+        {
+            var pvfPath = Environment.GetEnvironmentVariable("PVF_ARCHIVE_PATH");
+            if (string.IsNullOrWhiteSpace(pvfPath) || !File.Exists(pvfPath))
+            {
+                Console.WriteLine("real PVF independent-drop checks skipped: PVF_ARCHIVE_PATH is not set");
+                return;
+            }
+
+            Check(
+                "real PVF independent drop table loads multiple same-monster entries",
+                IndependentDropDefinitionCatalog.HasMonsterDefinition(56675)
+                && IndependentDropDefinitionCatalog.TryGetMonsterEntries(
+                    56675,
+                    out var entries)
+                && entries.Count >= 5,
+                ref failures);
+
+            var slotCounter = (ushort)0;
+            var drops = IndependentDropSystem.GenerateDrops(
+                monsterCode: 56675,
+                difficulty: 2,
+                dungeonLevel: 85,
+                partyMemberCount: 1,
+                chronicleDropJobGroup: -1,
+                lcg: new DnfLcg(0),
+                slotCounter: ref slotCounter);
+            var guaranteedDrop = drops
+                .Where(drop => drop.TemplateId == 10093971)
+                .ToArray();
+
+            Check(
+                "real PVF independent drop count uses the solo-player count column",
+                guaranteedDrop.Length == 1
+                && guaranteedDrop[0].StackCount == 1,
+                ref failures);
+        }
     }
 }

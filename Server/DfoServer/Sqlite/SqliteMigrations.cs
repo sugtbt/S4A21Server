@@ -29,6 +29,12 @@ namespace DfoServer.Sqlite
                 new MigrationStep(9, "add_united_friend_relations", ApplyUnitedFriendRelations),
                 new MigrationStep(10, "add_game_events_and_joust", ApplyGameEventsAndJoust),
                 new MigrationStep(11, "convert_client_text_blobs_to_gbk", ApplyConvertClientTextBlobsToGbk),
+                // 12: characters slot 空洞压缩。客户端会话内列表刷新(创建/删除后补发列表)要求
+                // slot 连续, 空洞 slot 会被当数组索引访问越界崩溃。存量数据可能存在 slot 空洞
+                // (历史软删角色仍占用 slot_index 未被回收), 无法保证所有环境数据连续。
+                // 一次性把每个账号活跃角色按 slot_index 升序重排为连续 0,1,2...(保持当前排列顺序),
+                // 之后删除走"前移一位"增量压缩保持连续。幂等: 已连续库与新库无变化。
+                new MigrationStep(12, "compress_character_slot_holes", ApplyCompressCharacterSlotHoles),
             };
 
         internal static int CurrentVersion =>
@@ -716,6 +722,30 @@ CREATE INDEX IF NOT EXISTS idx_item_purchase_limits_account_reset
                 "characters",
                 "aura_skin_flag",
                 "INTEGER NOT NULL DEFAULT 0");
+        }
+
+        private static void ApplyCompressCharacterSlotHoles(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = @"
+UPDATE characters SET slot_index = (
+    SELECT cnt FROM (
+        SELECT c1.character_id,
+               (SELECT COUNT(*) FROM characters c2
+                WHERE c2.account_id = c1.account_id
+                  AND c2.delete_flag = 0
+                  AND (c2.slot_index < c1.slot_index
+                       OR (c2.slot_index = c1.slot_index AND c2.character_id <= c1.character_id))) - 1 AS cnt
+        FROM characters c1
+        WHERE c1.character_id = characters.character_id
+    )
+) WHERE delete_flag = 0;";
+                command.ExecuteNonQuery();
+            }
         }
 
         private static void ImportCharacterNewItems(

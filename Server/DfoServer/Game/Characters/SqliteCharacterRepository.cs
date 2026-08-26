@@ -255,6 +255,42 @@ WHERE character_id = @id;";
             }
         }
 
+        public void SoftDeleteAndCompactSlots(int accountId, int characterId, byte slotIndex)
+        {
+            using (var conn = Open())
+            using (var tx = conn.BeginTransaction())
+            {
+                try
+                {
+                    using (var cmd = conn.CreateCommand())
+                    {
+                        cmd.Transaction = tx;
+                        cmd.CommandText = @"UPDATE characters SET delete_flag = 1, updated_at = CURRENT_TIMESTAMP
+                                            WHERE character_id = @id;";
+                        cmd.Parameters.AddWithValue("@id", characterId);
+                        cmd.ExecuteNonQuery();
+                    }
+
+                    using (var cmd = conn.CreateCommand())
+                    {
+                        cmd.Transaction = tx;
+                        cmd.CommandText = @"UPDATE characters SET slot_index = slot_index - 1
+                                            WHERE account_id = @aid AND delete_flag = 0 AND slot_index > @slot;";
+                        cmd.Parameters.AddWithValue("@aid", accountId);
+                        cmd.Parameters.AddWithValue("@slot", (int)slotIndex);
+                        cmd.ExecuteNonQuery();
+                    }
+
+                    tx.Commit();
+                }
+                catch
+                {
+                    tx.Rollback();
+                    throw;
+                }
+            }
+        }
+
         public CharacterRecord GetByName(string name)
         {
             return FindByName(name, includeDeleted: false);

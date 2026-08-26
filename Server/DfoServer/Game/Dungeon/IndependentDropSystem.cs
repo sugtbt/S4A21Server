@@ -8,8 +8,7 @@ namespace DfoServer.Game.Dungeon
     public static class IndependentDropSystem
     {
         private const int DifficultyTierCount = 5;
-        private const int MaxPartyMemberCount = 4;
-        private const int DropCountCapIndex = 4;
+        private const int SoloDropCountIndex = 0;
         private const int StandardProbabilityDenominator = 1_000_000;
         private const int ExternalPoolProbabilityDenominator = 100_000_000;
         private const int MaxTraceItems = 24;
@@ -34,15 +33,12 @@ namespace DfoServer.Game.Dungeon
             var difficultyIndex = Math.Max(
                 0,
                 Math.Min(difficulty, DifficultyTierCount - 1));
-            var partyCount = Math.Max(
-                1,
-                Math.Min(partyMemberCount, MaxPartyMemberCount));
-            var partyIndex = partyCount - 1;
+            var partyCount = Math.Max(1, partyMemberCount);
             var matchedEntries = 0;
             var unresolvedPoolEntries = 0;
-            var totalAttempts = 0;
+            var totalRolls = 0;
             var successfulRolls = 0;
-            var finalRolls = 0;
+            var emittedItemCount = 0;
             var emittedTrace = new List<string>();
             var unresolvedPoolTrace = new List<string>();
 
@@ -80,72 +76,45 @@ namespace DfoServer.Game.Dungeon
                 }
 
                 var probability = entry.GetProbability(difficultyIndex);
-                var attempts = entry.GetCount(partyIndex);
-                // ETC count columns 0..3 select party size; column 4 is the cap.
-                var cap = entry.GetCount(DropCountCapIndex);
-                if (probability <= 0 || attempts <= 0 || cap <= 0)
+                var itemCount = entry.GetCount(SoloDropCountIndex);
+                if (probability <= 0 || itemCount <= 0)
                     continue;
 
                 matchedEntries++;
-                totalAttempts += attempts;
+                totalRolls++;
 
-                var dropCount = 0;
-                if (entry.ItemId != 0
-                    || (itemPool != null && itemPool.TotalWeight > 0))
+                var hasDropTemplate = entry.ItemId > 0
+                    || (itemPool != null && itemPool.TotalWeight > 0);
+                if (!hasDropTemplate
+                    || !IsProbabilityHit(
+                        entry.PoolKind,
+                        probability,
+                        lcg.Next(GetProbabilityDenominator(entry.PoolKind))))
                 {
-                    var denominator = GetProbabilityDenominator(
-                        entry.PoolKind);
-                    for (var attempt = 0; attempt < attempts; attempt++)
-                    {
-                        if (IsProbabilityHit(
-                                entry.PoolKind,
-                                probability,
-                                lcg.Next(denominator)))
-                        {
-                            dropCount++;
-                        }
-                    }
-                }
-                else
-                {
-                    dropCount = attempts;
-                }
-
-                successfulRolls += dropCount;
-                dropCount = Math.Min(dropCount, cap);
-                finalRolls += dropCount;
-
-                if (dropCount <= 0)
                     continue;
+                }
+
+                successfulRolls++;
+                emittedItemCount += itemCount;
 
                 if (itemPool != null && itemPool.TotalWeight > 0)
                 {
-                    for (var dropIndex = 0;
-                        dropIndex < dropCount;
-                        dropIndex++)
-                    {
-                        var roll = lcg.Next(itemPool.TotalWeight);
-                        if (!itemPool.TrySelect(roll, out var selected))
-                            continue;
+                    var roll = lcg.Next(itemPool.TotalWeight);
+                    if (!itemPool.TrySelect(roll, out var selected))
+                        continue;
 
-                        AddDrop(result, selected.ItemId, ref slotCounter);
-                        if (emittedTrace.Count < MaxTraceItems)
-                        {
-                            emittedTrace.Add(
-                                $"{selected.PoolIndex}:{selected.ItemId}");
-                        }
+                    AddDrop(result, selected.ItemId, itemCount, ref slotCounter);
+                    if (emittedTrace.Count < MaxTraceItems)
+                    {
+                        emittedTrace.Add(
+                            $"{selected.PoolIndex}:{selected.ItemId}x{itemCount}");
                     }
                 }
                 else if (entry.ItemId > 0)
                 {
-                    for (var dropIndex = 0;
-                        dropIndex < dropCount;
-                        dropIndex++)
-                    {
-                        AddDrop(result, entry.ItemId, ref slotCounter);
-                        if (emittedTrace.Count < MaxTraceItems)
-                            emittedTrace.Add($"direct:{entry.ItemId}");
-                    }
+                    AddDrop(result, entry.ItemId, itemCount, ref slotCounter);
+                    if (emittedTrace.Count < MaxTraceItems)
+                        emittedTrace.Add($"direct:{entry.ItemId}x{itemCount}");
                 }
             }
 
@@ -157,8 +126,8 @@ namespace DfoServer.Game.Dungeon
                     $"jobGroup={chronicleDropJobGroup} " +
                     $"entries={matchedEntries} " +
                     $"unresolvedPools={unresolvedPoolEntries} " +
-                    $"attempts={totalAttempts} successes={successfulRolls} " +
-                    $"capped={finalRolls} emitted={result.Count} " +
+                    $"rolls={totalRolls} successes={successfulRolls} " +
+                    $"itemCount={emittedItemCount} emitted={result.Count} " +
                     $"poolItems={FormatTrace(emittedTrace)} " +
                     $"missingPoolIndexes={FormatTrace(unresolvedPoolTrace)}");
             }
@@ -244,16 +213,13 @@ namespace DfoServer.Game.Dungeon
             var difficultyIndex = Math.Max(
                 0,
                 Math.Min(difficulty, DifficultyTierCount - 1));
-            var partyIndex = Math.Max(
-                0,
-                Math.Min(partyMemberCount, MaxPartyMemberCount) - 1);
             foreach (var entry in entries)
             {
+                var itemCount = entry.GetCount(SoloDropCountIndex);
                 if (entry.ItemId <= 0
                     || entry.HasItemPool
                     || entry.GetProbability(difficultyIndex) <= 0
-                    || entry.GetCount(partyIndex) <= 0
-                    || entry.GetCount(DropCountCapIndex) <= 0
+                    || itemCount <= 0
                     || (entry.LevelMin > 0
                         && entry.LevelMax > 0
                         && (dungeonLevel < entry.LevelMin
@@ -265,9 +231,7 @@ namespace DfoServer.Game.Dungeon
                 }
 
                 var candidateItemId = entry.ItemId;
-                var candidateCount = Math.Min(
-                    entry.GetCount(partyIndex),
-                    entry.GetCount(DropCountCapIndex));
+                var candidateCount = itemCount;
                 if (itemId != 0
                     && (itemId != candidateItemId
                         || count != candidateCount))
@@ -287,10 +251,11 @@ namespace DfoServer.Game.Dungeon
         private static void AddDrop(
             List<DropInfo> drops,
             int itemId,
+            int count,
             ref ushort slotCounter)
         {
             slotCounter++;
-            drops.Add(DropInfo.CreateItem(slotCounter, itemId, 1));
+            drops.Add(DropInfo.CreateItem(slotCounter, itemId, count));
         }
 
         private static string FormatTrace(IReadOnlyList<string> values)
