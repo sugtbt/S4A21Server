@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Microsoft.Data.Sqlite;
+using DfoServer.Game.Dungeon;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.KnightShield;
 using DfoServer.Game.SelectCharacter;
@@ -12,6 +13,7 @@ namespace DfoServer.Game.CharacterData
     {
         private readonly string _connectionString;
         private readonly KnightShieldDeckRepository _knightShieldDeckRepository;
+        private readonly DungeonEntryLimitService _entryLimitService;
 
         public SqliteSubtype1Repository(string databasePath, string schemaFilePath)
             : this(new GameDatabase(databasePath, schemaFilePath))
@@ -25,12 +27,14 @@ namespace DfoServer.Game.CharacterData
 
             _connectionString = database.ConnectionString;
             _knightShieldDeckRepository = KnightShieldDeckRepository.FromConnectionString(_connectionString);
+            _entryLimitService = new DungeonEntryLimitService(_connectionString);
         }
 
         private SqliteSubtype1Repository(string connectionString)
         {
             _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
             _knightShieldDeckRepository = KnightShieldDeckRepository.FromConnectionString(_connectionString);
+            _entryLimitService = new DungeonEntryLimitService(_connectionString);
         }
 
         public static SqliteSubtype1Repository FromConnectionString(string connectionString)
@@ -60,6 +64,7 @@ namespace DfoServer.Game.CharacterData
             var snap = new UserInfoAdditionSnapshot();
             byte characterJob = 0;
             int characterGrowType = 0;
+            int characterAccountId = 0;
 
             using (var conn = Open())
             {
@@ -114,7 +119,7 @@ namespace DfoServer.Game.CharacterData
                 }
 
                 
-                using (var cmd = new SqliteCommand("SELECT exp, ex_equip_slot_stat, clone_title_item_id, job, grow_type, aura_skin_flag FROM characters WHERE character_id=@cid", conn))
+                using (var cmd = new SqliteCommand("SELECT exp, ex_equip_slot_stat, clone_title_item_id, job, grow_type, aura_skin_flag, account_id FROM characters WHERE character_id=@cid", conn))
                 {
                     cmd.Parameters.AddWithValue("@cid", characterId);
                     using (var r = cmd.ExecuteReader())
@@ -127,6 +132,7 @@ namespace DfoServer.Game.CharacterData
                             characterJob = (byte)r.GetInt32(3);
                             characterGrowType = r.GetInt32(4);
                             snap.AuraSkinFlag = r.FieldCount > 5 && !r.IsDBNull(5) ? (byte)r.GetInt32(5) : (byte)0;
+                            characterAccountId = r.FieldCount > 6 && !r.IsDBNull(6) ? r.GetInt32(6) : 0;
                         }
                     }
                 }
@@ -172,21 +178,18 @@ namespace DfoServer.Game.CharacterData
                         $"[A21UserInfo1] cid={characterId} equipped fallback from DB count={fromDb.EquippedEntries.Count}");
                 }
 
-                using (var cmd = new SqliteCommand("SELECT dim_key, val1, val2 FROM character_dimensions WHERE character_id=@cid ORDER BY sort_order", conn))
+                foreach (var entry in _entryLimitService.LoadSpecialDungeonLimits(
+                             conn,
+                             null,
+                             characterAccountId,
+                             characterId))
                 {
-                    cmd.Parameters.AddWithValue("@cid", characterId);
-                    using (var r = cmd.ExecuteReader())
+                    snap.Dimensions.Add(new DimensionEntrySnapshot
                     {
-                        while (r.Read())
-                        {
-                            snap.Dimensions.Add(new DimensionEntrySnapshot
-                            {
-                                Key = (uint)r.GetInt64(0),
-                                Val1 = (byte)r.GetInt32(1),
-                                Val2 = (byte)r.GetInt32(2),
-                            });
-                        }
-                    }
+                        Key = (uint)entry.DungeonId,
+                        Val1 = 0,
+                        Val2 = entry.CurrentCount,
+                    });
                 }
 
                 

@@ -99,6 +99,7 @@ namespace DfoServer.Network.Builders
             Register(new PetCreatureWelcomeMessageBodyBuilder());
             Register(new UnitedServerFriendInfoBodyBuilder(sessions));
             Register(new WeddingInfoBodyBuilder());
+            Register(new DimensionGateEntranceInfoBodyBuilder(_database));
             Register(new StrikerSupportTagCharacterBodyBuilder(_database));
             RegisterCmd(new MercenaryInfoCmdBodyBuilder(_database));
             RegisterCmd(new WeddingCharacCmdBodyBuilder());

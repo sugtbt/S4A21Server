@@ -36,6 +36,7 @@ namespace DfoServer
             ("--selftest-a21-joust-event", SelfTests.A21JoustEventSelfTest.Run),
             ("--selftest-a21-death-tower-protocol", SelfTests.A21DeathTowerProtocolSelfTest.Run),
             ("--selftest-a21-special-dungeon-protocol", SelfTests.A21SpecialDungeonProtocolSelfTest.Run),
+            ("--selftest-dungeon-entry-limit", SelfTests.DungeonEntryLimitServiceSelfTest.Run),
             ("--selftest-item-state", SelfTests.ItemStateSelfTest.Run),
             ("--selftest-titlebook-use-item", SelfTests.TitleBookUseItemAchievementSelfTest.Run),
             ("--selftest-quest-completion-ticket", SelfTests.QuestCompletionTicketSelfTest.Run),

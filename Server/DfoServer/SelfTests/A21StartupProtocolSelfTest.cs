@@ -86,6 +86,29 @@ namespace DfoServer.SelfTests
                 Encoding.ASCII.GetString(loginSuccess).Contains("127.0.0.2"),
                 ref failures);
 
+            var initSequence = NewCharacterInitSequence.Build();
+            var weddingIndex = initSequence.FindIndex(entry =>
+                entry.Kind == SelectCharacterPacketTemplateKind.Raw
+                && entry.Command == 0x01
+                && entry.Type == (ushort)CmdPacketTypeA21.WEDDING_CHARAC);
+            Check(
+                "A21 init sequence places DIMENSION_GATE_ENTRANCE_INFO after WEDDING_CHARAC",
+                weddingIndex >= 0
+                && weddingIndex + 1 < initSequence.Count
+                && initSequence[weddingIndex + 1].Kind == SelectCharacterPacketTemplateKind.Raw
+                && initSequence[weddingIndex + 1].Command == 0x00
+                && initSequence[weddingIndex + 1].Type
+                    == (ushort)NotiPacketTypeA21.DIMENSION_GATE_ENTRANCE_INFO,
+                ref failures);
+
+            var dimensionGateBody = DimensionGateEntranceInfoBodyBuilder.Build(4, 2);
+            Check(
+                "A21 DIMENSION_GATE_ENTRANCE_INFO writes remaining then extra",
+                dimensionGateBody.Length == 8
+                && BitConverter.ToUInt32(dimensionGateBody, 0) == 4
+                && BitConverter.ToUInt32(dimensionGateBody, 4) == 2,
+                ref failures);
+
             var hiddenAvatar = Copy(AccountSettings.DefaultMainGameOption);
             var fullAvatarOffset = AccountSettings.FullAvatarOptionIndex * 2;
             hiddenAvatar[fullAvatarOffset] = 0;

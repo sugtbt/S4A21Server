@@ -35,6 +35,8 @@ namespace DfoServer.Sqlite
                 // 一次性把每个账号活跃角色按 slot_index 升序重排为连续 0,1,2...(保持当前排列顺序),
                 // 之后删除走"前移一位"增量压缩保持连续。幂等: 已连续库与新库无变化。
                 new MigrationStep(12, "compress_character_slot_holes", ApplyCompressCharacterSlotHoles),
+                new MigrationStep(13, "add_dungeon_entry_limits", ApplyDungeonEntryLimits),
+                new MigrationStep(14, "remove_dungeon_limit_noti2_entry_flag", ApplyRemoveDungeonLimitNoti2EntryFlag),
             };
 
         internal static int CurrentVersion =>
@@ -746,6 +748,150 @@ UPDATE characters SET slot_index = (
 ) WHERE delete_flag = 0;";
                 command.ExecuteNonQuery();
             }
+        }
+
+        private static void ApplyDungeonEntryLimits(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            ExecuteSql(connection, transaction, @"
+CREATE TABLE IF NOT EXISTS dungeon_limit_config (
+    dgn_id INTEGER PRIMARY KEY CHECK (dgn_id > 0),
+    scope_type TEXT NOT NULL DEFAULT 'charac'
+        CHECK (scope_type IN ('charac', 'account')),
+    limit_count INTEGER NOT NULL DEFAULT 0
+        CHECK (limit_count >= 0 AND limit_count <= 255),
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_dungeon_limit_config_sort
+    ON dungeon_limit_config(enabled, sort_order, dgn_id);
+
+INSERT OR IGNORE INTO dungeon_limit_config (
+    dgn_id, scope_type, limit_count, enabled, sort_order
+) VALUES
+    (11006, 'charac', 3, 1, 0),
+    (11007, 'charac', 3, 1, 1),
+    (3054, 'charac', 3, 1, 2),
+    (3056, 'charac', 3, 1, 3),
+    (3057, 'charac', 1, 1, 4),
+    (122, 'charac', 9, 1, 5),
+    (4000, 'charac', 1, 1, 6),
+    (3706, 'charac', 3, 1, 7),
+    (4108, 'charac', 1, 1, 8),
+    (4109, 'charac', 1, 1, 9),
+    (4110, 'charac', 1, 1, 10),
+    (4111, 'charac', 1, 1, 11),
+    (4103, 'charac', 3, 1, 12),
+    (4114, 'charac', 3, 1, 13),
+    (4115, 'charac', 3, 1, 14),
+    (4116, 'charac', 3, 1, 15),
+    (4117, 'charac', 3, 1, 16),
+    (4118, 'charac', 3, 1, 17),
+    (4130, 'charac', 3, 1, 18),
+    (3900, 'charac', 3, 1, 19),
+    (4124, 'charac', 1, 1, 20),
+    (4125, 'charac', 1, 1, 21),
+    (4126, 'charac', 1, 1, 22),
+    (4127, 'charac', 1, 1, 23),
+    (4128, 'charac', 1, 1, 24),
+    (4123, 'charac', 3, 1, 25);
+
+CREATE TABLE IF NOT EXISTS dungeon_limit_records (
+    account_id INTEGER NOT NULL,
+    character_id INTEGER NOT NULL DEFAULT 0 CHECK (character_id >= 0),
+    dgn_id INTEGER NOT NULL,
+    day_id INTEGER NOT NULL DEFAULT 0,
+    current_count INTEGER NOT NULL DEFAULT 0 CHECK (current_count >= 0),
+    extra_count INTEGER NOT NULL DEFAULT 0 CHECK (extra_count >= 0),
+    used_count INTEGER NOT NULL DEFAULT 0 CHECK (used_count >= 0),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (account_id, character_id, dgn_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE,
+    FOREIGN KEY (dgn_id) REFERENCES dungeon_limit_config(dgn_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_dungeon_limit_records_account_char_day
+    ON dungeon_limit_records(account_id, character_id, day_id);
+
+CREATE TABLE IF NOT EXISTS character_dimensiongate_records (
+    character_id INTEGER PRIMARY KEY,
+    day_id INTEGER NOT NULL DEFAULT 0,
+    current_count INTEGER NOT NULL DEFAULT 0 CHECK (current_count >= 0),
+    extra_count INTEGER NOT NULL DEFAULT 0 CHECK (extra_count >= 0),
+    used_count INTEGER NOT NULL DEFAULT 0 CHECK (used_count >= 0),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);");
+        }
+
+        private static void ApplyRemoveDungeonLimitNoti2EntryFlag(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            if (!TableExists(connection, transaction, "dungeon_limit_config"))
+                return;
+
+            ExecuteSql(connection, transaction, @"
+CREATE TABLE dungeon_limit_config_v14 (
+    dgn_id INTEGER PRIMARY KEY CHECK (dgn_id > 0),
+    scope_type TEXT NOT NULL DEFAULT 'charac'
+        CHECK (scope_type IN ('charac', 'account')),
+    limit_count INTEGER NOT NULL DEFAULT 0
+        CHECK (limit_count >= 0 AND limit_count <= 255),
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT OR REPLACE INTO dungeon_limit_config_v14 (
+    dgn_id, scope_type, limit_count, enabled, sort_order, updated_at
+)
+SELECT dgn_id,
+       CASE WHEN scope_type = 'account' THEN 'account' ELSE 'charac' END,
+       MAX(0, MIN(255, limit_count)),
+       CASE WHEN enabled = 0 THEN 0 ELSE 1 END,
+       sort_order,
+       COALESCE(updated_at, CURRENT_TIMESTAMP)
+FROM dungeon_limit_config;
+
+DROP TABLE dungeon_limit_config;
+ALTER TABLE dungeon_limit_config_v14 RENAME TO dungeon_limit_config;
+
+CREATE INDEX IF NOT EXISTS idx_dungeon_limit_config_sort
+    ON dungeon_limit_config(enabled, sort_order, dgn_id);
+
+INSERT OR IGNORE INTO dungeon_limit_config (
+    dgn_id, scope_type, limit_count, enabled, sort_order
+) VALUES
+    (11006, 'charac', 3, 1, 0),
+    (11007, 'charac', 3, 1, 1),
+    (3054, 'charac', 3, 1, 2),
+    (3056, 'charac', 3, 1, 3),
+    (3057, 'charac', 1, 1, 4),
+    (122, 'charac', 9, 1, 5),
+    (4000, 'charac', 1, 1, 6),
+    (3706, 'charac', 3, 1, 7),
+    (4108, 'charac', 1, 1, 8),
+    (4109, 'charac', 1, 1, 9),
+    (4110, 'charac', 1, 1, 10),
+    (4111, 'charac', 1, 1, 11),
+    (4103, 'charac', 3, 1, 12),
+    (4114, 'charac', 3, 1, 13),
+    (4115, 'charac', 3, 1, 14),
+    (4116, 'charac', 3, 1, 15),
+    (4117, 'charac', 3, 1, 16),
+    (4118, 'charac', 3, 1, 17),
+    (4130, 'charac', 3, 1, 18),
+    (3900, 'charac', 3, 1, 19),
+    (4124, 'charac', 1, 1, 20),
+    (4125, 'charac', 1, 1, 21),
+    (4126, 'charac', 1, 1, 22),
+    (4127, 'charac', 1, 1, 23),
+    (4128, 'charac', 1, 1, 24),
+    (4123, 'charac', 3, 1, 25);");
         }
 
         private static void ImportCharacterNewItems(
