@@ -260,6 +260,32 @@ namespace DfoServer.SelfTests
                     + UserInfoSubtype0Builder.A21AfterAliveExpertJobExpOffset) == 0,
                 ref failures);
 
+            var honorTailUserInfo = UserInfoSubtype0Builder.BuildNotificationBody(
+                new CharacterRecord
+                {
+                    CharacterId = 7,
+                    Name = new byte[] { (byte)'a' },
+                    Subtype0Tail = new UserInfoMinimumTailSnapshot
+                    {
+                        ProgressA = 0x11223344,
+                        ProgressB = 0x55667788,
+                    },
+                });
+            var honorAfterAliveOffset = honorTailUserInfo.Length
+                - UserInfoSubtype0Builder.A21AfterAliveLength;
+            Check(
+                "A21 USERINFO0 carries honor level/exp in the 64-byte tail ProgressA/ProgressB slots",
+                honorAfterAliveOffset >= 0
+                && BitConverter.ToUInt32(
+                    honorTailUserInfo,
+                    honorAfterAliveOffset
+                    + UserInfoSubtype0Builder.A21AfterAliveProgressAOffset) == 0x11223344
+                && BitConverter.ToUInt32(
+                    honorTailUserInfo,
+                    honorAfterAliveOffset
+                    + UserInfoSubtype0Builder.A21AfterAliveProgressBOffset) == 0x55667788,
+                ref failures);
+
             var expertJobChangeInfo = ExpertJobInfoBodyBuilder.BuildProjectedBody(
                 3,
                 new ExpertJobState

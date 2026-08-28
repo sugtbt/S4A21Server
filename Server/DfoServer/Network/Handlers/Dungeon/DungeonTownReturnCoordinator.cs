@@ -82,6 +82,8 @@ namespace DfoServer.Network.Handlers.Dungeon
             if (!DungeonRunLifecycle.CanProjectTownState(session, runIdentity))
                 return true;
             await _progressNotifications.SendUserInfoSubtype0Broadcast(session);
+            // 回城过图后客户端重置结婚属性 UI：subtype0 广播之后补发婚礼回放三包（与选角序列同包体）。
+            await InventoryRefreshSender.SendWeddingReplayRefresh(session);
             FileLogger.Log(
                 $"[{DungeonSharedServices.ProtocolLogName}] " +
                 $"ReturnToVillage: town state + subtype0 sent " +

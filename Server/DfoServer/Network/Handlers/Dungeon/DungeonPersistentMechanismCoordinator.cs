@@ -25,6 +25,9 @@ namespace DfoServer.Network.Handlers.Dungeon
         internal void ConfigureLinkedChallenge(DungeonRun run)
             => _antonNormal.ConfigureLinkedChallenge(run);
 
+        internal byte ResolveSequentialProgress(int characterId, int configKey)
+            => _antonNormal.ResolveSequentialProgress(characterId, configKey);
+
         internal Task ApplyDungeonClearAsync(
             EnhancedClientSession session,
             DungeonRun run)

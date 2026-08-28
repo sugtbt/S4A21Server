@@ -126,6 +126,9 @@ namespace DfoServer.Network.Handlers
         public Task Handle_ENUM_CMDPACKET_REQUEST_CIRCLE_ENTER(EnhancedClientSession session, GamePacketHeader header, byte[] body)
             => _entry.HandleRequestCircleEnter(session, header, body);
 
+        public Task Handle_ENUM_CMDPACKET_SEQUENTIAL_DUNGEON_INFO(EnhancedClientSession session, GamePacketHeader header, byte[] body)
+            => _entry.HandleSequentialDungeonInfo(session, header, body);
+
         public Task Handle_ENUM_CMDPACKET_GORGEOUS_CHALLENGE_TOGGLE(EnhancedClientSession session, GamePacketHeader header, byte[] body)
             => _entry.HandleGorgeousChallengeToggle(session, header, body);
 

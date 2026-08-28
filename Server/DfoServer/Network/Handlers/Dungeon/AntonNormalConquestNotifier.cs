@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using DfoServer.Game.CharacterData;
 using DfoServer.Game.Dungeon;
+using DfoServer.GameWorld;
 using DfoServer.Infrastructure;
 
 namespace DfoServer.Network.Handlers.Dungeon
@@ -24,6 +25,18 @@ namespace DfoServer.Network.Handlers.Dungeon
         internal void ConfigureLinkedChallenge(DungeonRun run)
             => _application.ConfigureLinkedChallenge(run);
 
+        // Answer to CMD SEQUENTIAL_DUNGEON_INFO (0x035D): resolve the
+        // persisted progress of the sequence the client asked about.
+        // Unknown keys and sequences without progress report 0 (not started).
+        internal byte ResolveSequentialProgress(int characterId, int configKey)
+        {
+            if (characterId <= 0)
+                return 0;
+            return _application.TryRestore(characterId, configKey, out var state)
+                ? state.ProgressIndex
+                : (byte)0;
+        }
+
         internal async Task RestoreBeforeSelectAsync(
             EnhancedClientSession session)
         {
@@ -36,8 +49,20 @@ namespace DfoServer.Network.Handlers.Dungeon
 
             try
             {
+                // 只恢复玩家当前所在副本入口区域的序列状态。此前无条件推送
+                // 安徒恩序列(key=28/41), 镇魂(area 26)等其他区域的客户端收到
+                // 错区域数据后会追问自身区域的序列(CMD 0x035D)。
+                if (!Town.TryGetDungeonGateReturnInfo(
+                        session.Player.CurTownId,
+                        session.Player.CurAreaId,
+                        out var gate)
+                    || gate.WorldMapAreaId <= 0)
+                {
+                    return;
+                }
                 if (!_application.TryRestore(
                         session.Player.CharacterId,
+                        gate.WorldMapAreaId,
                         out var state))
                 {
                     return;

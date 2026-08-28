@@ -95,9 +95,14 @@ namespace DfoServer.Network.Builders
         }
 
         // A21 无工会 64B 尾：ExpertJobType/Exp 在 +23/+24；ChannelId 在 +59。
+        // ProgressA/ProgressB（名誉等级/经验）在 +39/+43：偏移按旧 WriteTail 字段序
+        // （HardcoreDeathCount(u16)@37-38 之后依次 ProgressA(u32)、ProgressB(u32)、
+        // UserStateBits@47）推算，blob[52]=0x64 与旧 WriteByte(100) 对齐作为锚点。
         internal const int A21AfterAliveLength = 64;
         internal const int A21AfterAliveExpertJobTypeOffset = 23;
         internal const int A21AfterAliveExpertJobExpOffset = 24;
+        internal const int A21AfterAliveProgressAOffset = 39;
+        internal const int A21AfterAliveProgressBOffset = 43;
         internal const int A21AfterAliveChannelIdOffset = 59;
 
         private static readonly byte[] A21AfterAliveNoGuild =
@@ -121,6 +126,19 @@ namespace DfoServer.Network.Builders
                 0,
                 body,
                 A21AfterAliveExpertJobExpOffset,
+                sizeof(uint));
+            // 名誉等级/经验：调用方已写入 tail.ProgressA/ProgressB，此处补进常量 blob。
+            Buffer.BlockCopy(
+                BitConverter.GetBytes(tail.ProgressA),
+                0,
+                body,
+                A21AfterAliveProgressAOffset,
+                sizeof(uint));
+            Buffer.BlockCopy(
+                BitConverter.GetBytes(tail.ProgressB),
+                0,
+                body,
+                A21AfterAliveProgressBOffset,
                 sizeof(uint));
             var channelId = BitConverter.GetBytes(
                 tail.ChannelId == 0

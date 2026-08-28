@@ -15,6 +15,17 @@ namespace DfoServer.Game.Inventory
             if (lease?.Inventory == null || startUtc == DateTime.MinValue)
                 return false;
 
+            if (!TryPreview(
+                    lease,
+                    inventory => PetCreatureSatietyService.PreviewDungeonElapsed(
+                        inventory,
+                        startUtc,
+                        endUtc),
+                    out update))
+                return false;
+            if (!update.StateChanged)
+                return true;
+
             var committedUpdate = update;
             var committed = OnlineInventoryMutationCommitCoordinator.TryCommit(
                 lease,
@@ -46,6 +57,17 @@ namespace DfoServer.Game.Inventory
             if (lease?.Inventory == null || startUtc == DateTime.MinValue)
                 return false;
 
+            if (!TryPreview(
+                    lease,
+                    inventory => PetCreatureSatietyService.PreviewTownElapsed(
+                        inventory,
+                        startUtc,
+                        endUtc),
+                    out update))
+                return false;
+            if (!update.StateChanged)
+                return true;
+
             var committedUpdate = update;
             var committed = OnlineInventoryMutationCommitCoordinator.TryCommit(
                 lease,
@@ -76,6 +98,17 @@ namespace DfoServer.Game.Inventory
             if (lease?.Inventory == null || startUtc == DateTime.MinValue)
                 return false;
 
+            if (!TryPreview(
+                    lease,
+                    inventory => PetCreatureSatietyService.PreviewDungeonDeath(
+                        inventory,
+                        startUtc,
+                        endUtc),
+                    out update))
+                return false;
+            if (!update.StateChanged)
+                return true;
+
             var committedUpdate = update;
             var committed = OnlineInventoryMutationCommitCoordinator.TryCommit(
                 lease,
@@ -105,6 +138,14 @@ namespace DfoServer.Game.Inventory
             if (lease?.Inventory == null)
                 return false;
 
+            if (!TryPreview(
+                    lease,
+                    PetCreatureSatietyService.PreviewRevival,
+                    out update))
+                return false;
+            if (!update.Revived)
+                return true;
+
             var committedUpdate = update;
             var committed = OnlineInventoryMutationCommitCoordinator.TryCommit(
                 lease,
@@ -120,6 +161,37 @@ namespace DfoServer.Game.Inventory
 
             update = committedUpdate;
             return true;
+        }
+
+        private static bool TryPreview<T>(
+            InventoryLease lease,
+            Func<InventoryService, T> preview,
+            out T result)
+        {
+            result = default(T);
+            if (lease?.Inventory == null
+                || preview == null
+                || !InventoryContext.IsCurrentLease(
+                    lease,
+                    lease.SessionId,
+                    lease.CharacterId))
+            {
+                return false;
+            }
+
+            lock (lease.SyncRoot)
+            {
+                if (!InventoryContext.IsCurrentLease(
+                        lease,
+                        lease.SessionId,
+                        lease.CharacterId))
+                {
+                    return false;
+                }
+
+                result = preview(lease.Inventory);
+                return true;
+            }
         }
     }
 }

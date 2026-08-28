@@ -654,6 +654,8 @@ namespace DfoServer.Network
             d[0x0010] = _dungeonHandler.Handle_ENUM_CMDPACKET_SELECT_DUNGEON;
             d[(ushort)CmdPacketTypeA21.REQUEST_CIRCLE_ENTER] =
                 _dungeonHandler.Handle_ENUM_CMDPACKET_REQUEST_CIRCLE_ENTER;
+            d[(ushort)CmdPacketTypeA21.SEQUENTIAL_DUNGEON_INFO] =
+                _dungeonHandler.Handle_ENUM_CMDPACKET_SEQUENTIAL_DUNGEON_INFO;
             d[(ushort)CmdPacketTypeA21.DIE_MONSTER] = _dungeonHandler.Handle_ENUM_CMDPACKET_DIE_MONSTER;
             d[0x0028] = HandleRaidAwareCharacterDeath;       //40
             d[0x0029] = HandleRaidAwareUseCoin;

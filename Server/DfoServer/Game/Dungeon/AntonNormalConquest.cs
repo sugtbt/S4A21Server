@@ -118,77 +118,111 @@ namespace DfoServer.Game.Dungeon
             if (permissions == null || permissions.Count == 0)
                 return false;
 
-            var clearStates = permissions
+            var clearStates = GroupClearStates(permissions);
+            foreach (var sequence in Sequences.Value)
+            {
+                if (TryResolveSequenceState(sequence, clearStates, out state))
+                    return true;
+            }
+
+            return false;
+        }
+
+        // CMD SEQUENTIAL_DUNGEON_INFO(0x035D) 应答只解析客户端询问的那一条
+        // 序列; 不同 area key 可能共享副本(如 key=41 与 key=28), 不能用
+        // "第一条匹配序列"代替。
+        internal static bool TryResolveSyncState(
+            int configKey,
+            IReadOnlyCollection<DungeonPermissionEntrySnapshot> permissions,
+            out AntonNormalSyncState state)
+        {
+            state = null;
+            if (permissions == null || permissions.Count == 0
+                || !TryGetSequenceByKey(configKey, out var sequence))
+            {
+                return false;
+            }
+
+            return TryResolveSequenceState(
+                sequence,
+                GroupClearStates(permissions),
+                out state);
+        }
+
+        private static Dictionary<int, byte> GroupClearStates(
+            IReadOnlyCollection<DungeonPermissionEntrySnapshot> permissions)
+            => permissions
                 .GroupBy(entry => (int)entry.DungeonId)
                 .ToDictionary(
                     group => group.Key,
                     group => group.Max(entry => entry.ClearState));
 
-            foreach (var sequence in Sequences.Value)
+        private static bool TryResolveSequenceState(
+            AntonNormalSequence sequence,
+            IReadOnlyDictionary<int, byte> clearStates,
+            out AntonNormalSyncState state)
+        {
+            state = null;
+            if (sequence.DungeonIds.Count < 2
+                || !TryResolveCompletedState(
+                    sequence.DungeonIds[0],
+                    sequence.Difficulty,
+                    out var firstCompletedState)
+                || !clearStates.TryGetValue(
+                    sequence.DungeonIds[0],
+                    out var persistedFirstState)
+                || persistedFirstState < firstCompletedState)
             {
-                if (sequence.DungeonIds.Count < 2
-                    || !TryResolveCompletedState(
-                        sequence.DungeonIds[0],
-                        sequence.Difficulty,
-                        out var firstCompletedState)
-                    || !clearStates.TryGetValue(
-                        sequence.DungeonIds[0],
-                        out var persistedFirstState)
-                    || persistedFirstState < firstCompletedState)
-                {
-                    continue;
-                }
-
-                var highestOpenIndex = 0;
-                for (var index = 1; index < sequence.DungeonIds.Count; index++)
-                {
-                    var dungeonId = sequence.DungeonIds[index];
-                    if (!TryResolveUnlockedState(
-                            dungeonId,
-                            sequence.Difficulty,
-                            out var unlockedState)
-                        || !clearStates.TryGetValue(
-                            dungeonId,
-                            out var persistedState)
-                        || persistedState < unlockedState)
-                    {
-                        break;
-                    }
-
-                    highestOpenIndex = index;
-                }
-
-                var restoredIndex = highestOpenIndex;
-                var finalDungeonId = sequence.DungeonIds[
-                    sequence.DungeonIds.Count - 1];
-                if (highestOpenIndex == sequence.DungeonIds.Count - 1
-                    && TryResolveCompletedState(
-                        finalDungeonId,
-                        sequence.Difficulty,
-                        out var finalCompletedState)
-                    && clearStates.TryGetValue(
-                        finalDungeonId,
-                        out var persistedFinalState)
-                    && persistedFinalState >= finalCompletedState)
-                {
-                    restoredIndex = sequence.DungeonIds.Count;
-                }
-
-                if (restoredIndex > byte.MaxValue)
-                    return false;
-
-                var progressIndex = (byte)restoredIndex;
-                state = new AntonNormalSyncState(
-                    sequence,
-                    progressIndex,
-                    BuildVisiblePermissionEntries(
-                        clearStates,
-                        sequence,
-                        progressIndex));
-                return true;
+                return false;
             }
 
-            return false;
+            var highestOpenIndex = 0;
+            for (var index = 1; index < sequence.DungeonIds.Count; index++)
+            {
+                var dungeonId = sequence.DungeonIds[index];
+                if (!TryResolveUnlockedState(
+                        dungeonId,
+                        sequence.Difficulty,
+                        out var unlockedState)
+                    || !clearStates.TryGetValue(
+                        dungeonId,
+                        out var persistedState)
+                    || persistedState < unlockedState)
+                {
+                    break;
+                }
+
+                highestOpenIndex = index;
+            }
+
+            var restoredIndex = highestOpenIndex;
+            var finalDungeonId = sequence.DungeonIds[
+                sequence.DungeonIds.Count - 1];
+            if (highestOpenIndex == sequence.DungeonIds.Count - 1
+                && TryResolveCompletedState(
+                    finalDungeonId,
+                    sequence.Difficulty,
+                    out var finalCompletedState)
+                && clearStates.TryGetValue(
+                    finalDungeonId,
+                    out var persistedFinalState)
+                && persistedFinalState >= finalCompletedState)
+            {
+                restoredIndex = sequence.DungeonIds.Count;
+            }
+
+            if (restoredIndex > byte.MaxValue)
+                return false;
+
+            var progressIndex = (byte)restoredIndex;
+            state = new AntonNormalSyncState(
+                sequence,
+                progressIndex,
+                BuildVisiblePermissionEntries(
+                    clearStates,
+                    sequence,
+                    progressIndex));
+            return true;
         }
 
         internal static bool TryGetSequence(
@@ -197,6 +231,15 @@ namespace DfoServer.Game.Dungeon
         {
             sequence = Sequences.Value.FirstOrDefault(
                 candidate => candidate.IndexOf(dungeonId) >= 0);
+            return sequence != null;
+        }
+
+        internal static bool TryGetSequenceByKey(
+            int configKey,
+            out AntonNormalSequence sequence)
+        {
+            sequence = Sequences.Value.FirstOrDefault(
+                candidate => candidate.ConfigKey == configKey);
             return sequence != null;
         }
 

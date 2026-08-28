@@ -10,9 +10,15 @@ namespace DfoServer.Network.Builders
 
         public ushort NotiType => (ushort)NotiPacketTypeA21.WEDDING_INFO;
 
+        // 常量回放包体，不依赖选角快照，可供选角序列外的补发路径直接复用。
+        public static byte[] BuildBody()
+        {
+            return (byte[])Body.Clone();
+        }
+
         public bool TryBuild(SelectCharacterDataSnapshot snapshot, int occurrenceIndex, out byte[] body)
         {
-            body = (byte[])Body.Clone();
+            body = BuildBody();
             return true;
         }
     }
@@ -23,9 +29,14 @@ namespace DfoServer.Network.Builders
 
         public ushort CmdType => (ushort)CmdPacketTypeA21.WEDDING_CHARAC;
 
+        public static byte[] BuildBody()
+        {
+            return (byte[])Body.Clone();
+        }
+
         public bool TryBuild(SelectCharacterDataSnapshot snapshot, out byte[] body)
         {
-            body = (byte[])Body.Clone();
+            body = BuildBody();
             return true;
         }
     }

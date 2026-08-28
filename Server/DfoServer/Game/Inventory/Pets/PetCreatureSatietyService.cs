@@ -39,7 +39,15 @@ namespace DfoServer.Game.Inventory
             DateTime startUtc,
             DateTime endUtc)
         {
-            return ApplyDungeonElapsedCore(inventory, startUtc, endUtc);
+            return EvaluateDungeonElapsed(inventory, startUtc, endUtc, apply: true);
+        }
+
+        internal static PetCreatureSatietyUpdate PreviewDungeonElapsed(
+            InventoryService inventory,
+            DateTime startUtc,
+            DateTime endUtc)
+        {
+            return EvaluateDungeonElapsed(inventory, startUtc, endUtc, apply: false);
         }
 
         internal static PetCreatureSatietyUpdate ApplyDungeonElapsedForCommit(
@@ -47,13 +55,14 @@ namespace DfoServer.Game.Inventory
             DateTime startUtc,
             DateTime endUtc)
         {
-            return ApplyDungeonElapsedCore(inventory, startUtc, endUtc);
+            return EvaluateDungeonElapsed(inventory, startUtc, endUtc, apply: true);
         }
 
-        private static PetCreatureSatietyUpdate ApplyDungeonElapsedCore(
+        private static PetCreatureSatietyUpdate EvaluateDungeonElapsed(
             InventoryService inventory,
             DateTime startUtc,
-            DateTime endUtc)
+            DateTime endUtc,
+            bool apply)
         {
             if (inventory == null || startUtc == DateTime.MinValue)
                 return PetCreatureSatietyUpdate.Noop(inventory?.CharacterId ?? 0);
@@ -70,7 +79,8 @@ namespace DfoServer.Game.Inventory
                 foodConsumeRatePercent,
                 clampAliveMinimum: true);
 
-            SaveSatietyIfChanged(inventory, detail, before, after);
+            if (apply)
+                SaveSatietyIfChanged(inventory, detail, before, after);
             return new PetCreatureSatietyUpdate(
                 inventory.CharacterId,
                 detail.Uid,
@@ -86,6 +96,23 @@ namespace DfoServer.Game.Inventory
             InventoryService inventory,
             DateTime startUtc,
             DateTime endUtc)
+        {
+            return EvaluateDungeonDeath(inventory, startUtc, endUtc, apply: true);
+        }
+
+        internal static PetCreatureSatietyUpdate PreviewDungeonDeath(
+            InventoryService inventory,
+            DateTime startUtc,
+            DateTime endUtc)
+        {
+            return EvaluateDungeonDeath(inventory, startUtc, endUtc, apply: false);
+        }
+
+        private static PetCreatureSatietyUpdate EvaluateDungeonDeath(
+            InventoryService inventory,
+            DateTime startUtc,
+            DateTime endUtc,
+            bool apply)
         {
             if (inventory == null || startUtc == DateTime.MinValue)
                 return PetCreatureSatietyUpdate.Noop(inventory?.CharacterId ?? 0);
@@ -105,7 +132,8 @@ namespace DfoServer.Game.Inventory
                 ? 0
                 : CalculateVisibleSatiety(stomach, clampAliveMinimum: true);
 
-            SaveSatietyIfChanged(inventory, detail, before, after);
+            if (apply)
+                SaveSatietyIfChanged(inventory, detail, before, after);
             return new PetCreatureSatietyUpdate(
                 inventory.CharacterId,
                 detail.Uid,
@@ -122,6 +150,23 @@ namespace DfoServer.Game.Inventory
             DateTime startUtc,
             DateTime endUtc)
         {
+            return EvaluateTownElapsed(inventory, startUtc, endUtc, apply: true);
+        }
+
+        internal static PetCreatureSatietyUpdate PreviewTownElapsed(
+            InventoryService inventory,
+            DateTime startUtc,
+            DateTime endUtc)
+        {
+            return EvaluateTownElapsed(inventory, startUtc, endUtc, apply: false);
+        }
+
+        private static PetCreatureSatietyUpdate EvaluateTownElapsed(
+            InventoryService inventory,
+            DateTime startUtc,
+            DateTime endUtc,
+            bool apply)
+        {
             if (inventory == null || startUtc == DateTime.MinValue)
                 return PetCreatureSatietyUpdate.Noop(inventory?.CharacterId ?? 0);
 
@@ -131,7 +176,8 @@ namespace DfoServer.Game.Inventory
 
             var before = ClampSatiety(detail.Stomach);
             var after = CalculateTownSatietyAfter(before, elapsedSeconds);
-            SaveSatietyIfChanged(inventory, detail, before, after);
+            if (apply)
+                SaveSatietyIfChanged(inventory, detail, before, after);
             return new PetCreatureSatietyUpdate(
                 inventory.CharacterId,
                 detail.Uid,
@@ -143,6 +189,18 @@ namespace DfoServer.Game.Inventory
         }
 
         internal static PetCreatureRevivalUpdate ReviveEquippedCreatureIfDead(InventoryService inventory)
+        {
+            return EvaluateRevival(inventory, apply: true);
+        }
+
+        internal static PetCreatureRevivalUpdate PreviewRevival(InventoryService inventory)
+        {
+            return EvaluateRevival(inventory, apply: false);
+        }
+
+        private static PetCreatureRevivalUpdate EvaluateRevival(
+            InventoryService inventory,
+            bool apply)
         {
             if (inventory == null)
                 return PetCreatureRevivalUpdate.Noop(0);
@@ -156,7 +214,8 @@ namespace DfoServer.Game.Inventory
             if (revived)
             {
                 after = 1;
-                SaveSatietyIfChanged(inventory, detail, before, after);
+                if (apply)
+                    SaveSatietyIfChanged(inventory, detail, before, after);
             }
 
             return new PetCreatureRevivalUpdate(
@@ -277,6 +336,7 @@ namespace DfoServer.Game.Inventory
         public int ConsumedSatiety => SatietyDelta < 0 ? -SatietyDelta : 0;
         public int RecoveredSatiety => SatietyDelta > 0 ? SatietyDelta : 0;
         public bool Changed { get; }
+        public bool StateChanged => Before != After;
         public int FoodConsumeRatePercent { get; }
         public double FoodConsumeMultiplier => PetCreatureSatietyService.CalculateFoodConsumeMultiplier(FoodConsumeRatePercent);
 

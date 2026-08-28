@@ -51,12 +51,18 @@ namespace DfoServer.Game.Dungeon
             run.LinkedDungeonNextCondition = LinkedChallengeCondition;
         }
 
-        internal bool TryRestore(int characterId, out AntonNormalSyncState state)
+        // CMD SEQUENTIAL_DUNGEON_INFO(0x035D) 应答: 只解析客户端询问的
+        // configKey 对应的序列。
+        internal bool TryRestore(
+            int characterId,
+            int configKey,
+            out AntonNormalSyncState state)
         {
             state = null;
             if (characterId <= 0)
                 return false;
             return AntonNormalConquest.TryResolveSyncState(
+                configKey,
                 _repository.LoadDungeonPermissions(characterId),
                 out state);
         }

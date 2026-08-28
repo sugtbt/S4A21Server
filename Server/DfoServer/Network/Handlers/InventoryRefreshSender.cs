@@ -119,6 +119,36 @@ namespace DfoServer.Network.Handlers
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0069, writer.ToArray()));
         }
 
+        public Task SendHonorLevelInfoRefresh(EnhancedClientSession session, string reason)
+        {
+            return _honorLevel.SendInfoAsync(session, ProtocolName, reason);
+        }
+
+        // 婚礼回放三包（WEDDING_INFO -> WEDDING_CHARAC -> COUPLE_ROOM），
+        // 包体与选角序列末尾（NewCharacterInitSequence）一致，COUPLE_ROOM 用 occurrence 1 的包体。
+        // 注意 COUPLE_ROOM 不可省略：实机验证左下角图标由 WEDDING_INFO 驱动，
+        // 但面板结婚属性是客户端按 COUPLE_ROOM 的婚家家具列表计算的，只发前两个会导致图标在、属性丢。
+        // 代价是客户端收到 COUPLE_ROOM 会重建结婚房间界面，动画从头重播一次（纯视觉，无实际影响）。
+        // 静态入口：换宠物、进本、回城等没有 InventoryRefreshSender 实例的路径也可直接调用。
+        internal static async Task SendWeddingReplayRefresh(EnhancedClientSession session)
+        {
+            if (session == null)
+                return;
+
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x00,
+                (ushort)NotiPacketTypeA21.WEDDING_INFO,
+                WeddingInfoBodyBuilder.BuildBody()));
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x01,
+                (ushort)CmdPacketTypeA21.WEDDING_CHARAC,
+                WeddingCharacCmdBodyBuilder.BuildBody()));
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x00,
+                (ushort)NotiPacketTypeA21.COUPLE_ROOM,
+                CoupleRoomBodyBuilder.BuildBody()));
+        }
+
         public async Task SendItemListRefresh(EnhancedClientSession session, params InventoryListType[] listTypes)
         {
             var (cid, aid) = SessionOwnerResolver.Resolve(session);
