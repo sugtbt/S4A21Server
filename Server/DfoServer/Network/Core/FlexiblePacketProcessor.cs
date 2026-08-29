@@ -47,6 +47,8 @@ namespace DfoServer.Network
     
     public class FlexiblePacketProcessor
     {
+        internal const int MaxPacketLength = 1024 * 1024;
+        internal const int MaxBufferedBytesPerClient = 2 * 1024 * 1024;
         private readonly object _lockObject = new object();
         private readonly Dictionary<Guid, byte[]> _receiveBuffers = new Dictionary<Guid, byte[]>();
         private readonly Dictionary<Guid, IPacketHeader> _clientPacketStructures = new Dictionary<Guid, IPacketHeader>();
@@ -63,6 +65,11 @@ namespace DfoServer.Network
         
         public List<FlexiblePacket> ProcessReceivedData(Guid clientId, byte[] receivedData, int bytesRead)
         {
+            if (receivedData == null)
+                throw new ArgumentNullException(nameof(receivedData));
+            if (bytesRead < 0 || bytesRead > receivedData.Length)
+                throw new ArgumentOutOfRangeException(nameof(bytesRead));
+
             lock (_lockObject)
             {
                 List<FlexiblePacket> packets = new List<FlexiblePacket>();
@@ -80,6 +87,14 @@ namespace DfoServer.Network
                 }
 
                 
+                if ((long)buffer.Length + bytesRead > MaxBufferedBytesPerClient)
+                {
+                    throw new InvalidDataException(
+                        $"Receive buffer limit exceeded for client {clientId}: "
+                        + $"buffered={buffer.Length}, incoming={bytesRead}, "
+                        + $"maximum={MaxBufferedBytesPerClient}.");
+                }
+
                 byte[] newBuffer = new byte[buffer.Length + bytesRead];
                 Buffer.BlockCopy(buffer, 0, newBuffer, 0, buffer.Length);
                 Buffer.BlockCopy(receivedData, 0, newBuffer, buffer.Length, bytesRead);
@@ -88,6 +103,8 @@ namespace DfoServer.Network
 
                 
                 int headerSize = basePacketStructure.GetHeaderSize();
+                if (headerSize <= 0 || headerSize > MaxPacketLength)
+                    throw new InvalidDataException($"Invalid packet header size {headerSize} for client {clientId}.");
 
                 while (offset <= newBuffer.Length - headerSize)
                 {
@@ -101,12 +118,17 @@ namespace DfoServer.Network
 
                     
                     uint packetLength = packetHeader.GetPacketLength();
-
-                    
-                    if (newBuffer.Length - offset >= packetLength)
+                    if (packetLength < headerSize || packetLength > MaxPacketLength)
                     {
-                        
-                        int bodyLength = (int)packetLength - headerSize;
+                        throw new InvalidDataException(
+                            $"Invalid packet length {packetLength} for client {clientId}; "
+                            + $"expected {headerSize}..{MaxPacketLength} bytes.");
+                    }
+                    int frameLength = (int)packetLength;
+
+                    if (newBuffer.Length - offset >= frameLength)
+                    {
+                        int bodyLength = frameLength - headerSize;
                         byte[] bodyData = null;
 
                         if (bodyLength > 0)
@@ -117,7 +139,7 @@ namespace DfoServer.Network
 
                         var packet = new FlexiblePacket(packetHeader, bodyData);
                         packets.Add(packet);
-                        offset += (int)packetLength;
+                        offset += frameLength;
                     }
                     else
                     {

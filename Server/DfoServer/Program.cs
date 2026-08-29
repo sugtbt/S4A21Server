@@ -17,6 +17,7 @@ namespace DfoServer
         private static readonly (string Arg, Func<int> Run)[] SelfTestRegistry =
         {
             ("--selftest-a21-startup-protocol", SelfTests.A21StartupProtocolSelfTest.Run),
+            ("--selftest-packet-framing-bounds", SelfTests.PacketFramingBoundsSelfTest.Run),
             ("--selftest-a21-channel-protocol", SelfTests.A21ChannelProtocolSelfTest.Run),
             ("--selftest-a21-create-character-protocol", SelfTests.A21CreateCharacterProtocolSelfTest.Run),
             ("--selftest-a21-tutorial-protocol", SelfTests.A21TutorialProtocolSelfTest.Run),

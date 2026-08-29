@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -121,6 +122,13 @@ namespace DfoServer.Network
                     }
                 }
             }
+            catch (InvalidDataException ex)
+            {
+                FileLogger.Log(
+                    $"[Network] WARN: invalid packet disconnected "
+                    + $"session={session.SessionId} port={port} "
+                    + $"remote={GetRemoteEndPoint(session)}: {ex.Message}");
+            }
             catch (Exception ex)
             {
                 FileLogger.Log($"Error processing client {session.SessionId} on port {port}: {ex.Message}");
@@ -142,6 +150,18 @@ namespace DfoServer.Network
                 {
                     await handler.OnClientDisconnected(session);
                 }
+            }
+        }
+
+        private static string GetRemoteEndPoint(EnhancedClientSession session)
+        {
+            try
+            {
+                return session?.TcpClient?.Client?.RemoteEndPoint?.ToString() ?? "unknown";
+            }
+            catch
+            {
+                return "unknown";
             }
         }
 
