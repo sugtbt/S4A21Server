@@ -2,6 +2,7 @@ using System;
 using System.Threading.Tasks;
 using DfoServer.Game.CharacterData;
 using DfoServer.Game.Inventory;
+using DfoServer.Game.Premium;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.GameWorld;
 using DfoServer.Infrastructure;
@@ -19,6 +20,7 @@ namespace DfoServer.Network.Handlers
         private readonly InventoryRefreshSender _refresh;
         private readonly IGameDatabase _database;
         private readonly SqliteSubtype0FieldsRepository _subtype0Repository;
+        private readonly DevilContractUsagePolicy _devilContractUsage;
 
         public StaminaHandler(
             InventoryRefreshSender refresh = null,
@@ -27,6 +29,7 @@ namespace DfoServer.Network.Handlers
             _refresh = refresh;
             _database = database ?? GameDatabase.CreateDefault();
             _subtype0Repository = new SqliteSubtype0FieldsRepository(_database);
+            _devilContractUsage = new DevilContractUsagePolicy(_database);
         }
 
         public async Task Handle_ENUM_CMDPACKET_RECOVER_STAMINA(EnhancedClientSession session, GamePacketHeader header, byte[] body)
@@ -56,7 +59,11 @@ namespace DfoServer.Network.Handlers
                 }
 
                 var staminaBefore = tail.Stamina;
-                var cost = CalculateRecoverStaminaGoldCost(session.Player.Level, staminaBefore);
+                var normalCost = CalculateRecoverStaminaGoldCost(
+                    session.Player.Level,
+                    staminaBefore);
+                var cost = normalCost;
+                var freeByContract = false;
                 var updatedGold = 0;
                 byte errorCode = 0;
                 string rejectLog = null;
@@ -66,6 +73,13 @@ namespace DfoServer.Network.Handlers
                     "stamina-recover",
                     (connection, transaction) =>
                     {
+                        freeByContract = _devilContractUsage.TryConsume(
+                            connection,
+                            transaction,
+                            characterId,
+                            session.Account?.AccountId ?? 0,
+                            DevilContractUsagePolicy.WeaknessRecoverySlot);
+                        cost = freeByContract ? 0 : normalCost;
                         var currentGold = lease.Inventory.CountMainItem(InventoryService.MainVirtualCurrencySlotStart);
                         if (currentGold < cost)
                         {
@@ -119,8 +133,15 @@ namespace DfoServer.Network.Handlers
                 await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0021, new[] { (byte)100 }));
                 if (_refresh != null)
                     await _refresh.SendGoldUpdate(session);
+                if (freeByContract)
+                {
+                    await PremiumService.SendPremiumServiceRefresh(
+                        session,
+                        session.Account?.AccountId ?? 0,
+                        _database);
+                }
 
-                FileLogger.Log($"[{ProtocolLogName}] RECOVER_STAMINA: success cid={characterId} cost={cost} gold={updatedGold}");
+                FileLogger.Log($"[{ProtocolLogName}] RECOVER_STAMINA: success cid={characterId} cost={cost} freeContract={freeByContract} gold={updatedGold}");
             }
             catch (Exception ex)
             {

@@ -27,12 +27,8 @@ namespace DfoServer.Network.Handlers
             var quickRepair = body.Length >= 8 && body[7] == 1;  // 侧边栏快速修理
 
             var (cid, aid) = ResolveOwner(session);
-            // 自动修理免费: 需 body[5]=1(自动触发) 且账号有生效的"自动修理"契约(premium_type=586)双重校验。
-            var freeRepair = autoRepair
-                && Game.Premium.PremiumService.HasActiveAutoRepairForAccount(
-                    aid,
-                    _database);
-            FileLogger.Log($"[{ProtocolName}] REPAIR_EQUIPMENT raw body({body.Length}B): {BitConverter.ToString(body)} auto={autoRepair} quick={quickRepair} free={freeRepair}");
+            var freeRepair = false;
+            FileLogger.Log($"[{ProtocolName}] REPAIR_EQUIPMENT raw body({body.Length}B): {BitConverter.ToString(body)} auto={autoRepair} quick={quickRepair}");
 
             var listType = MapInvenTypeToListType(invenType);
             if (listType == null)
@@ -49,13 +45,29 @@ namespace DfoServer.Network.Handlers
                     lease,
                     "repair-equipment",
                     (connection, transaction) =>
-                        InventoryRepairService.TryRepairEquipment(
+                    {
+                        if (autoRepair)
+                        {
+                            var usage = new Game.Premium.DevilContractUsagePolicy(
+                                _database);
+                            freeRepair = usage.TryConsume(
+                                connection,
+                                transaction,
+                                cid,
+                                aid,
+                                Game.Premium.DevilContractUsagePolicy.AutoRepairSlot);
+                            if (!freeRepair)
+                                return false;
+                        }
+
+                        return InventoryRepairService.TryRepairEquipment(
                             lease.Inventory,
                             listType.Value,
                             slot,
                             quickRepair,
                             freeRepair,
-                            out result));
+                            out result);
+                    });
             }
             else
             {
@@ -73,8 +85,15 @@ namespace DfoServer.Network.Handlers
             short ackSlot = (slot == -1) ? unchecked((short)0xFFFF) : result.SlotIndex;
             var ackBody = RepairEquipmentAckBuilder.Build(invenType, ackSlot, result.UpdatedGold);
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x01, 0x0017, ackBody));
+            if (freeRepair)
+            {
+                await Game.Premium.PremiumService.SendPremiumServiceRefresh(
+                    session,
+                    aid,
+                    _database);
+            }
 
-            FileLogger.Log($"[{ProtocolName}] REPAIR_EQUIPMENT: OK inven_type={invenType} ackSlot=0x{(ushort)ackSlot:X4} cost={result.Cost} remainGold={result.UpdatedGold}");
+            FileLogger.Log($"[{ProtocolName}] REPAIR_EQUIPMENT: OK inven_type={invenType} ackSlot=0x{(ushort)ackSlot:X4} cost={result.Cost} freeContract={freeRepair} remainGold={result.UpdatedGold}");
         }
 
         private static InventoryListType? MapInvenTypeToListType(byte invenType)

@@ -303,6 +303,7 @@ namespace DfoServer.Game.Dungeon
         internal SecretShop.SecretShopOffer SecretShopOffer { get => Settlement.SecretShopOffer; set => Settlement.SecretShopOffer = value; }
         public List<ClearRewardGenerator.CardReward> CardRewards { get => Settlement.CardRewards; set => Settlement.CardRewards = value; }
         public int PaidCardCost { get => Settlement.PaidCardCost; set => Settlement.PaidCardCost = Math.Max(0, value); }
+        public bool PaidCardUsesDevilContract { get => Settlement.PaidCardUsesDevilContract; set => Settlement.PaidCardUsesDevilContract = value; }
         public int CardFlipCount { get => Settlement.CardFlipCount; set => Settlement.CardFlipCount = value; }
         public byte[] FreeCardSlots { get => Settlement.FreeCardSlots; set => Settlement.FreeCardSlots = value; }
         public byte[] PaidCardSlots { get => Settlement.PaidCardSlots; set => Settlement.PaidCardSlots = value; }

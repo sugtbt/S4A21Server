@@ -127,6 +127,12 @@ namespace DfoServer.Game.SelectCharacter
         public byte AckTradePunishFlag { get; set; }
         public ushort AckExtraField86JP { get; set; }
 
+        // A21 NOTI_PREMIUM_SERVICE (0x032F): 登录时投影魔王契约八项服务。
+        // 不能只依赖客户端主动查询；A21 客户端进号后不会固定发送 CMD 0x036F。
+        public ushort PremiumServiceType { get; set; }
+
+        public byte[] PremiumServiceData { get; set; }
+
         public UserInfoAdditionSnapshot UserInfoAddition { get; set; }
     }
 

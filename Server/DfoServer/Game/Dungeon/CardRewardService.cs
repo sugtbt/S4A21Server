@@ -14,14 +14,17 @@ namespace DfoServer.Game.Dungeon
 
         internal CardRewardDeliveryResult(
             bool committed,
-            IReadOnlyList<InventorySlotMutation> changes)
+            IReadOnlyList<InventorySlotMutation> changes,
+            bool consumedGoldCardContractUse = false)
         {
             Committed = committed;
             Changes = changes ?? Array.Empty<InventorySlotMutation>();
+            ConsumedGoldCardContractUse = consumedGoldCardContractUse;
         }
 
         internal bool Committed { get; }
         internal IReadOnlyList<InventorySlotMutation> Changes { get; }
+        internal bool ConsumedGoldCardContractUse { get; }
     }
 
     // Card reward application service. Durable inventory mutation and effect
@@ -92,6 +95,8 @@ namespace DfoServer.Game.Dungeon
                         lease.SessionId,
                         side,
                         CardRewardRules.GetPaidGoldCost(run),
+                        side == CardRewardSide.Paid
+                            && run.PaidCardUsesDevilContract,
                         cards,
                         out durableResult,
                         out var error))
@@ -110,7 +115,8 @@ namespace DfoServer.Game.Dungeon
                     $"{durableResult?.Changes.Count ?? 0} entries");
                 return new CardRewardDeliveryResult(
                     true,
-                    durableResult?.Changes);
+                    durableResult?.Changes,
+                    durableResult?.ConsumedGoldCardContractUse == true);
             }
             catch (Exception ex)
             {
@@ -122,7 +128,8 @@ namespace DfoServer.Game.Dungeon
                         $"effect after local checkpoint failure: {ex.Message}");
                     return new CardRewardDeliveryResult(
                         true,
-                        durableResult?.Changes);
+                        durableResult?.Changes,
+                        durableResult?.ConsumedGoldCardContractUse == true);
                 }
 
                 run.Effects.TryFail(reservation);

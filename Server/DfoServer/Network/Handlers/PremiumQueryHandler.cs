@@ -34,13 +34,13 @@ namespace DfoServer.Network.Handlers
 
             var connStr = database.ConnectionString;
             var dailyResetService = new Game.DailyReset.DailyResetService(database);
-            var lotteryUsage = new Game.Lottery.LotteryDoubleRewardPolicy(
-                dailyResetService,
-                connStr).BuildPremiumServiceUsage(cid);
+            var usage = new Game.Premium.DevilContractUsagePolicy(
+                database,
+                dailyResetService).BuildPremiumServiceUsage(cid);
             var serviceData = Game.Premium.PremiumService.BuildPremiumServiceData(
                 connStr,
                 aid,
-                lotteryUsage);
+                usage);
 
             var responseBody = Game.Premium.PremiumService.BuildPremiumServiceStateBody(
                 Game.Premium.PremiumService.DefaultServiceType,

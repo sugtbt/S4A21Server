@@ -6,7 +6,9 @@ using DfoServer.Game.Friends;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.KnightShield;
 using DfoServer.Game.Mercenary;
+using DfoServer.Game.Mailbox;
 using DfoServer.Game.Names;
+using DfoServer.Game.Premium;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.GameWorld;
 using DfoServer.Infrastructure;
@@ -46,6 +48,7 @@ namespace DfoServer.Network.Handlers
             _pvpSkillRepository;
         private readonly Network.Builders.InitPacketBuilderRegistry
             _initPacketBuilders;
+        private readonly QuestAssistantGiftService _questAssistantGifts;
 
         public string ProtocolName => "GameProtocol";
 
@@ -56,7 +59,8 @@ namespace DfoServer.Network.Handlers
             Game.Session.ISessionDirectory sessions = null,
             IMercenaryRestrictionService mercenaryRestrictions = null,
             IGameDatabase database = null,
-            DailyResetService dailyResetService = null)
+            DailyResetService dailyResetService = null,
+            MailboxService mailboxService = null)
             : this(
                 null,
                 selectCharacterDataSource,
@@ -66,7 +70,8 @@ namespace DfoServer.Network.Handlers
                 null,
                 mercenaryRestrictions,
                 database,
-                dailyResetService)
+                dailyResetService,
+                mailboxService)
         {
         }
 
@@ -80,7 +85,8 @@ namespace DfoServer.Network.Handlers
             Game.Dungeon.DungeonInstanceRegistry dungeonInstances = null,
             IMercenaryRestrictionService mercenaryRestrictions = null,
             IGameDatabase database = null,
-            DailyResetService dailyResetService = null)
+            DailyResetService dailyResetService = null,
+            MailboxService mailboxService = null)
         {
             _database = database ?? GameDatabase.CreateDefault();
             _selectCharacterDataSource = selectCharacterDataSource ?? throw new ArgumentNullException(nameof(selectCharacterDataSource));
@@ -101,6 +107,13 @@ namespace DfoServer.Network.Handlers
                 _database);
             _initPacketBuilders = new Network.Builders.InitPacketBuilderRegistry(
                 _database, _sessions);
+            if (mailboxService != null)
+            {
+                _questAssistantGifts = new QuestAssistantGiftService(
+                    _database,
+                    _dailyResetService,
+                    mailboxService);
+            }
         }
 
         // 按 UserId 找同一游戏频道的在线会话。城镇同屏也按 listener 隔离。
@@ -440,6 +453,27 @@ namespace DfoServer.Network.Handlers
             {
                 session.Close();
                 return;
+            }
+            if (_questAssistantGifts != null)
+            {
+                var giftDelivery = _questAssistantGifts.TryDeliver(
+                    ownerCharId,
+                    ownerAcctId);
+                if (giftDelivery.Success)
+                {
+                    FileLogger.Log(
+                        $"[{ProtocolName}] DEVIL_CONTRACT_QUEST_ASSISTANT: " +
+                        $"daily APC mail delivered cid={ownerCharId} " +
+                        $"message={giftDelivery.MessageId}");
+                }
+                else if (!giftDelivery.SkippedAsAlreadyDelivered
+                    && !string.IsNullOrEmpty(giftDelivery.Error))
+                {
+                    FileLogger.Log(
+                        $"[{ProtocolName}] DEVIL_CONTRACT_QUEST_ASSISTANT: " +
+                        $"daily APC mail failed cid={ownerCharId} " +
+                        $"error={giftDelivery.Error}");
+                }
             }
             var characterList = BuildCharacterList(ownerAcctId);
             var routingByte = _getUserInfoTemplate != null ? _getUserInfoTemplate.Pkt0RoutingByte7 : (byte)0;

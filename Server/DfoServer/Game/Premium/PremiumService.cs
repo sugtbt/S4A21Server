@@ -139,7 +139,7 @@ namespace DfoServer.Game.Premium
             return writer.ToArray();
         }
 
-        private static async Task SendPremiumServiceRefresh(
+        internal static async Task SendPremiumServiceRefresh(
             EnhancedClientSession session,
             int accountId,
             IGameDatabase database)
@@ -150,13 +150,13 @@ namespace DfoServer.Game.Premium
                 if (cid <= 0) return;
 
                 var dailyResetService = new Game.DailyReset.DailyResetService(database);
-                var lotteryUsage = new Game.Lottery.LotteryDoubleRewardPolicy(
-                    dailyResetService,
-                    database.ConnectionString).BuildPremiumServiceUsage(cid);
+                var usage = new DevilContractUsagePolicy(
+                    database,
+                    dailyResetService).BuildPremiumServiceUsage(cid);
                 var serviceData = BuildPremiumServiceData(
                     database.ConnectionString,
                     accountId,
-                    lotteryUsage);
+                    usage);
                 await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
                     0x00,
                     (ushort)NotiPacketTypeA21.PREMIUM_SERVICE,
@@ -352,14 +352,65 @@ namespace DfoServer.Game.Premium
             using (var conn = new SqliteConnection(connStr))
             {
                 conn.Open();
-                using (var cmd = conn.CreateCommand())
-                {
-                    cmd.CommandText = "SELECT 1 FROM account_premiums WHERE account_id=@aid AND premium_type=@type AND end_time>@now LIMIT 1;";
-                    cmd.Parameters.AddWithValue("@aid", accountId);
-                    cmd.Parameters.AddWithValue("@type", DevilContractCatalog.AutoRepairPremiumType);
-                    cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-                    return cmd.ExecuteScalar() != null;
-                }
+                return HasActiveDevilContract(
+                    conn,
+                    null,
+                    accountId,
+                    DevilContractCatalog.AutoRepairSlotIndex);
+            }
+        }
+
+        public static bool HasActiveDevilContract(
+            string connectionString,
+            int accountId,
+            int slotIndex)
+        {
+            if (string.IsNullOrWhiteSpace(connectionString))
+                return false;
+
+            using (var connection = new SqliteConnection(connectionString))
+            {
+                connection.Open();
+                return HasActiveDevilContract(
+                    connection,
+                    null,
+                    accountId,
+                    slotIndex);
+            }
+        }
+
+        internal static bool HasActiveDevilContract(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            int accountId,
+            int slotIndex)
+        {
+            if (connection == null
+                || accountId <= 0
+                || slotIndex < 0
+                || slotIndex >= DevilContractCatalog.SlotCount)
+            {
+                return false;
+            }
+
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = @"
+SELECT 1
+FROM account_premiums
+WHERE account_id=@aid
+  AND premium_type=@type
+  AND end_time>@now
+LIMIT 1;";
+                command.Parameters.AddWithValue("@aid", accountId);
+                command.Parameters.AddWithValue(
+                    "@type",
+                    DevilContractCatalog.SlotToPremiumType(slotIndex));
+                command.Parameters.AddWithValue(
+                    "@now",
+                    DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                return command.ExecuteScalar() != null;
             }
         }
 

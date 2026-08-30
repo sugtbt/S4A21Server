@@ -1,5 +1,6 @@
 using DfoServer.Game.DailyReset;
 using DfoServer.Game.Premium;
+using DfoServer.Infrastructure;
 using Microsoft.Data.Sqlite;
 using System;
 using System.Collections.Generic;
@@ -8,9 +9,9 @@ namespace DfoServer.Game.Lottery
 {
     public sealed class LotteryDoubleRewardPolicy
     {
-        public const int PremiumServiceSlot = 1;
-        public const int DailyLimit = 8;
-        public const string CounterKey = "lottery_double_reward_used";
+        public const int PremiumServiceSlot = DevilContractUsagePolicy.DoubleLotterySlot;
+        public const int DailyLimit = DevilContractUsagePolicy.DoubleLotteryDailyLimit;
+        public const string CounterKey = DevilContractUsagePolicy.DoubleLotteryCounterKey;
 
         private readonly DailyResetService _dailyResetService;
         private readonly string _connectionString;
@@ -92,10 +93,9 @@ namespace DfoServer.Game.Lottery
 
         public IReadOnlyDictionary<int, int> BuildPremiumServiceUsage(int characterId)
         {
-            return new Dictionary<int, int>
-            {
-                [PremiumServiceSlot] = GetUsedCount(characterId),
-            };
+            return new DevilContractUsagePolicy(
+                GameDatabase.AttachInitialized(_connectionString),
+                _dailyResetService).BuildPremiumServiceUsage(characterId);
         }
 
         private static bool HasActiveBenefit(

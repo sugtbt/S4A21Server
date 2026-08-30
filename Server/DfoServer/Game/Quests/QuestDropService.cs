@@ -1,5 +1,6 @@
 using DfoServer.Game.Inventory;
 using DfoServer.Game.Dungeon;
+using DfoServer.Game.Premium;
 using DfoServer.GameWorld;
 using DfoServer.Infrastructure;
 using DfoServer.Network;
@@ -23,18 +24,21 @@ namespace DfoServer.Game.Quests
         private readonly string _connectionString;
         private readonly IGameDatabase _database;
         private readonly Func<QuestDropCandidate, int, int> _rollDrop;
+        private readonly Func<int> _rollQuestAssistantBonus;
         private readonly DungeonItemAcquisitionService _itemAcquisition;
 
         public QuestDropService(
             InventoryRefreshSender inventoryRefresh,
             string connectionString = null,
-            Func<QuestDropCandidate, int, int> rollDrop = null)
+            Func<QuestDropCandidate, int, int> rollDrop = null,
+            Func<int> rollQuestAssistantBonus = null)
             : this(
                 inventoryRefresh,
                 connectionString,
                 rollDrop,
                 itemAcquisition: null,
-                database: null)
+                database: null,
+                rollQuestAssistantBonus: rollQuestAssistantBonus)
         {
         }
 
@@ -43,7 +47,8 @@ namespace DfoServer.Game.Quests
             string connectionString,
             Func<QuestDropCandidate, int, int> rollDrop,
             DungeonItemAcquisitionService itemAcquisition,
-            IGameDatabase database = null)
+            IGameDatabase database = null,
+            Func<int> rollQuestAssistantBonus = null)
         {
             if (inventoryRefresh == null) throw new ArgumentNullException(nameof(inventoryRefresh));
             _notificationBatcher = new QuestDropNotificationBatcher(inventoryRefresh);
@@ -52,6 +57,8 @@ namespace DfoServer.Game.Quests
                 ? connectionString
                 : database?.ConnectionString;
             _rollDrop = rollDrop ?? QuestDropProvider.RollDrop;
+            _rollQuestAssistantBonus = rollQuestAssistantBonus
+                ?? (() => ServerRandom.Next(100));
             _itemAcquisition = itemAcquisition
                 ?? new DungeonItemAcquisitionService(new DropService());
         }
@@ -179,6 +186,9 @@ namespace DfoServer.Game.Quests
 
                 var generated = new List<DropInfo>();
                 var projectedCounts = new Dictionary<int, int>();
+                var questAssistantActive = IsQuestAssistantActive(
+                    session,
+                    expectedRun);
                 foreach (var candidate in candidates)
                 {
                     heldCounts.TryGetValue(candidate.ItemId, out var held);
@@ -194,7 +204,10 @@ namespace DfoServer.Game.Quests
                     var count = ClampDropCount(
                         candidate,
                         current,
-                        _rollDrop(candidate, current));
+                        RollDrop(
+                            candidate,
+                            current,
+                            questAssistantActive));
                     if (count <= 0)
                         continue;
 
@@ -378,7 +391,8 @@ namespace DfoServer.Game.Quests
                     expectedRun,
                     characterId,
                     source,
-                    requireRoomIdentity));
+                    requireRoomIdentity),
+                IsQuestAssistantActive(session, expectedRun));
             if (!committed.Committed)
             {
                 if (!string.IsNullOrEmpty(committed.Error))
@@ -419,7 +433,8 @@ namespace DfoServer.Game.Quests
             Guid sourceEventId,
             QuestRunSnapshot snapshot,
             IReadOnlyList<QuestDropCandidate> candidates,
-            Func<bool> isStillCurrent)
+            Func<bool> isStillCurrent,
+            bool questAssistantActive = false)
         {
             if (lease == null
                 || sessionId == Guid.Empty
@@ -446,7 +461,11 @@ namespace DfoServer.Game.Quests
                 }
 
                 var inventory = lease.Inventory;
-                var requests = BuildGrantRequests(inventory, snapshot, candidates);
+                var requests = BuildGrantRequests(
+                    inventory,
+                    snapshot,
+                    candidates,
+                    questAssistantActive);
                 if (requests.Count == 0)
                     return QuestDropCommitResult.Noop;
 
@@ -584,7 +603,8 @@ namespace DfoServer.Game.Quests
         private List<DungeonItemGrantRequest> BuildGrantRequests(
             InventoryService inventory,
             QuestRunSnapshot snapshot,
-            IReadOnlyList<QuestDropCandidate> candidates)
+            IReadOnlyList<QuestDropCandidate> candidates,
+            bool questAssistantActive)
         {
             var requests = new List<DungeonItemGrantRequest>();
             var projectedHeldCounts = new Dictionary<int, int>();
@@ -610,7 +630,10 @@ namespace DfoServer.Game.Quests
                 var dropCount = ClampDropCount(
                     candidate,
                     currentHeld,
-                    _rollDrop(candidate, currentHeld));
+                    RollDrop(
+                        candidate,
+                        currentHeld,
+                        questAssistantActive));
                 if (dropCount <= 0)
                     continue;
 
@@ -628,6 +651,45 @@ namespace DfoServer.Game.Quests
                         : currentHeld + dropCount;
             }
             return requests;
+        }
+
+        private int RollDrop(
+            QuestDropCandidate candidate,
+            int currentHeld,
+            bool questAssistantActive)
+        {
+            var baseCount = _rollDrop(candidate, currentHeld);
+            return questAssistantActive
+                ? QuestAssistantDropPolicy.ApplyBonus(
+                    candidate,
+                    currentHeld,
+                    baseCount,
+                    _rollQuestAssistantBonus)
+                : baseCount;
+        }
+
+        private bool IsQuestAssistantActive(
+            EnhancedClientSession session,
+            DungeonRun run)
+        {
+            if (session?.Player == null || run == null)
+                return false;
+
+            lock (run.SyncRoot)
+            {
+                if (run.QuestBridge.QuestAssistantActive.HasValue)
+                    return run.QuestBridge.QuestAssistantActive.Value;
+            }
+
+            var active = PremiumService.HasActiveDevilContract(
+                ResolveConnectionString(),
+                session.Account?.AccountId ?? 0,
+                DevilContractUsagePolicy.QuestAssistantSlot);
+            lock (run.SyncRoot)
+            {
+                run.QuestBridge.QuestAssistantActive ??= active;
+                return run.QuestBridge.QuestAssistantActive.Value;
+            }
         }
 
         private static bool TryBuildEligibleActivations(

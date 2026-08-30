@@ -337,7 +337,8 @@ namespace DfoServer.Infrastructure
                     world.DungeonInstances,
                     world.MercenaryRestrictions,
                     core.Database,
-                    core.DailyResetService),
+                    core.DailyResetService,
+                    inventory.MailboxService),
                 new InventoryHandler(
                     core.ExperienceItemUseService,
                     core.SelectCharacterDataSource,

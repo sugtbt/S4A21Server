@@ -7,7 +7,7 @@ using DfoServer.Game.ExpertJob;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.ItemUpgrade;
 using DfoServer.Game.KnightShield;
-using DfoServer.Game.Lottery;
+using DfoServer.Game.Premium;
 using DfoServer.Game.Settings;
 using DfoServer.Game.TitleBook;
 using System;
@@ -30,7 +30,7 @@ namespace DfoServer.Game.SelectCharacter
         private readonly AccountSettingsRepository _accountSettingsRepository;
         private readonly CharacterTitleBookRepository _titleBookRepository;
         private readonly DailyReset.DailyResetService _dailyResetService;
-        private readonly LotteryDoubleRewardPolicy _lotteryDoubleRewardPolicy;
+        private readonly DevilContractUsagePolicy _devilContractUsagePolicy;
         private readonly TitleBookMutationService _titleBookMutationService;
         private readonly HonorLevelSyncService _honorLevel;
         private readonly CharacterGoldLimitRepository _goldLimitRepository;
@@ -70,9 +70,9 @@ namespace DfoServer.Game.SelectCharacter
             _connectionString = database.ConnectionString;
             var resolvedRentalTimeProvider = rentalTimeProvider ?? SystemRentalTimeProvider.Instance;
             _dailyResetService = dailyResetService ?? new DailyReset.DailyResetService(database);
-            _lotteryDoubleRewardPolicy = new LotteryDoubleRewardPolicy(
-                _dailyResetService,
-                _connectionString);
+            _devilContractUsagePolicy = new DevilContractUsagePolicy(
+                database,
+                _dailyResetService);
             _inventoryLifecycle = inventoryLifecycle ?? new InventoryCharacterLifecycleService(
                 database,
                 resolvedRentalTimeProvider);
@@ -341,6 +341,11 @@ namespace DfoServer.Game.SelectCharacter
             initSnapshot.ShopCoinEventFlag = _dailyResetService.IsClaimed(characterId, ReviveCoin.ReviveCoinService.DailyClaimKey) ? (byte)1 : (byte)0;
 
             LoadAccountPremiums(accountId, initSnapshot);
+            initSnapshot.PremiumServiceType = Premium.PremiumService.DefaultServiceType;
+            initSnapshot.PremiumServiceData = Premium.PremiumService.BuildPremiumServiceData(
+                _connectionString,
+                accountId,
+                _devilContractUsagePolicy.BuildPremiumServiceUsage(characterId));
 
             
             

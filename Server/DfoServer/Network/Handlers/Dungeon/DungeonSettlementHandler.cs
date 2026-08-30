@@ -849,10 +849,18 @@ namespace DfoServer.Network.Handlers.Dungeon
             };
             var paidItem = default(ClearRewardGenerator.CardReward);
             var paidCardCost = 0;
+            var paidCardUsesDevilContract = false;
             if (shouldScheduleCardRewardFlow
                 && ShouldGeneratePaidCardRewards(run.DungeonId))
             {
                 paidCardCost = ClearRewardGenerator.GetPaidCardCost(dungeonLevel);
+                paidCardUsesDevilContract =
+                    _svc.DevilContracts.HasAvailableBenefit(
+                        session.Player.CharacterId,
+                        session.Account?.AccountId ?? 0,
+                        DevilContractUsagePolicy.GoldCardSlot);
+                if (paidCardUsesDevilContract)
+                    paidCardCost = 0;
                 if (isDimensionDungeon)
                 {
                     DimensionDropSystem.TryCreatePaidCard(
@@ -870,6 +878,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             }
 
             run.PaidCardCost = paidCardCost;
+            run.PaidCardUsesDevilContract = paidCardUsesDevilContract;
             run.CardRewards = shouldScheduleCardRewardFlow
                 ? new List<ClearRewardGenerator.CardReward>
                 {
@@ -895,7 +904,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                     $"{rewardContext.ChampionKillCount}/" +
                     $"{rewardContext.BossKillCount} " +
                     $"freeGold={freeGold.GoldAmount} freeItem={freeItem.ItemId} " +
-                    $"paidCost={paidCardCost} paidItem={paidItem.ItemId}");
+                    $"paidCost={paidCardCost} paidContract={paidCardUsesDevilContract} " +
+                    $"paidItem={paidItem.ItemId}");
             }
 
             var monsterExperience = run.CaptureExperienceSnapshot();
@@ -938,6 +948,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                 PreviousExp = session.Player.Exp,
                 DungeonLevel = dungeonLevel,
                 PaidCardCost = paidCardCost,
+                PaidCardUsesDevilContract = paidCardUsesDevilContract,
                 FreeGold = freeGold,
                 FreeItem = freeItem,
                 TowerRewardCandidates = towerRewardCandidates,

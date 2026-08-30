@@ -1066,6 +1066,17 @@ namespace DfoServer.Network.Handlers.Dungeon
             selectionSnapshot.ApplyTo(run);
             if (!run.TryActivate())
                 throw new InvalidOperationException("Dungeon run could not enter the active state after selection.");
+            var consumedDungeonBuffUse = _svc.DevilContracts.TryConsume(
+                session.Player.CharacterId,
+                session.Account?.AccountId ?? 0,
+                Game.Premium.DevilContractUsagePolicy.DungeonBuffSlot);
+            if (consumedDungeonBuffUse)
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"DEVIL_CONTRACT_DUNGEON_BUFF: consumed " +
+                    $"cid={session.Player.CharacterId} dungeon={run.DungeonId}");
+            }
             RegisterActiveParticipant(session, run);
             // 城镇残留白影：进本提交后离开城镇，向旧区域广播不含离开者的名册清残留白影。
             await NotifyTownAreaRosterDepartureAsync(session);

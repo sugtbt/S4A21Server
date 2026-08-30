@@ -44,6 +44,7 @@ namespace DfoServer.Game.Dungeon
 
         internal int DungeonLevel;
         internal int PaidCardCost;
+        internal bool PaidCardUsesDevilContract;
         internal ClearRewardGenerator.CardReward FreeGold;
         internal ClearRewardGenerator.CardReward FreeItem;
         internal IReadOnlyList<ClearRewardGenerator.CardReward>
