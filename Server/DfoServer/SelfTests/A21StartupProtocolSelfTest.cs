@@ -109,7 +109,10 @@ namespace DfoServer.SelfTests
                 && BitConverter.ToUInt32(dimensionGateBody, 4) == 2,
                 ref failures);
 
-            var hiddenAvatar = Copy(AccountSettings.DefaultMainGameOption);
+            // 模拟一条已保存的账号主选项（idx55 FullAvatar 关闭，应被强制修补）。
+            var hiddenAvatar = new byte[(AccountSettings.FullAvatarOptionIndex + 12) * 2];
+            for (var i = 0; i + 1 < hiddenAvatar.Length; i += 2)
+                hiddenAvatar[i] = 1;
             var fullAvatarOffset = AccountSettings.FullAvatarOptionIndex * 2;
             hiddenAvatar[fullAvatarOffset] = 0;
             hiddenAvatar[fullAvatarOffset + 1] = 0;
@@ -129,6 +132,14 @@ namespace DfoServer.SelfTests
                 persistedMain != null
                 && persistedMain[fullAvatarOffset] == 1
                 && persistedMain[fullAvatarOffset + 1] == 0,
+                ref failures);
+
+            var emptyOption = AccountSettingsPacketBuilder.BuildSelectScreenGameOption(
+                new AccountSettings(),
+                out var emptyPersistedMain);
+            Check(
+                "A21 select-screen 00AD is omitted when no settings saved",
+                emptyOption == null && emptyPersistedMain == null,
                 ref failures);
 
             var channelHandler = new ChannelProtocolHandler();
@@ -286,6 +297,65 @@ namespace DfoServer.SelfTests
                     + UserInfoSubtype0Builder.A21AfterAliveProgressBOffset) == 0x55667788,
                 ref failures);
 
+            var unlockedSkillTreeUserInfo = UserInfoSubtype0Builder.BuildNotificationBody(
+                new CharacterRecord
+                {
+                    CharacterId = 7,
+                    Name = new byte[] { (byte)'a' },
+                    Subtype0Tail = new UserInfoMinimumTailSnapshot
+                    {
+                        SkillTreeIndex = 0,
+                    },
+                });
+            var skillTreeAfterAliveOffset = unlockedSkillTreeUserInfo.Length
+                - UserInfoSubtype0Builder.A21AfterAliveLength;
+            Check(
+                "A21 USERINFO0 64-byte tail mirrors skill-tree expansion state at +61",
+                skillTreeAfterAliveOffset >= 0
+                && unlockedSkillTreeUserInfo[skillTreeAfterAliveOffset
+                    + UserInfoSubtype0Builder.A21AfterAliveSkillTreeIndexOffset] == 0
+                && honorTailUserInfo[honorAfterAliveOffset
+                    + UserInfoSubtype0Builder.A21AfterAliveSkillTreeIndexOffset]
+                    == DfoServer.Game.Skills.SkillTreeExpansionState.LockedWireValue,
+                ref failures);
+
+            var skillTreeBroadcastDbPath = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(),
+                $"dfo_a21_startup_skilltree_{Guid.NewGuid():N}.db");
+            try
+            {
+                var skillTreeDb = new DfoServer.Infrastructure.GameDatabase(
+                    skillTreeBroadcastDbPath,
+                    DfoServer.Infrastructure.ServerPaths.SchemaFilePath);
+                using (var connection = skillTreeDb.OpenConnection())
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = @"
+INSERT INTO accounts(account_id, m_id, password_hash) VALUES(9601, 'a21-startup-skilltree', '');
+INSERT INTO characters(character_id, account_id, name, job) VALUES(9602, 9601, 'a21-startup-skilltree-c', 0);";
+                    command.ExecuteNonQuery();
+                }
+
+                var subtype0Repository = new DfoServer.Game.CharacterData.SqliteSubtype0FieldsRepository(skillTreeDb);
+                Check(
+                    "subtype0 broadcast tail defaults to locked skill tree before purchase",
+                    subtype0Repository.Load(9602)?.SkillTreeIndex
+                        == DfoServer.Game.Skills.SkillTreeExpansionState.LockedWireValue,
+                    ref failures);
+
+                new DfoServer.Game.CharacterData.SqliteSubtype1Repository(skillTreeDb)
+                    .UpdateSkillTreeIndex(9602, 1);
+                Check(
+                    "subtype0 broadcast tail carries purchased skill-tree page",
+                    subtype0Repository.Load(9602)?.SkillTreeIndex == 1,
+                    ref failures);
+            }
+            finally
+            {
+                try { if (System.IO.File.Exists(skillTreeBroadcastDbPath)) System.IO.File.Delete(skillTreeBroadcastDbPath); }
+                catch { }
+            }
+
             var expertJobChangeInfo = ExpertJobInfoBodyBuilder.BuildProjectedBody(
                 3,
                 new ExpertJobState
@@ -334,6 +404,19 @@ namespace DfoServer.SelfTests
                 && userInfo1[275] == 0x6F
                 && BitConverter.ToUInt32(userInfo1, 276) == 0
                 && userInfo1[280] == 0,
+                ref failures);
+
+            var unlockedExpansionUserInfo1 = UserInfoSubtype1Builder.BuildFromSnapshot(
+                new UserInfoAdditionSnapshot
+                {
+                    SkillTreeIndex = 0,
+                },
+                null);
+            Check(
+                "A21 USERINFO1 skill-tree byte mirrors snapshot expansion state",
+                userInfo1.Length == unlockedExpansionUserInfo1.Length
+                && userInfo1[110] == DfoServer.Game.Skills.SkillTreeExpansionState.LockedWireValue
+                && unlockedExpansionUserInfo1[110] == 0,
                 ref failures);
 
             var specialRewardAddition = new UserInfoAdditionSnapshot
@@ -439,13 +522,6 @@ namespace DfoServer.SelfTests
                     ? "A21_STARTUP_PROTOCOL selftest passed."
                     : $"A21_STARTUP_PROTOCOL selftest failed: {failures}");
             return failures == 0 ? 0 : 1;
-        }
-
-        private static byte[] Copy(byte[] source)
-        {
-            var result = new byte[source.Length];
-            Buffer.BlockCopy(source, 0, result, 0, source.Length);
-            return result;
         }
 
         private static bool HasValidInitialLoginNoticeLayout(

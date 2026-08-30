@@ -105,6 +105,12 @@ namespace DfoServer.Network.Builders
             RegisterCmd(new WeddingCharacCmdBodyBuilder());
         }
 
+        public bool HasBuilder(ushort notiType)
+            => notiType == (ushort)NotiPacketTypeA21.COUPLE_ROOM || _builders.ContainsKey(notiType);
+
+        public bool HasCmdBuilder(ushort cmdType)
+            => _cmdBuilders.ContainsKey(cmdType) || cmdType == 0x0004;
+
         public bool TryBuild(ushort notiType, SelectCharacterDataSnapshot snapshot, int occurrenceIndex, out byte[] body)
         {
             if (notiType == (ushort)NotiPacketTypeA21.COUPLE_ROOM && occurrenceIndex == 1)

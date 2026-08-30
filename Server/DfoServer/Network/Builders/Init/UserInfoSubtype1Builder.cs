@@ -53,7 +53,7 @@ namespace DfoServer.Network.Builders
             writer.WriteUInt32(addition.CloneTitleItemId);
             writer.WriteUInt32(addition.NameTagItemId);
             writer.WriteUInt32(addition.NameTagExpireTime);
-            writer.WriteByte(DfoServer.Game.Skills.SkillTreeExpansionState.LockedWireValue);
+            writer.WriteByte(addition.SkillTreeIndex);
             WriteSkillPage(writer, skills, 0);
             WriteSkillPage(writer, skills, 1);
             writer.WriteByte(addition.EquippedCreatureLevel);

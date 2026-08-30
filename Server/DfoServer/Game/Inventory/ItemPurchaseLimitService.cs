@@ -350,7 +350,8 @@ WHERE account_id = @aid
         {
             if (scope.Equals("account", StringComparison.OrdinalIgnoreCase))
                 return LimitTypeAccount;
-            if (scope.Equals("charac", StringComparison.OrdinalIgnoreCase))
+            if (scope.Equals("charac", StringComparison.OrdinalIgnoreCase)
+                || scope.Equals("character", StringComparison.OrdinalIgnoreCase))
                 return LimitTypeCharacter;
             return -1;
         }

@@ -96,7 +96,18 @@ namespace DfoServer.Network.Handlers
                 return;
             }
 
-            await SendSelectScreenGameOptionAsync(session);
+            var optionSent = await SendSelectScreenGameOptionAsync(session);
+            if (!optionSent)
+            {
+                // 无已保存设置时不下发 00AD；抓包证据显示客户端的 2x00C5 上行由 00AD 触发，
+                // 未下发时客户端不会上行，直接进入选角。
+                await SendLoginSuccessAsync(session);
+                FileLogger.Log(
+                    $"[{ProtocolName}] LOGIN success immediately, no saved settings " +
+                    $"account={session.Account?.AccountId}");
+                return;
+            }
+
             session.A21LoginSuccessPending = true;
             session.A21SelectOptionSaveCount = 0;
             FileLogger.Log(
@@ -155,30 +166,24 @@ namespace DfoServer.Network.Handlers
             return false;
         }
 
-        private async Task SendAccountSettingsOnLoginAsync(EnhancedClientSession session)
-        {
-            var accountId = session.Account?.AccountId ?? 1;
-            var settings = _settingsRepository.Load(accountId);
-
-            // 普通攻击连发等输入选项是账号级状态。必须在登录成功后、GET_USERINFO/选角前下发，
-            // 只依赖选角色初始化包会导致 UI 勾选已恢复但运行态未应用。
-            foreach (var packet in AccountSettingsPacketBuilder.BuildLoginAccountSettings(settings))
-                await session.SendPacketAsync(packet);
-
-            FileLogger.Log($"[{ProtocolName}] LOGIN account settings sent account={accountId}");
-        }
-
-        private async Task SendSelectScreenGameOptionAsync(
+        private async Task<bool> SendSelectScreenGameOptionAsync(
             EnhancedClientSession session)
         {
             var accountId = session.Account?.AccountId ?? 0;
             if (accountId <= 0)
-                return;
+                return false;
 
             var settings = _settingsRepository.Load(accountId);
             var body = AccountSettingsPacketBuilder.BuildSelectScreenGameOption(
                 settings,
                 out var persistedMain);
+            if (body == null)
+            {
+                FileLogger.Log(
+                    $"[{ProtocolName}] LOGIN 00AD select-screen skipped " +
+                    $"account={accountId} no saved settings");
+                return false;
+            }
             if (persistedMain != null)
                 _settingsRepository.SaveMainOption(accountId, persistedMain);
 
@@ -190,6 +195,7 @@ namespace DfoServer.Network.Handlers
                 $"[{ProtocolName}] LOGIN 00AD select-screen " +
                 $"account={accountId} body={body.Length}B " +
                 $"patchedFullAvatar={persistedMain != null}");
+            return true;
         }
     }
 }

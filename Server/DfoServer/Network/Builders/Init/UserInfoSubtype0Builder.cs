@@ -104,6 +104,10 @@ namespace DfoServer.Network.Builders
         internal const int A21AfterAliveProgressAOffset = 39;
         internal const int A21AfterAliveProgressBOffset = 43;
         internal const int A21AfterAliveChannelIdOffset = 59;
+        // SkillTreeIndex@61：按旧 104B 尾字段序（UserInfoMinimumTailSnapshot.FromBytes t[79]）
+        // 与 64B blob 锚点的恒定 -18 平移推算（ExpertJobType 41→23、ProgressA 57→39、
+        // UserStateBits 65→47、WriteByte(100) 70→52 均吻合），旧 79→61。
+        internal const int A21AfterAliveSkillTreeIndexOffset = 61;
 
         private static readonly byte[] A21AfterAliveNoGuild =
         {
@@ -150,6 +154,7 @@ namespace DfoServer.Network.Builders
                 body,
                 A21AfterAliveChannelIdOffset,
                 sizeof(ushort));
+            body[A21AfterAliveSkillTreeIndexOffset] = tail.SkillTreeIndex;
             return body;
         }
 

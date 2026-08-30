@@ -53,7 +53,9 @@ namespace DfoServer.Game.CharacterData
                 COALESCE(f.costume_flag, 0), COALESCE(f.aura_flag, 0), COALESCE(f.pet_display_flag, 0),
                 COALESCE(f.title_display_flag, 0), COALESCE(f.pvp_stat_a, 0),
                 COALESCE(f.pvp_win_streak, 0), COALESCE(f.pvp_lose_streak, 0),
-                COALESCE(f.pvp_rank_point, 0), COALESCE(f.trailing_byte, 0)
+                COALESCE(f.pvp_rank_point, 0), COALESCE(f.trailing_byte, 0),
+                COALESCE((SELECT s1.skill_tree_index FROM character_subtype1_fields s1
+                    WHERE s1.character_id = c.character_id), -1)
             FROM characters c
             LEFT JOIN character_subtype0_fields f ON f.character_id = c.character_id
             WHERE c.character_id=@cid", conn))
@@ -111,6 +113,9 @@ namespace DfoServer.Game.CharacterData
                         PvpLoseStreak = (byte)r.GetInt32(44),
                         PvpRankPoint = (uint)r.GetInt64(45),
                         TrailingByte = (byte)r.GetInt32(46),
+                        // skill_tree_index 归属 character_subtype1_fields，此处联表带出，
+                        // 否则广播重建的尾部会回落到默认 0xFF，把客户端当前技能页打丢。
+                        SkillTreeIndex = Game.Skills.SkillTreeExpansionState.FromDatabase(r.GetInt32(47)),
                     };
                     RefreshDynamicTailFields(conn, characterId, snapshot);
                     return snapshot;

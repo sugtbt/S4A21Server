@@ -183,7 +183,7 @@ namespace DfoServer.Network.Builders
             }
             writer.WriteUInt32(snapshot.CloneTitleItemId);
             writer.WriteByte(checked((byte)skills.Count));
-            writer.WriteByte(SkillTreeExpansionState.LockedWireValue);
+            writer.WriteByte(snapshot.SkillTreeIndex);
             StrikerSupportSkillListWriter.WriteEntries(writer, skills);
             writer.WriteByte(RecordOpaquePrefix);
             writer.WriteUInt32(0);

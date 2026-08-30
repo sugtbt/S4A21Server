@@ -157,7 +157,12 @@ namespace DfoServer.Network.Builders
                     continue;
                 }
 
-                FileLogger.Log($"[SelectCharacterPacketBuilder] ERROR: no builder for cmd={template.Command} type=0x{template.Type:X4} occ={template.OccurrenceIndex}");
+                var hasBuilder = template.Command == 0x01
+                    ? registry.HasCmdBuilder(template.Type)
+                    : template.Command == 0x00 && registry.HasBuilder(template.Type);
+                FileLogger.Log(hasBuilder
+                    ? $"[SelectCharacterPacketBuilder] SKIP no-data cmd={template.Command} type=0x{template.Type:X4} occ={template.OccurrenceIndex}"
+                    : $"[SelectCharacterPacketBuilder] ERROR: no builder for cmd={template.Command} type=0x{template.Type:X4} occ={template.OccurrenceIndex}");
             }
 
             if (!strikerSupportSent)
