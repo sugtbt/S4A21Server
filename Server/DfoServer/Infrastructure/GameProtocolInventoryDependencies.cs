@@ -1,5 +1,8 @@
 using DfoServer.Game.Accounts;
 using DfoServer.Game.CharacterData;
+using DfoServer.Game.Events.DailyAttendanceAnytime;
+using DfoServer.Game.Events.RecommendedDungeons;
+using DfoServer.Game.Events.TotalAttendance;
 using DfoServer.Game.ExpertJob;
 using DfoServer.Game.KnightShield;
 using DfoServer.Game.Mailbox;
@@ -22,6 +25,9 @@ namespace DfoServer.Infrastructure
             SqliteSubtype0FieldsRepository subtype0Repository,
             HonorLevelSyncService honorLevel,
             MailboxService mailboxService,
+            RecommendDungeonClearStatsService recommendDungeonClears,
+            DailyAttendanceAnytimeService dailyAttendanceAnytime,
+            TotalAttendanceService totalAttendance,
             MailboxInventoryOverflowRewardSink overflowRewardSink)
         {
             InventoryRefreshSender = inventoryRefreshSender
@@ -44,6 +50,14 @@ namespace DfoServer.Infrastructure
                 ?? throw new ArgumentNullException(nameof(honorLevel));
             MailboxService = mailboxService
                 ?? throw new ArgumentNullException(nameof(mailboxService));
+            RecommendDungeonClears = recommendDungeonClears
+                ?? throw new ArgumentNullException(
+                    nameof(recommendDungeonClears));
+            DailyAttendanceAnytime = dailyAttendanceAnytime
+                ?? throw new ArgumentNullException(
+                    nameof(dailyAttendanceAnytime));
+            TotalAttendance = totalAttendance
+                ?? throw new ArgumentNullException(nameof(totalAttendance));
             OverflowRewardSink = overflowRewardSink
                 ?? throw new ArgumentNullException(nameof(overflowRewardSink));
         }
@@ -67,6 +81,12 @@ namespace DfoServer.Infrastructure
         internal HonorLevelSyncService HonorLevel { get; }
 
         internal MailboxService MailboxService { get; }
+
+        internal RecommendDungeonClearStatsService RecommendDungeonClears { get; }
+
+        internal DailyAttendanceAnytimeService DailyAttendanceAnytime { get; }
+
+        internal TotalAttendanceService TotalAttendance { get; }
 
         internal MailboxInventoryOverflowRewardSink OverflowRewardSink { get; }
     }

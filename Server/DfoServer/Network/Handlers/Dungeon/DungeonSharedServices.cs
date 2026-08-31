@@ -2,6 +2,9 @@ using System;
 using DfoServer.Game.Accounts;
 using DfoServer.Game.CharacterData;
 using DfoServer.Game.Characters;
+using DfoServer.Game.Events.DailyAttendanceAnytime;
+using DfoServer.Game.Events.RecommendedDungeons;
+using DfoServer.Game.Events.TotalAttendance;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.Mercenary;
 using DfoServer.Game.Progression;
@@ -28,6 +31,9 @@ namespace DfoServer.Network.Handlers.Dungeon
         internal DeathTowerCoordinator DeathTower { get; }
         internal Game.Quests.QuestDropService QuestDrops { get; }
         internal Game.Quests.DailyChallengeService DailyChallenges { get; }
+        internal RecommendDungeonClearStatsService RecommendDungeonClears { get; }
+        internal DailyAttendanceAnytimeService DailyAttendanceAnytime { get; }
+        internal TotalAttendanceService TotalAttendance { get; }
         internal Game.Dungeon.DungeonItemAcquisitionService ItemAcquisition { get; }
         internal DungeonPersistentMechanismCoordinator PersistentMechanisms { get; }
         internal SqliteCharacterRepository CharacterRepository { get; }
@@ -75,6 +81,9 @@ namespace DfoServer.Network.Handlers.Dungeon
             Game.Quests.QuestDropService questDropService = null,
             AccountExperienceProgressService accountExperience = null,
             IMercenaryRestrictionService mercenaryRestrictions = null,
+            RecommendDungeonClearStatsService recommendDungeonClears = null,
+            DailyAttendanceAnytimeService dailyAttendanceAnytime = null,
+            TotalAttendanceService totalAttendance = null,
             Game.Dungeon.DungeonPersistentEffectApplicationService persistentEffects = null,
             Game.Dungeon.DungeonInstanceRegistry instanceRegistry = null,
             Game.Raid.RaidManager raidManager = null,
@@ -111,6 +120,10 @@ namespace DfoServer.Network.Handlers.Dungeon
                 new Game.DailyReset.DailyResetService(Database));
             DevilContracts = new Game.Premium.DevilContractUsagePolicy(
                 Database);
+            RecommendDungeonClears = recommendDungeonClears
+                ?? new RecommendDungeonClearStatsService(Database);
+            DailyAttendanceAnytime = dailyAttendanceAnytime;
+            TotalAttendance = totalAttendance;
             Subtype1Repository = new SqliteSubtype1Repository(
                 Database);
             CharacterStateRepository = new SqliteCharacterStateRepository(

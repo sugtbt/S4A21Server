@@ -1,10 +1,20 @@
+using DfoServer.Game.Accounts;
+using DfoServer.Game.CharacterData;
 using DfoServer.Game.Dungeon;
 using DfoServer.Game.Inventory;
+using DfoServer.Game.Session;
+using DfoServer.Game.Skills;
 using DfoServer.GameWorld;
+using DfoServer.Infrastructure;
+using DfoServer.Network;
 using DfoServer.Network.Builders;
+using DfoServer.Network.Handlers;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
 
 namespace DfoServer.SelfTests
 {
@@ -57,7 +67,9 @@ namespace DfoServer.SelfTests
 
             VerifyRealPvfIndependentDrop(ref failures);
             VerifyDimensionGateParser(ref failures);
+            VerifyEpicBuffPotionRarityReroll(ref failures);
             VerifyRealPvfDimensionDrop(ref failures);
+            VerifySkillPointBooks(ref failures);
 
             Console.WriteLine(
                 failures == 0
@@ -95,6 +107,15 @@ namespace DfoServer.SelfTests
 
         private static int ReadInt32(byte[] data, int offset)
             => BitConverter.ToInt32(data, offset);
+
+        private static bool IsPacket(
+            byte[] packet,
+            byte command,
+            ushort type)
+            => packet != null
+            && packet.Length >= 15
+            && packet[0] == command
+            && BitConverter.ToUInt16(packet, 1) == type;
 
         private static void VerifyRealPvfIndependentDrop(ref int failures)
         {
@@ -166,6 +187,53 @@ namespace DfoServer.SelfTests
                     new[] { 1001, 1002, 1003 })
                 && definition.SetItems.SequenceEqual(
                     new[] { 2001, 2002, 2003 }),
+                ref failures);
+        }
+
+        private static void VerifyEpicBuffPotionRarityReroll(ref int failures)
+        {
+            var inactiveCalls = 0;
+            Check(
+                "epic buff potion rarity reroll is skipped while inactive",
+                HellMonsterDropConfig.ApplyEpicBuffPotionRarityRerollForSelfTest(
+                    2,
+                    false,
+                    () =>
+                    {
+                        inactiveCalls++;
+                        return 4;
+                    }) == 2
+                && inactiveCalls == 0,
+                ref failures);
+
+            var alreadyEpicCalls = 0;
+            Check(
+                "epic buff potion rarity reroll is skipped for initial epic",
+                HellMonsterDropConfig.ApplyEpicBuffPotionRarityRerollForSelfTest(
+                    4,
+                    true,
+                    () =>
+                    {
+                        alreadyEpicCalls++;
+                        return 0;
+                    }) == 4
+                && alreadyEpicCalls == 0,
+                ref failures);
+
+            Check(
+                "epic buff potion rarity reroll keeps first non-epic miss",
+                HellMonsterDropConfig.ApplyEpicBuffPotionRarityRerollForSelfTest(
+                    2,
+                    true,
+                    () => 3) == 2,
+                ref failures);
+
+            Check(
+                "epic buff potion rarity reroll promotes only second epic roll",
+                HellMonsterDropConfig.ApplyEpicBuffPotionRarityRerollForSelfTest(
+                    2,
+                    true,
+                    () => 4) == 4,
                 ref failures);
         }
 
@@ -291,6 +359,426 @@ namespace DfoServer.SelfTests
                 ordinaryMonsterDrops.Count == 0
                 && ordinarySlotCounter == 0,
                 ref failures);
+        }
+
+        private static void VerifySkillPointBooks(ref int failures)
+        {
+            const int accountId = 198031;
+            const int characterId = 298031;
+            const short book5Slot = 65;
+            const short book20Slot = 66;
+            const byte level = 50;
+            const byte job = 0;
+            const byte growType = 0;
+            const uint exp = 1234;
+            const int initialBonusSp = 7;
+
+            var tempDirectory = Path.Combine(
+                Path.GetTempPath(),
+                $"a21_sp_books_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDirectory);
+            var database = new GameDatabase(
+                Path.Combine(tempDirectory, "inventory.db"),
+                ServerPaths.SchemaFilePath);
+            ServerRuntimeBuilder runtime = null;
+            EnhancedClientSession session = null;
+            InventoryLease lease = null;
+            LoopbackPacketCapture capture = null;
+            try
+            {
+                using (var connection = database.OpenConnection())
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = @"
+INSERT INTO accounts (account_id, m_id, password_hash)
+VALUES (@aid, 'sp-book-handler', '');
+INSERT INTO characters (
+    character_id, account_id, name, job, grow_type, level, exp,
+    bonus_sp, bonus_tp
+) VALUES (
+    @cid, @aid, 'sp-book-character', @job, @grow, @level, @exp,
+    @bonusSp, 0
+);
+INSERT INTO character_subtype0_fields(character_id) VALUES (@cid);
+INSERT INTO character_subtype1_fields(character_id) VALUES (@cid);";
+                    command.Parameters.AddWithValue("@aid", accountId);
+                    command.Parameters.AddWithValue("@cid", characterId);
+                    command.Parameters.AddWithValue("@job", job);
+                    command.Parameters.AddWithValue("@grow", growType);
+                    command.Parameters.AddWithValue("@level", level);
+                    command.Parameters.AddWithValue("@exp", exp);
+                    command.Parameters.AddWithValue("@bonusSp", initialBonusSp);
+                    command.ExecuteNonQuery();
+                }
+
+                capture = new LoopbackPacketCapture();
+                session = capture.Session;
+                session.Account = new AccountRecord
+                {
+                    AccountId = accountId,
+                    MId = "sp-book-handler",
+                    PasswordHash = string.Empty,
+                };
+                session.Player.CharacterId = characterId;
+                session.Player.UserId = 3031;
+                session.Player.Level = level;
+                session.Player.Job = job;
+                session.Player.GrowType = growType;
+                session.Player.Exp = exp;
+
+                var sessions = new SessionDirectory();
+                sessions.Register(characterId, session);
+                runtime = new ServerRuntimeBuilder(database);
+                var core = runtime.GetOrCreateGameProtocolCoreDependencies();
+                var inventoryDependencies = runtime
+                    .GetOrCreateGameProtocolInventoryDependencies(core);
+                var world = runtime.GetOrCreateGameProtocolWorldDependencies(
+                    sessions,
+                    core);
+                var inventoryHandler = runtime
+                    .GetOrCreateGameProtocolCharacterInventoryHandlers(
+                        core,
+                        inventoryDependencies,
+                        world)
+                    .Inventory;
+
+                InventoryService inventory;
+                using (var connection = database.OpenConnection())
+                {
+                    inventory = InventoryService.LoadFromDb(
+                        connection,
+                        characterId,
+                        accountId,
+                        database);
+                }
+                if (!InventoryCreateService.TryCreateCore(
+                        ExperienceItemUseService.SkillPointBook5ItemId,
+                        ItemCreateReason.NpcShopPurchase,
+                        2,
+                        out var book5)
+                    || !InventoryCreateService.TryCreateCore(
+                        ExperienceItemUseService.SkillPointBook20ItemId,
+                        ItemCreateReason.NpcShopPurchase,
+                        1,
+                        out var book20))
+                {
+                    throw new InvalidOperationException(
+                        "failed to create real PVF skill-point books");
+                }
+                inventory.SetItem(InventoryListType.Main, book5Slot, book5);
+                inventory.SetItem(InventoryListType.Main, book20Slot, book20);
+                lease = InventoryContext.Register(
+                    session.SessionId,
+                    characterId,
+                    inventory);
+                if (!OnlineInventoryMutationCommitCoordinator.TryCommit(
+                        lease,
+                        "selftest-seed-skill-point-books"))
+                {
+                    throw new InvalidOperationException(
+                        "failed to persist skill-point book fixtures");
+                }
+
+                var repository = new SqliteCharacterProgressRepository(database);
+                var initialProtocol = SkillStateService.LoadProtocolState(
+                    repository,
+                    characterId,
+                    job,
+                    level,
+                    initialBonusSp,
+                    bonusTp: 0,
+                    persist: false,
+                    growType: growType);
+
+                inventoryHandler.Handle_ENUM_CMDPACKET_INCREASE_STATUS(
+                        session,
+                        new GamePacketHeader(),
+                        BitConverter.GetBytes(book5Slot))
+                    .GetAwaiter()
+                    .GetResult();
+                var packets = capture.ReadPackets(minimumCount: 3);
+                var firstAck = packets.LastOrDefault(packet => IsPacket(
+                    packet,
+                    0x01,
+                    (ushort)CmdPacketType.INCREASE_STATUS));
+                var firstExp = packets.LastOrDefault(packet => IsPacket(
+                    packet,
+                    0x00,
+                    (ushort)NotiPacketTypeA21.EXP));
+                Check(
+                    "SP+5 book traverses the real INCREASE_STATUS handler and commits item, DB, online state, and absolute SP notification",
+                    firstAck != null
+                    && firstAck.Length >= 16
+                    && firstAck[15] == 1
+                    && firstExp != null
+                    && ReadUInt16(firstExp, 15 + 9)
+                        == initialProtocol.Page0Sp + 5
+                    && ReadUInt16(firstExp, 15 + 11)
+                        == initialProtocol.Page1Sp + 5
+                    && ReadCharacterBonusSp(database, characterId)
+                        == initialBonusSp + 5
+                    && ReadMainSlotCount(
+                        database,
+                        characterId,
+                        accountId,
+                        book5Slot) == 1
+                    && lease.Inventory.GetItem(
+                        InventoryListType.Main,
+                        book5Slot)?.Count == 1,
+                    ref failures);
+
+                inventoryHandler.Handle_ENUM_CMDPACKET_INCREASE_STATUS(
+                        session,
+                        new GamePacketHeader(),
+                        BitConverter.GetBytes(book20Slot))
+                    .GetAwaiter()
+                    .GetResult();
+                packets = capture.ReadPackets(minimumCount: 3);
+                var secondAck = packets.LastOrDefault(packet => IsPacket(
+                    packet,
+                    0x01,
+                    (ushort)CmdPacketType.INCREASE_STATUS));
+                var secondExp = packets.LastOrDefault(packet => IsPacket(
+                    packet,
+                    0x00,
+                    (ushort)NotiPacketTypeA21.EXP));
+                Check(
+                    "SP+20 book adds exactly 20 more SP and consumes its last item through the same handler chain",
+                    secondAck != null
+                    && secondAck.Length >= 16
+                    && secondAck[15] == 1
+                    && secondExp != null
+                    && ReadUInt16(secondExp, 15 + 9)
+                        == initialProtocol.Page0Sp + 25
+                    && ReadUInt16(secondExp, 15 + 11)
+                        == initialProtocol.Page1Sp + 25
+                    && ReadCharacterBonusSp(database, characterId)
+                        == initialBonusSp + 25
+                    && ReadMainSlotCount(
+                        database,
+                        characterId,
+                        accountId,
+                        book20Slot) == 0
+                    && lease.Inventory.GetItem(
+                        InventoryListType.Main,
+                        book20Slot) == null,
+                    ref failures);
+
+                using (var connection = database.OpenConnection())
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = $@"
+CREATE TRIGGER fail_skill_point_book_update
+BEFORE UPDATE OF bonus_sp ON characters
+WHEN OLD.character_id = {characterId}
+BEGIN
+    SELECT RAISE(ABORT, 'injected skill-point persistence failure');
+END;";
+                    command.ExecuteNonQuery();
+                }
+
+                inventoryHandler.Handle_ENUM_CMDPACKET_INCREASE_STATUS(
+                        session,
+                        new GamePacketHeader(),
+                        BitConverter.GetBytes(book5Slot))
+                    .GetAwaiter()
+                    .GetResult();
+                packets = capture.ReadPackets(minimumCount: 1);
+                var failedAck = packets.LastOrDefault(packet => IsPacket(
+                    packet,
+                    0x01,
+                    (ushort)CmdPacketType.INCREASE_STATUS));
+                Check(
+                    "SP book persistence failure returns an error and consumes nothing online or in SQLite",
+                    failedAck != null
+                    && failedAck.Length >= 17
+                    && failedAck[15] == 0
+                    && !packets.Any(packet => IsPacket(
+                        packet,
+                        0x00,
+                        (ushort)NotiPacketTypeA21.EXP))
+                    && ReadCharacterBonusSp(database, characterId)
+                        == initialBonusSp + 25
+                    && ReadMainSlotCount(
+                        database,
+                        characterId,
+                        accountId,
+                        book5Slot) == 1
+                    && lease.Inventory.GetItem(
+                        InventoryListType.Main,
+                        book5Slot)?.Count == 1,
+                    ref failures);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex);
+                Check(
+                    "skill-point book handler/service harness completes",
+                    false,
+                    ref failures);
+            }
+            finally
+            {
+                if (lease != null && session != null)
+                {
+                    InventoryContext.Unregister(
+                        session.SessionId,
+                        characterId);
+                }
+                capture?.Dispose();
+                runtime?.Dispose();
+                try
+                {
+                    Directory.Delete(tempDirectory, recursive: true);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private static int ReadCharacterBonusSp(
+            GameDatabase database,
+            int characterId)
+        {
+            using (var connection = database.OpenConnection())
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = @"
+SELECT bonus_sp FROM characters WHERE character_id = @cid;";
+                command.Parameters.AddWithValue("@cid", characterId);
+                return Convert.ToInt32(command.ExecuteScalar());
+            }
+        }
+
+        private static int ReadMainSlotCount(
+            GameDatabase database,
+            int characterId,
+            int accountId,
+            short slotIndex)
+        {
+            using (var connection = database.OpenConnection())
+            {
+                var inventory = InventoryService.LoadFromDb(
+                    connection,
+                    characterId,
+                    accountId,
+                    database);
+                return inventory.GetItem(
+                    InventoryListType.Main,
+                    slotIndex)?.Count ?? 0;
+            }
+        }
+
+        private sealed class LoopbackPacketCapture : IDisposable
+        {
+            private readonly TcpClient _reader;
+
+            internal LoopbackPacketCapture()
+            {
+                var listener = new TcpListener(IPAddress.Loopback, 0);
+                listener.Start();
+                try
+                {
+                    var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+                    _reader = new TcpClient();
+                    var connect = _reader.ConnectAsync(
+                        IPAddress.Loopback,
+                        port);
+                    var writer = listener.AcceptTcpClient();
+                    connect.GetAwaiter().GetResult();
+                    _reader.ReceiveTimeout = 1000;
+                    Session = new EnhancedClientSession(
+                        writer,
+                        new GamePacketHeader());
+                }
+                finally
+                {
+                    listener.Stop();
+                }
+            }
+
+            internal EnhancedClientSession Session { get; }
+
+            internal List<byte[]> ReadPackets(int minimumCount)
+            {
+                if (minimumCount <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(minimumCount));
+
+                var packets = new List<byte[]>();
+                var stream = _reader.GetStream();
+                var deadline = DateTime.UtcNow.AddSeconds(1);
+                while (DateTime.UtcNow < deadline)
+                {
+                    var needsMinimum = packets.Count < minimumCount;
+                    var wait = needsMinimum
+                        ? deadline - DateTime.UtcNow
+                        : TimeSpan.FromMilliseconds(75);
+                    if (wait <= TimeSpan.Zero)
+                        break;
+                    var waitMicroseconds = (int)Math.Min(
+                        int.MaxValue,
+                        Math.Max(1, wait.TotalMilliseconds * 1000));
+                    if (!_reader.Client.Poll(
+                            waitMicroseconds,
+                            SelectMode.SelectRead))
+                    {
+                        if (!needsMinimum)
+                            break;
+                        continue;
+                    }
+                    if (_reader.Client.Available <= 0)
+                        throw new EndOfStreamException();
+
+                    var header = ReadExact(stream, 15);
+                    var length = BitConverter.ToInt32(header, 3);
+                    if (length < 15)
+                    {
+                        throw new InvalidOperationException(
+                            $"invalid captured packet length {length}");
+                    }
+
+                    var packet = new byte[length];
+                    Buffer.BlockCopy(header, 0, packet, 0, header.Length);
+                    if (length > header.Length)
+                    {
+                        var body = ReadExact(stream, length - header.Length);
+                        Buffer.BlockCopy(
+                            body,
+                            0,
+                            packet,
+                            header.Length,
+                            body.Length);
+                    }
+                    packets.Add(packet);
+                }
+                if (packets.Count < minimumCount)
+                {
+                    throw new TimeoutException(
+                        $"captured {packets.Count}/{minimumCount} packets");
+                }
+                return packets;
+            }
+
+            public void Dispose()
+            {
+                Session?.Close();
+                _reader?.Close();
+            }
+
+            private static byte[] ReadExact(NetworkStream stream, int count)
+            {
+                var result = new byte[count];
+                var offset = 0;
+                while (offset < count)
+                {
+                    var read = stream.Read(result, offset, count - offset);
+                    if (read <= 0)
+                        throw new EndOfStreamException();
+                    offset += read;
+                }
+                return result;
+            }
         }
     }
 }

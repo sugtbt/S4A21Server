@@ -173,9 +173,47 @@ namespace DfoServer.GameWorld
         public static bool IsSuitableLevelDungeon(int dungeonId, int characterLevel)
         {
             return characterLevel > 0
-                && TryGetSuitableLevelRange(dungeonId, out var minLevel, out var maxLevel)
-                && characterLevel >= minLevel
-                && characterLevel <= maxLevel;
+                && (IsDimensionDungeon(dungeonId)
+                    || IsCharacterLevelBandOverlappingDungeonRange(
+                        dungeonId,
+                        characterLevel));
+        }
+
+        private static bool IsCharacterLevelBandOverlappingDungeonRange(
+            int dungeonId,
+            int characterLevel)
+        {
+            return TryGetSuitableLevelRange(dungeonId, out var minLevel, out var maxLevel)
+                && IsCharacterLevelSuitableForDungeonRange(
+                    characterLevel,
+                    minLevel,
+                    maxLevel);
+        }
+
+        public static bool IsCharacterLevelSuitableForDungeonRange(
+            int characterLevel,
+            int dungeonMinimumLevel,
+            int dungeonBasisLevel)
+        {
+            if (characterLevel <= 0)
+                return false;
+            if (dungeonMinimumLevel <= 0 && dungeonBasisLevel <= 0)
+                return false;
+            if (dungeonMinimumLevel <= 0)
+                dungeonMinimumLevel = dungeonBasisLevel;
+            if (dungeonBasisLevel <= 0)
+                dungeonBasisLevel = dungeonMinimumLevel;
+            if (dungeonMinimumLevel > dungeonBasisLevel)
+            {
+                var value = dungeonMinimumLevel;
+                dungeonMinimumLevel = dungeonBasisLevel;
+                dungeonBasisLevel = value;
+            }
+
+            var characterMinLevel = Math.Max(1, characterLevel - 5);
+            var characterMaxLevel = characterLevel + 5;
+            return characterMaxLevel >= dungeonMinimumLevel
+                && characterMinLevel <= dungeonBasisLevel;
         }
 
         public static bool TryGetSuitableLevelRange(int dungeonId, out int minLevel, out int maxLevel)

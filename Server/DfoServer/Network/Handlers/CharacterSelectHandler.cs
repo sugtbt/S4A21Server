@@ -476,7 +476,6 @@ namespace DfoServer.Network.Handlers
                 }
             }
             var characterList = BuildCharacterList(ownerAcctId);
-            var routingByte = _getUserInfoTemplate != null ? _getUserInfoTemplate.Pkt0RoutingByte7 : (byte)0;
 
             // Character selection rebuilds the current character's complete skill state.
             // Keep reconciliation explicit because shared snapshot loads also serve non-skill refreshes.
@@ -568,8 +567,7 @@ namespace DfoServer.Network.Handlers
                 AppearanceService.BuildCloneTitleAckBody(cloneTitle, suppressMessage: 1)));
             FileLogger.Log($"[{ProtocolName}] SELECT_CHARACTER clone title restore: char={ownerCharId} cloneTitle=0x{cloneTitle:X8}");
 
-            // 切角色可能跳过 GET_USERINFO，主选角流后补发账号 subtype2。
-            await session.SendPacketAsync(BuildPacketWithRouting(0x00, 0x0002, characterList.Body, routingByte));
+            // 进号后不再发 subtype2 名册；名册只由 GET_USERINFO(mode=2) 在选人界面下发。
             await SendHonorLevelInfoAsync(session, "select-character-ready", characterList.Honor);
             await _growthCapsule.SendExpProgressAsync(
                 session, "select-character-ready", honor: characterList.Honor);

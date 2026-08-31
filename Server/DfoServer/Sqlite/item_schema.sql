@@ -637,7 +637,7 @@ CREATE TABLE IF NOT EXISTS character_subtype0_fields (
     channel_display_mode INTEGER NOT NULL DEFAULT 0,    -- +74 u16
     channel_type INTEGER NOT NULL DEFAULT 0,            -- +76 u8
     channel_id INTEGER NOT NULL DEFAULT 2,              -- 历史快照字段，不再序列化到 subtype0 +77
-    mood_value INTEGER NOT NULL DEFAULT 0,              -- +77 u16 mood popup default; 0=normal
+    mood_value INTEGER NOT NULL DEFAULT 0,              -- +77 u16 mood popup default; 0=normal; A21 无工会 64B 尾 +59
     is_return_user INTEGER NOT NULL DEFAULT 0,          -- +80 u8
     link_slot_enabled INTEGER NOT NULL DEFAULT 0,       -- +81 u8
     link_type_a INTEGER NOT NULL DEFAULT 0,             -- +82 u8 (sub_F50410)
@@ -1258,6 +1258,125 @@ CREATE TABLE IF NOT EXISTS event_joust_history (
     odds_x10 INTEGER NOT NULL DEFAULT 80,
     settled_at_unix INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS event_pcroom_timepoint_daily (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    day_id INTEGER NOT NULL,
+    online_millis INTEGER NOT NULL DEFAULT 0 CHECK(online_millis >= 0),
+    daily_claim_mask INTEGER NOT NULL DEFAULT 0
+        CHECK(daily_claim_mask >= 0 AND daily_claim_mask <= 15),
+    cycle_recorded INTEGER NOT NULL DEFAULT 0
+        CHECK(cycle_recorded IN (0, 1)),
+    last_flushed_at_unix INTEGER NOT NULL DEFAULT 0,
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, event_id, season_id, day_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_pcroom_timepoint_daily_day
+    ON event_pcroom_timepoint_daily(event_id, season_id, day_id);
+
+CREATE TABLE IF NOT EXISTS event_pcroom_timepoint_period (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    completed_cycle_count INTEGER NOT NULL DEFAULT 0
+        CHECK(completed_cycle_count >= 0),
+    period_claim_mask INTEGER NOT NULL DEFAULT 0
+        CHECK(period_claim_mask >= 0 AND period_claim_mask <= 15),
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, event_id, season_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS event_daily_attendance_anytime_account (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    total_attendance_count INTEGER NOT NULL DEFAULT 0
+        CHECK(total_attendance_count >= 0),
+    accumulate_claimed_mask INTEGER NOT NULL DEFAULT 0
+        CHECK(accumulate_claimed_mask >= 0 AND accumulate_claimed_mask <= 7),
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, event_id, season_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS event_daily_attendance_anytime_daily (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    day_id INTEGER NOT NULL,
+    recommend_clear_count INTEGER NOT NULL DEFAULT 0
+        CHECK(recommend_clear_count >= 0),
+    attended INTEGER NOT NULL DEFAULT 0 CHECK(attended IN (0, 1)),
+    daily_reward_day_index INTEGER NOT NULL DEFAULT -1,
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, event_id, season_id, day_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_daily_attendance_anytime_daily_day
+    ON event_daily_attendance_anytime_daily(event_id, season_id, day_id);
+
+CREATE TABLE IF NOT EXISTS event_daily_attendance_anytime_clear_events (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    day_id INTEGER NOT NULL,
+    source_event_id TEXT NOT NULL,
+    dungeon_id INTEGER NOT NULL DEFAULT 0,
+    character_id INTEGER NOT NULL DEFAULT 0,
+    created_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (
+        account_id, event_id, season_id, day_id, source_event_id
+    ),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS account_recommend_dungeon_clear_stats (
+    account_id INTEGER NOT NULL,
+    period_type INTEGER NOT NULL,
+    period_id INTEGER NOT NULL,
+    clear_count INTEGER NOT NULL DEFAULT 0
+        CHECK(clear_count >= 0),
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, period_type, period_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_recommend_dungeon_clear_stats_period
+    ON account_recommend_dungeon_clear_stats(period_type, period_id);
+
+CREATE TABLE IF NOT EXISTS event_total_attendance_account (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    total_attendance_week_count INTEGER NOT NULL DEFAULT 0
+        CHECK(total_attendance_week_count >= 0),
+    total_reward_sent_mask INTEGER NOT NULL DEFAULT 0
+        CHECK(total_reward_sent_mask >= 0 AND total_reward_sent_mask <= 7),
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, event_id, season_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS event_total_attendance_weekly (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    week_id INTEGER NOT NULL,
+    checked INTEGER NOT NULL DEFAULT 0 CHECK(checked IN (0, 1)),
+    weekly_reward_index INTEGER NOT NULL DEFAULT -1,
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, event_id, season_id, week_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_total_attendance_weekly_week
+    ON event_total_attendance_weekly(event_id, season_id, week_id);
 
 -- 服务端协议默认配置，不包含玩家账号或角色数据。
 INSERT OR IGNORE INTO get_userinfo_template (

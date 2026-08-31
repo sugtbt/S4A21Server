@@ -94,7 +94,7 @@ namespace DfoServer.Network.Builders
                 new Noti2InventoryProjectionBuilder().ApplySubtype0TailDynamicFields(lease.Inventory, tail);
         }
 
-        // A21 无工会 64B 尾：ExpertJobType/Exp 在 +23/+24；ChannelId 在 +59。
+        // A21 无工会 64B 尾：ExpertJobType/Exp 在 +23/+24；MoodValue 在 +59。
         // ProgressA/ProgressB（名誉等级/经验）在 +39/+43：偏移按旧 WriteTail 字段序
         // （HardcoreDeathCount(u16)@37-38 之后依次 ProgressA(u32)、ProgressB(u32)、
         // UserStateBits@47）推算，blob[52]=0x64 与旧 WriteByte(100) 对齐作为锚点。
@@ -103,7 +103,7 @@ namespace DfoServer.Network.Builders
         internal const int A21AfterAliveExpertJobExpOffset = 24;
         internal const int A21AfterAliveProgressAOffset = 39;
         internal const int A21AfterAliveProgressBOffset = 43;
-        internal const int A21AfterAliveChannelIdOffset = 59;
+        internal const int A21AfterAliveMoodValueOffset = 59;
         // SkillTreeIndex@61：按旧 104B 尾字段序（UserInfoMinimumTailSnapshot.FromBytes t[79]）
         // 与 64B blob 锚点的恒定 -18 平移推算（ExpertJobType 41→23、ProgressA 57→39、
         // UserStateBits 65→47、WriteByte(100) 70→52 均吻合），旧 79→61。
@@ -144,15 +144,11 @@ namespace DfoServer.Network.Builders
                 body,
                 A21AfterAliveProgressBOffset,
                 sizeof(uint));
-            var channelId = BitConverter.GetBytes(
-                tail.ChannelId == 0
-                    ? (ushort)2
-                    : tail.ChannelId);
             Buffer.BlockCopy(
-                channelId,
+                BitConverter.GetBytes(tail.MoodValue),
                 0,
                 body,
-                A21AfterAliveChannelIdOffset,
+                A21AfterAliveMoodValueOffset,
                 sizeof(ushort));
             body[A21AfterAliveSkillTreeIndexOffset] = tail.SkillTreeIndex;
             return body;

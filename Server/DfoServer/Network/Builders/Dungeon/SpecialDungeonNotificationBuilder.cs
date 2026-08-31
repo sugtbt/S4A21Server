@@ -30,9 +30,14 @@ namespace DfoServer.Network.Builders
         }
 
         // NOTI 0x01E8 / CHARACTER_ADD_BUFF.
-        // Client handler 0x0091B180 reads: u8 count, then repeated i32 buffId, i32 field1, i32 field2, i32 field3.
+        // A21 client handler 0x00D08EF0 reads: u8 count, then repeated
+        // i32 buffId and three int32 state fields.
         // This creates or updates runtime buff entries; 0x01EA only toggles existing entries active.
-        internal static byte[] BuildCharacterAddBuff(int buffId, int field1, int field2, int field3)
+        internal static byte[] BuildCharacterAddBuff(
+            int buffId,
+            int field1,
+            int field2,
+            int field3)
         {
             var writer = new GamePacketWriter();
             writer.WriteByte(1);

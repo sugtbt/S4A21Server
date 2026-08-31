@@ -523,6 +523,31 @@ namespace DfoServer.Network.Handlers.Dungeon
                     return false;
                 }
 
+                if (DungeonClearPresentationPolicy
+                        .UsesCommonExperienceAuthority(
+                            clearFact.PresentationKind)
+                    && !await ExecuteSettlementEffectAsync(
+                        session,
+                        run,
+                        identity,
+                        DungeonPersistentEffectKinds
+                            .SuitableDungeonAttendanceEvents,
+                        async () =>
+                        {
+                            if (!await ApplySuitableDungeonAttendanceEvents(
+                                    session,
+                                    run,
+                                    settlement.PreviousLevel))
+                            {
+                                throw new InvalidOperationException(
+                                    "Suitable-dungeon attendance event persistence failed.");
+                            }
+                        }))
+                {
+                    run.Effects.TryFail(authoritativeReservation);
+                    return false;
+                }
+
                 _svc.PersistentMechanisms.ConfigureLinkedChallenge(run);
                 if (!await ExecuteSettlementEffectAsync(
                         session,
@@ -2737,6 +2762,125 @@ namespace DfoServer.Network.Handlers.Dungeon
                     + $"char={characterId} dungeon={run.DungeonId} "
                     + $"difficulty={run.Difficulty} level={clearLevel} {ex.Message}");
                 return false;
+            }
+        }
+
+        private async Task<bool> ApplySuitableDungeonAttendanceEvents(
+            EnhancedClientSession session,
+            DungeonRun run,
+            int clearLevel)
+        {
+            if (run == null
+                || !session.Player.IsCurrentDungeonRun(run.CaptureIdentity()))
+            {
+                return false;
+            }
+
+            if (!DungeonData.IsSuitableLevelDungeon(run.DungeonId, clearLevel))
+                return true;
+
+            var characterId = session.Player.CharacterId;
+            var accountId = session.Account?.AccountId ?? 0;
+            if (characterId <= 0 || accountId <= 0)
+                return true;
+
+            try
+            {
+                var sourceEventId = run.GetSettlementSourceEventId();
+                var stats = _svc.RecommendDungeonClears.RecordClear(accountId);
+                var characterName = DecodeCharacterName(session);
+
+                if (_svc.DailyAttendanceAnytime != null)
+                {
+                    var result = _svc.DailyAttendanceAnytime
+                        .ApplyRecommendedDungeonClear(
+                            accountId,
+                            characterId,
+                            characterName,
+                            clearLevel,
+                            run.DungeonId,
+                            stats.DailyClearCount,
+                            sourceEventId);
+                    if (!result.Success)
+                    {
+                        FileLogger.Log(
+                            "[DungeonHandler] DAILY_ATTENDANCE_ANYTIME "
+                            + "suitable clear rejected "
+                            + $"account_id={accountId} cid={characterId} "
+                            + $"dungeon={run.DungeonId} status={result.Status}");
+                        return false;
+                    }
+
+                    if (!session.Player.IsCurrentDungeonRun(run.CaptureIdentity()))
+                        return false;
+
+                    if (result.MailDelivered)
+                        await EventDailyAttendanceAnytimeHandler
+                            .SendMailboxAlarmAsync(session);
+                    if (result.Snapshot != null)
+                    {
+                        await EventDailyAttendanceAnytimeHandler.SendStateAsync(
+                            session,
+                            result.Snapshot,
+                            "dungeon-clear");
+                    }
+                }
+
+                if (_svc.TotalAttendance != null)
+                {
+                    var result = _svc.TotalAttendance
+                        .ApplyRecommendedDungeonClear(
+                            accountId,
+                            characterId,
+                            run.DungeonId,
+                            stats.WeeklyClearCount,
+                            sourceEventId);
+                    if (!result.Success)
+                    {
+                        FileLogger.Log(
+                            "[DungeonHandler] TOTAL_ATTENDANCE "
+                            + "suitable clear rejected "
+                            + $"account_id={accountId} cid={characterId} "
+                            + $"dungeon={run.DungeonId} status={result.Status}");
+                        return false;
+                    }
+
+                    if (!session.Player.IsCurrentDungeonRun(run.CaptureIdentity()))
+                        return false;
+
+                    if (result.Snapshot != null)
+                    {
+                        await EventTotalAttendanceHandler.SendStateAsync(
+                            session,
+                            result.Snapshot,
+                            "dungeon-clear");
+                    }
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    "[DungeonHandler] ATTENDANCE_EVENTS "
+                    + "suitable clear ERROR: "
+                    + $"account_id={accountId} cid={characterId} "
+                    + $"dungeon={run.DungeonId} level={clearLevel} "
+                    + $"{ex.Message}");
+                return false;
+            }
+        }
+
+        private static string DecodeCharacterName(EnhancedClientSession session)
+        {
+            try
+            {
+                return ClientTextEncoding.GetString(
+                    session?.Player?.Name ?? Array.Empty<byte>());
+            }
+            catch
+            {
+                return string.Empty;
             }
         }
     }

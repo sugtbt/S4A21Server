@@ -37,6 +37,9 @@ namespace DfoServer.Sqlite
                 new MigrationStep(12, "compress_character_slot_holes", ApplyCompressCharacterSlotHoles),
                 new MigrationStep(13, "add_dungeon_entry_limits", ApplyDungeonEntryLimits),
                 new MigrationStep(14, "remove_dungeon_limit_noti2_entry_flag", ApplyRemoveDungeonLimitNoti2EntryFlag),
+                new MigrationStep(15, "add_pcroom_timepoint_event", ApplyPcRoomTimePointEvent),
+                new MigrationStep(16, "add_daily_attendance_anytime_event", ApplyDailyAttendanceAnytimeEvent),
+                new MigrationStep(17, "add_total_attendance_event", ApplyTotalAttendanceEvent),
             };
 
         internal static int CurrentVersion =>
@@ -892,6 +895,152 @@ INSERT OR IGNORE INTO dungeon_limit_config (
     (4127, 'charac', 1, 1, 23),
     (4128, 'charac', 1, 1, 24),
     (4123, 'charac', 3, 1, 25);");
+        }
+
+        private static void ApplyPcRoomTimePointEvent(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            ExecuteSql(connection, transaction, @"
+CREATE TABLE IF NOT EXISTS event_pcroom_timepoint_daily (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    day_id INTEGER NOT NULL,
+    online_millis INTEGER NOT NULL DEFAULT 0 CHECK(online_millis >= 0),
+    daily_claim_mask INTEGER NOT NULL DEFAULT 0
+        CHECK(daily_claim_mask >= 0 AND daily_claim_mask <= 15),
+    cycle_recorded INTEGER NOT NULL DEFAULT 0
+        CHECK(cycle_recorded IN (0, 1)),
+    last_flushed_at_unix INTEGER NOT NULL DEFAULT 0,
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, event_id, season_id, day_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_pcroom_timepoint_daily_day
+    ON event_pcroom_timepoint_daily(event_id, season_id, day_id);
+
+CREATE TABLE IF NOT EXISTS event_pcroom_timepoint_period (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    completed_cycle_count INTEGER NOT NULL DEFAULT 0
+        CHECK(completed_cycle_count >= 0),
+    period_claim_mask INTEGER NOT NULL DEFAULT 0
+        CHECK(period_claim_mask >= 0 AND period_claim_mask <= 15),
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, event_id, season_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+INSERT OR IGNORE INTO game_event_state(event_id, state)
+VALUES(228, 0);");
+        }
+
+        private static void ApplyDailyAttendanceAnytimeEvent(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            ExecuteSql(connection, transaction, @"
+CREATE TABLE IF NOT EXISTS event_daily_attendance_anytime_account (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    total_attendance_count INTEGER NOT NULL DEFAULT 0
+        CHECK(total_attendance_count >= 0),
+    accumulate_claimed_mask INTEGER NOT NULL DEFAULT 0
+        CHECK(accumulate_claimed_mask >= 0 AND accumulate_claimed_mask <= 7),
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, event_id, season_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS event_daily_attendance_anytime_daily (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    day_id INTEGER NOT NULL,
+    recommend_clear_count INTEGER NOT NULL DEFAULT 0
+        CHECK(recommend_clear_count >= 0),
+    attended INTEGER NOT NULL DEFAULT 0 CHECK(attended IN (0, 1)),
+    daily_reward_day_index INTEGER NOT NULL DEFAULT -1,
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, event_id, season_id, day_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_daily_attendance_anytime_daily_day
+    ON event_daily_attendance_anytime_daily(event_id, season_id, day_id);
+
+CREATE TABLE IF NOT EXISTS event_daily_attendance_anytime_clear_events (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    day_id INTEGER NOT NULL,
+    source_event_id TEXT NOT NULL,
+    dungeon_id INTEGER NOT NULL DEFAULT 0,
+    character_id INTEGER NOT NULL DEFAULT 0,
+    created_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (
+        account_id, event_id, season_id, day_id, source_event_id
+    ),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+INSERT OR IGNORE INTO game_event_state(event_id, state)
+VALUES(2370, 0);");
+        }
+
+        private static void ApplyTotalAttendanceEvent(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            ExecuteSql(connection, transaction, @"
+CREATE TABLE IF NOT EXISTS account_recommend_dungeon_clear_stats (
+    account_id INTEGER NOT NULL,
+    period_type INTEGER NOT NULL,
+    period_id INTEGER NOT NULL,
+    clear_count INTEGER NOT NULL DEFAULT 0
+        CHECK(clear_count >= 0),
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, period_type, period_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_recommend_dungeon_clear_stats_period
+    ON account_recommend_dungeon_clear_stats(period_type, period_id);
+
+CREATE TABLE IF NOT EXISTS event_total_attendance_account (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    total_attendance_week_count INTEGER NOT NULL DEFAULT 0
+        CHECK(total_attendance_week_count >= 0),
+    total_reward_sent_mask INTEGER NOT NULL DEFAULT 0
+        CHECK(total_reward_sent_mask >= 0 AND total_reward_sent_mask <= 7),
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, event_id, season_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS event_total_attendance_weekly (
+    account_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    season_id INTEGER NOT NULL DEFAULT 1,
+    week_id INTEGER NOT NULL,
+    checked INTEGER NOT NULL DEFAULT 0 CHECK(checked IN (0, 1)),
+    weekly_reward_index INTEGER NOT NULL DEFAULT -1,
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, event_id, season_id, week_id),
+    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_total_attendance_weekly_week
+    ON event_total_attendance_weekly(event_id, season_id, week_id);
+
+INSERT OR IGNORE INTO game_event_state(event_id, state)
+VALUES(2208, 0);");
         }
 
         private static void ImportCharacterNewItems(

@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.Sockets;
 using DfoServer.Game.Events;
 using DfoServer.Game.Events.Joust;
 using DfoServer.Game.Mailbox;
+using DfoServer.Game.Session;
 using DfoServer.Infrastructure;
 using DfoServer.Network;
 using DfoServer.Network.Builders;
@@ -44,6 +46,7 @@ namespace DfoServer.SelfTests
                 VerifyV9ToV10Migration(migrationDatabasePath, ref failures);
                 VerifyEventInfoSeed(seedDatabasePath, ref failures);
                 VerifyServiceRoundResolution(serviceDatabasePath, ref failures);
+                VerifyBestEffortSendSkipsDisconnectedSocket(ref failures);
             }
             catch (Exception ex)
             {
@@ -523,6 +526,28 @@ INSERT INTO event_joust_rules (
                 && CountRows(database, "event_joust_history") == 1
                 && calls.Count(value => value == 2) == 7,
                 ref failures);
+        }
+
+        private static void VerifyBestEffortSendSkipsDisconnectedSocket(ref int failures)
+        {
+            using (var tcpClient = new TcpClient())
+            {
+                var session = new EnhancedClientSession(
+                    tcpClient,
+                    new GamePacketHeader());
+
+                var sent = SessionDirectory.TrySendBestEffortAsync(
+                    cancellationToken =>
+                        session.SendPacketAsync(new byte[] { 0x01 }, cancellationToken),
+                    "selftest disconnected socket")
+                    .GetAwaiter()
+                    .GetResult();
+
+                Check(
+                    "best-effort send skips non-connected sockets",
+                    !sent,
+                    ref failures);
+            }
         }
 
         private static JoustPhase PhaseAt(JoustRule rule, int hour, int minute)

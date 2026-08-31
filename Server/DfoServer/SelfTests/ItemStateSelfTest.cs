@@ -4,6 +4,7 @@ using DfoServer.Game.Inventory;
 using DfoServer.Game.ItemUpgrade;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.Infrastructure;
+using DfoServer.Network;
 using DfoServer.Network.Builders;
 using DfoServer.Sqlite;
 using Microsoft.Data.Sqlite;
@@ -19,6 +20,7 @@ namespace DfoServer.SelfTests
 
             VerifySchemaMigration(ref failures);
             VerifyOnlineCacheAndProjection(ref failures);
+            VerifyEpicBuffPotionBuffProjection(ref failures);
             VerifyPvfLifecycleParsing(ref failures);
             VerifyLifecycleRules(ref failures);
 
@@ -209,6 +211,115 @@ PRAGMA user_version = 6;";
             {
                 TryDelete(tempDbPath);
             }
+        }
+
+        private static void VerifyEpicBuffPotionBuffProjection(ref int failures)
+        {
+            var capturedGuildBody =
+                SpecialDungeonNotificationBuilder.BuildCharacterAddBuff(
+                    169,
+                    1,
+                    0,
+                    0);
+            Check(
+                "CHARACTER_ADD_BUFF body matches captured guild-attribute layout",
+                MatchesCharacterAddBuffBody(capturedGuildBody, 169, 1, 0, 0),
+                ref failures);
+
+            var snapshot = new SelectCharacterInitializationSnapshot();
+            snapshot.EffectItemStates.Add(new ItemStateEntrySnapshot
+            {
+                ItemId = 490003224,
+                ExpireTime = 600,
+            });
+            var builder = new EpicBuffPotionInitBodyBuilder();
+            Check(
+                "epic buff potion init emits CHARACTER_ADD_BUFF for active effect item",
+                builder.TryBuild(
+                    new SelectCharacterDataSnapshot
+                    {
+                        InitializationSnapshot = snapshot,
+                    },
+                    0,
+                    out var body)
+                && MatchesCharacterAddBuffBody(
+                    body,
+                    EpicBuffPotionDefinition.BuffId,
+                    0,
+                    0,
+                    0),
+                ref failures);
+
+            Check(
+                "epic buff potion init skips when no active effect item matches",
+                !builder.TryBuild(
+                    new SelectCharacterDataSnapshot(),
+                    0,
+                    out var skippedBody)
+                && skippedBody == null,
+                ref failures);
+
+            var inventory = new InventoryService(73101, 73102);
+            const long now = 1700000100;
+            inventory.ItemStates.Upsert(
+                ItemStateKinds.Effect,
+                490003224,
+                (int)now + 60);
+            inventory.ItemStates.Upsert(
+                ItemStateKinds.Effect,
+                490002458,
+                (int)now + 120);
+            Check(
+                "epic buff potion active lookup uses latest live effect deadline",
+                EpicBuffPotionDefinition.TryGetActiveEffectExpireTime(
+                    inventory,
+                    now,
+                    out var activeExpireTime)
+                && activeExpireTime == now + 120,
+                ref failures);
+
+            Check(
+                "epic buff potion active lookup ignores expired effect state",
+                !EpicBuffPotionDefinition.TryGetActiveEffectExpireTime(
+                    inventory,
+                    now + 121,
+                    out _),
+                ref failures);
+
+            var templates = NewCharacterInitSequence.Build();
+            var effectIndex = -1;
+            var buffIndex = -1;
+            for (var index = 0; index < templates.Count; index++)
+            {
+                var template = templates[index];
+                if (template.Command != 0x00)
+                    continue;
+
+                if (template.Type == (ushort)NotiPacketTypeA21.LOAD_EFFECT_ITEM_INFO)
+                    effectIndex = index;
+                else if (template.Type == (ushort)NotiPacketTypeA21.CHARACTER_ADD_BUFF)
+                    buffIndex = index;
+            }
+
+            Check(
+                "new character init sends epic buff icon after effect item list",
+                effectIndex >= 0 && buffIndex > effectIndex,
+                ref failures);
+
+            Check(
+                "epic buff potion item ids stay scoped to the verified trio",
+                EpicBuffPotionDefinition.IsItem(490000413)
+                && EpicBuffPotionDefinition.IsItem(490002458)
+                && EpicBuffPotionDefinition.IsItem(490003224)
+                && !EpicBuffPotionDefinition.IsItem(490003225),
+                ref failures);
+
+            Check(
+                "epic buff potion remove body carries only buff id",
+                BytesEqual(
+                    EpicBuffPotionPacketBuilder.BuildRemoveBuffBody(),
+                    new byte[] { 0x01, 0x70, 0x04, 0x00, 0x00 }),
+                ref failures);
         }
 
         private static void VerifyPvfLifecycleParsing(ref int failures)
@@ -525,6 +636,36 @@ VALUES (@cid, @kind, @itemId, @expireTime);";
                 command.Parameters.AddWithValue("@expireTime", expireTime);
                 command.ExecuteNonQuery();
             }
+        }
+
+        private static bool MatchesCharacterAddBuffBody(
+            byte[] body,
+            int buffId,
+            int field1,
+            int field2,
+            int field3)
+        {
+            return body != null
+                && body.Length == 17
+                && body[0] == 1
+                && BitConverter.ToInt32(body, 1) == buffId
+                && BitConverter.ToInt32(body, 5) == field1
+                && BitConverter.ToInt32(body, 9) == field2
+                && BitConverter.ToInt32(body, 13) == field3;
+        }
+
+        private static bool BytesEqual(byte[] actual, byte[] expected)
+        {
+            if (actual == null || expected == null || actual.Length != expected.Length)
+                return false;
+
+            for (var index = 0; index < actual.Length; index++)
+            {
+                if (actual[index] != expected[index])
+                    return false;
+            }
+
+            return true;
         }
 
         private static bool TableExists(SqliteConnection connection, string tableName)

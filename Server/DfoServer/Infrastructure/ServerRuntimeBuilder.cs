@@ -4,7 +4,11 @@ using DfoServer.Game.Characters;
 using DfoServer.Game.DailyReset;
 using DfoServer.Game.Dungeon;
 using DfoServer.Game.Events;
+using DfoServer.Game.Events.DailyAttendanceAnytime;
 using DfoServer.Game.Events.Joust;
+using DfoServer.Game.Events.PcRoomTimePoint;
+using DfoServer.Game.Events.RecommendedDungeons;
+using DfoServer.Game.Events.TotalAttendance;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.ExpertJob;
 using DfoServer.Game.KnightShield;
@@ -210,6 +214,19 @@ namespace DfoServer.Infrastructure
                 new SqliteExpertJobStateRepository(core.Database);
             var mailboxService = new MailboxService(
                 new MailboxRepository(core.Database));
+            var recommendDungeonClears =
+                new RecommendDungeonClearStatsService(core.Database);
+            recommendDungeonClears.Initialize();
+            var dailyAttendanceAnytimeService =
+                new DailyAttendanceAnytimeService(
+                    core.Database,
+                    mailboxService);
+            dailyAttendanceAnytimeService.Initialize();
+            var totalAttendanceService =
+                new TotalAttendanceService(
+                    core.Database,
+                    mailboxService);
+            totalAttendanceService.Initialize();
 
             var dependencies = new GameProtocolInventoryDependencies(
                 inventoryRefreshSender,
@@ -226,6 +243,9 @@ namespace DfoServer.Infrastructure
                     core.CharacterRepository,
                     core.Database),
                 mailboxService,
+                recommendDungeonClears,
+                dailyAttendanceAnytimeService,
+                totalAttendanceService,
                 new MailboxInventoryOverflowRewardSink(mailboxService));
             core.DungeonPersistentEffects.BindOverflowRewardSink(
                 dependencies.OverflowRewardSink);
@@ -517,6 +537,12 @@ namespace DfoServer.Infrastructure
                     world.PartyManager,
                     world.Sessions,
                     mercenaryRestrictions: world.MercenaryRestrictions,
+                    recommendDungeonClears:
+                        inventory.RecommendDungeonClears,
+                    dailyAttendanceAnytime:
+                        inventory.DailyAttendanceAnytime,
+                    totalAttendance:
+                        inventory.TotalAttendance,
                     instanceRegistry: world.DungeonInstances,
                     raidManager: world.RaidManager,
                     database: core.Database));
@@ -707,6 +733,21 @@ namespace DfoServer.Infrastructure
                 inventory.InventoryRefreshSender,
                 world.Sessions);
             eventJoustHandler.RegisterClock(ClockService.Instance);
+            var pcRoomTimePointService = new PcRoomTimePointService(
+                core.Database,
+                inventory.MailboxService);
+            pcRoomTimePointService.Initialize();
+            var eventPcRoomTimePointHandler =
+                new EventPcRoomTimePointHandler(
+                    pcRoomTimePointService,
+                    world.Sessions);
+            eventPcRoomTimePointHandler.RegisterClock(ClockService.Instance);
+            var eventDailyAttendanceAnytimeHandler =
+                new EventDailyAttendanceAnytimeHandler(
+                    inventory.DailyAttendanceAnytime);
+            var eventTotalAttendanceHandler =
+                new EventTotalAttendanceHandler(
+                    inventory.TotalAttendance);
 
             return new GameProtocolFeatureHandlers(
                 lotteryItem,
@@ -762,7 +803,10 @@ namespace DfoServer.Infrastructure
                 new CraneMiniGameHandler(
                     inventory.InventoryRefreshSender,
                     inventory.OverflowRewardSink),
-                eventJoustHandler);
+                eventJoustHandler,
+                eventPcRoomTimePointHandler,
+                eventDailyAttendanceAnytimeHandler,
+                eventTotalAttendanceHandler);
         }
 
         internal CharacterSessionLifecycleCoordinator
@@ -872,6 +916,9 @@ namespace DfoServer.Infrastructure
                 featureHandlers.LotteryItem,
                 featureHandlers.CraneMiniGame,
                 featureHandlers.EventJoust,
+                featureHandlers.EventPcRoomTimePoint,
+                featureHandlers.EventDailyAttendanceAnytime,
+                featureHandlers.EventTotalAttendance,
                 socialHandlers.PvpRoom,
                 inventory.InventoryRefreshSender,
                 core.Database,

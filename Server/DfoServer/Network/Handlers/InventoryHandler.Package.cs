@@ -319,6 +319,13 @@ namespace DfoServer.Network.Handlers
             }
 
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x01, header.type, responsePlan.AckBody));
+            if (EpicBuffPotionDefinition.IsItem(stackableUseResult.ItemTemplateId))
+            {
+                await EpicBuffPotionBuffNotifier.SendAddAsync(session);
+                EpicBuffPotionBuffNotifier.ScheduleRemoveForCurrentEffect(
+                    session,
+                    cid);
+            }
             if (result.UsableCountState != null)
                 await SendUsableCountLimitUpdateAsync(session, result.UsableCountState);
             session.GameSession?.QuestManager

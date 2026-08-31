@@ -47,6 +47,7 @@ namespace DfoServer.Network.Builders
             Register(new EmptyPartyInfoBodyBuilder());
             Register(new ItemStateListBodyBuilder(0x00AC));
             Register(new ItemStateListBodyBuilder(0x00AE));
+            Register(new EpicBuffPotionInitBodyBuilder());
             Register(new AchievementListBodyBuilder());    
             Register(new TitleBookListBodyBuilder());   
             Register(new StoryBookInfoBodyBuilder());

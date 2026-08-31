@@ -8,6 +8,7 @@ namespace DfoServer.Game.Dungeon
     {
         private const int BaseDropRate = 100;
         private const int DropChanceDenominator = 1001;
+        private const int EpicRarity = 4;
 
         private struct DropProb
         {
@@ -31,6 +32,7 @@ namespace DfoServer.Game.Dungeon
             int dungeonDifficulty,
             byte hellDifficulty,
             int rewardRollCount,
+            bool epicBuffPotionActive,
             ref ushort slotCounter)
         {
             EnsureLoaded();
@@ -58,7 +60,12 @@ namespace DfoServer.Game.Dungeon
                     continue;
                 }
 
-                var rarity = RollHellRarity(lcg, hellDifficulty);
+                var initialRarity = RollHellRarity(lcg, hellDifficulty);
+                var rarity = ApplyEpicBuffPotionRarityReroll(
+                    initialRarity,
+                    epicBuffPotionActive,
+                    () => RollHellRarity(lcg, hellDifficulty),
+                    out var rerollRarity);
                 var itemId = ChooseEquipment(
                     lcg,
                     dungeonMinimumLevel,
@@ -72,14 +79,14 @@ namespace DfoServer.Game.Dungeon
                     out var gradeMax);
                 if (itemId <= 0)
                 {
-                    FileLogger.Log($"[HellMonsterDropConfig] roll#{i + 1}: no equipment dungeonLevelRange={dungeonMinimumLevel}-{itemBasisLevel} gradeRange={gradeMin}-{gradeMax} rarity={rarity} candidates={candidateCount} fallback={fallbackUsed}");
+                    FileLogger.Log($"[HellMonsterDropConfig] roll#{i + 1}: no equipment dungeonLevelRange={dungeonMinimumLevel}-{itemBasisLevel} gradeRange={gradeMin}-{gradeMax} rarity={rarity} epicBuff={FormatEpicBuffReroll(epicBuffPotionActive, initialRarity, rerollRarity)} candidates={candidateCount} fallback={fallbackUsed}");
                     continue;
                 }
 
                 var meta = ItemMetadataResolver.Resolve(itemId);
                 slotCounter++;
                 result.Add(DropInfo.CreateItem(slotCounter, itemId, 1));
-                FileLogger.Log($"[HellMonsterDropConfig] roll#{i + 1}: hit dungeonLevelRange={dungeonMinimumLevel}-{itemBasisLevel} gradeRange={gradeMin}-{gradeMax} dungeonDifficulty={dungeonDifficulty} hellDifficulty={hellDifficulty} rate={rate} chance={chance} roll={chanceRoll} rarity={rarity} candidates={candidateCount} fallback={fallbackUsed} item={itemId} itemGrade={meta.Grade} itemMinLv={meta.MinimumLevel}");
+                FileLogger.Log($"[HellMonsterDropConfig] roll#{i + 1}: hit dungeonLevelRange={dungeonMinimumLevel}-{itemBasisLevel} gradeRange={gradeMin}-{gradeMax} dungeonDifficulty={dungeonDifficulty} hellDifficulty={hellDifficulty} rate={rate} chance={chance} roll={chanceRoll} rarity={rarity} epicBuff={FormatEpicBuffReroll(epicBuffPotionActive, initialRarity, rerollRarity)} candidates={candidateCount} fallback={fallbackUsed} item={itemId} itemGrade={meta.Grade} itemMinLv={meta.MinimumLevel}");
             }
 
             return result;
@@ -257,6 +264,51 @@ namespace DfoServer.Game.Dungeon
                     return rarity;
             }
             return 0;
+        }
+
+        internal static int ApplyEpicBuffPotionRarityRerollForSelfTest(
+            int initialRarity,
+            bool epicBuffPotionActive,
+            Func<int> rollRarity)
+        {
+            return ApplyEpicBuffPotionRarityReroll(
+                initialRarity,
+                epicBuffPotionActive,
+                rollRarity,
+                out _);
+        }
+
+        private static int ApplyEpicBuffPotionRarityReroll(
+            int initialRarity,
+            bool epicBuffPotionActive,
+            Func<int> rollRarity,
+            out int? rerollRarity)
+        {
+            rerollRarity = null;
+            if (!epicBuffPotionActive
+                || initialRarity == EpicRarity
+                || rollRarity == null)
+            {
+                return initialRarity;
+            }
+
+            var secondRarity = rollRarity();
+            rerollRarity = secondRarity;
+            return secondRarity == EpicRarity
+                ? EpicRarity
+                : initialRarity;
+        }
+
+        private static string FormatEpicBuffReroll(
+            bool epicBuffPotionActive,
+            int initialRarity,
+            int? rerollRarity)
+        {
+            if (!epicBuffPotionActive)
+                return "off";
+            if (!rerollRarity.HasValue)
+                return initialRarity.ToString();
+            return $"{initialRarity}->{rerollRarity.Value}";
         }
 
         private static int ChooseEquipment(

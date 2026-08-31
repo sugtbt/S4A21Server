@@ -34,7 +34,8 @@ namespace DfoServer.Network.Builders
                 body = w.ToArray(); return true;
             }
 
-            if (occurrenceIndex == 0)
+            // occ=0 创建 USERINFO0；occ=3 为 HOTKEY 前的 USERINFO0 更新。
+            if (occurrenceIndex == 0 || occurrenceIndex == 3)
             {
                 body = UserInfoSubtype0Builder.BuildNotificationBody(c);
                 return true;
@@ -47,7 +48,7 @@ namespace DfoServer.Network.Builders
                 return true;
             }
 
-            DfoServer.FileLogger.Log($"[UserInfoBodyBuilder] ERROR: 不支持的 occurrence {occurrenceIndex} — init 流只有 occ0/1/2。");
+            DfoServer.FileLogger.Log($"[UserInfoBodyBuilder] ERROR: 不支持的 occurrence {occurrenceIndex} — init 流只有 occ0/1/2/3。");
             body = null;
             return false;
         }

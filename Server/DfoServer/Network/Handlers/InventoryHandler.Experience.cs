@@ -131,8 +131,14 @@ namespace DfoServer.Network.Handlers
             if (result.UsableCountState != null)
                 await SendUsableCountLimitUpdateAsync(session, result.UsableCountState);
 
+            var useKind = result.ItemTemplateId
+                    == ExperienceItemUseService.SkillPointBook5ItemId
+                || result.ItemTemplateId
+                    == ExperienceItemUseService.SkillPointBook20ItemId
+                ? "skill-point"
+                : "experience";
             FileLogger.Log(
-                $"[{ProtocolName}] INCREASE_STATUS experience: item={result.ItemTemplateId} slot={request.SlotIndex} remaining={result.ConsumedItem?.RemainingStackCount ?? 0} grant={result.GrantedExp} level={result.PreviousLevel}->{result.NewLevel} exp={result.PreviousExp}->{result.NewExp}");
+                $"[{ProtocolName}] INCREASE_STATUS {useKind}: item={result.ItemTemplateId} slot={request.SlotIndex} remaining={result.ConsumedItem?.RemainingStackCount ?? 0} grantExp={result.GrantedExp} level={result.PreviousLevel}->{result.NewLevel} exp={result.PreviousExp}->{result.NewExp} detail={result.Detail}");
         }
 
         public async Task Handle_REQUEST_EVENT_SERVER_LEVEL_UP(

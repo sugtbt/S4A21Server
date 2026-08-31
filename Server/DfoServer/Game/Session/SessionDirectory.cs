@@ -289,6 +289,11 @@ namespace DfoServer.Game.Session
                 LogExpectedBroadcastFailure(target, ex);
                 return false;
             }
+            catch (InvalidOperationException ex)
+            {
+                LogExpectedBroadcastFailure(target, ex);
+                return false;
+            }
         }
 
         private static void LogExpectedBroadcastFailure(string target, Exception exception)

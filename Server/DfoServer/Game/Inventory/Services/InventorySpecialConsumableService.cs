@@ -156,7 +156,6 @@ namespace DfoServer.Game.Inventory
             var seriaLuckValue = seriaLuckValueBefore;
             var displayRewardEntries = new List<PvfLib.BoosterRewardEntry>();
             var doubleRewardEntries = new List<PvfLib.BoosterRewardEntry>();
-            var rewardsToGrant = new List<PvfLib.BoosterRewardEntry>();
 
             for (var useIndex = 0; useIndex < requestedCount; useIndex++)
             {
@@ -179,22 +178,45 @@ namespace DfoServer.Game.Inventory
                 if (validRewards.Count == 0)
                     return false;
 
-                AddRewardEntries(displayRewardEntries, validRewards);
-                rewardsToGrant.AddRange(validRewards);
-                if (!isSeriaLuckValueSource)
-                    continue;
+                var triggeredDouble = isSeriaLuckValueSource
+                    && seriaLuckValue >= SqliteAccountRepository.SeriaLuckValueMax;
+                if (isSeriaLuckValueSource)
+                {
+                    FileLogger.Log(
+                        $"[BoosterOnline] seria-roll cid={inventory.CharacterId} " +
+                        $"item=0x{sourceItemTemplateId:X8} use={useIndex + 1}/{requestedCount} " +
+                        $"luckBefore={seriaLuckValue}/{SqliteAccountRepository.SeriaLuckValueMax} " +
+                        $"double={triggeredDouble} rewards={FormatRewardEntryList(validRewards)}");
+                }
 
-                if (seriaLuckValue >= SqliteAccountRepository.SeriaLuckValueMax)
+                AddRewardEntries(displayRewardEntries, validRewards);
+                if (triggeredDouble)
                 {
                     AddRewardEntries(doubleRewardEntries, validRewards);
-                    AddRewardEntries(rewardsToGrant, validRewards);
                     seriaLuckValue = 0;
                 }
+
+                if (!isSeriaLuckValueSource)
+                    continue;
 
                 seriaLuckValue = Math.Min(SqliteAccountRepository.SeriaLuckValueMax, seriaLuckValue + 1);
             }
 
-            var rewardRequests = BuildRewardRequests(InventoryPackageRewardResolver.AggregateRewards(rewardsToGrant));
+            var rewardsToGrant = new List<PvfLib.BoosterRewardEntry>();
+            AddRewardEntries(rewardsToGrant, displayRewardEntries);
+            AddRewardEntries(rewardsToGrant, doubleRewardEntries, countMultiplier: 2);
+            var rewardRequests = BuildRewardRequests(rewardsToGrant);
+            if (isSeriaLuckValueSource)
+            {
+                FileLogger.Log(
+                    $"[BoosterOnline] seria-grant-plan cid={inventory.CharacterId} " +
+                    $"item=0x{sourceItemTemplateId:X8} displayTotals={FormatRewardEntryTotals(displayRewardEntries)} " +
+                    $"doubleTotals={FormatRewardEntryTotals(doubleRewardEntries)} " +
+                    $"finalTotals={FormatRewardEntryTotals(rewardsToGrant)} " +
+                    $"finalEntries={FormatRewardEntryList(rewardsToGrant)} " +
+                    $"requests={FormatRewardRequestTotals(rewardRequests)}");
+            }
+
             if (!TryConsumeAndGrantRewards(
                     inventory,
                     source,
@@ -228,6 +250,13 @@ namespace DfoServer.Game.Inventory
             AddDisplayRewards(result.DisplayRewards, displayRewardEntries);
             AddDisplayRewards(result.DoubleRewards, doubleRewardEntries);
             AddGrantResults(inventory, applied.GrantBatch, result.Rewards, result.ActivatedPremiums);
+            if (isSeriaLuckValueSource)
+            {
+                FileLogger.Log(
+                    $"[BoosterOnline] seria-grant-applied cid={inventory.CharacterId} " +
+                    $"item=0x{sourceItemTemplateId:X8} appliedTotals={FormatBoosterRewardTotals(result.Rewards)} " +
+                    $"appliedEntries={FormatBoosterRewardList(result.Rewards)}");
+            }
 
             if (isSeriaLuckValueSource
                 && !TryUpdateSeriaLuckValue(
@@ -1384,11 +1413,13 @@ namespace DfoServer.Game.Inventory
 
         private static void AddRewardEntries(
             List<PvfLib.BoosterRewardEntry> target,
-            IEnumerable<PvfLib.BoosterRewardEntry> rewards)
+            IEnumerable<PvfLib.BoosterRewardEntry> rewards,
+            int countMultiplier = 1)
         {
             if (target == null || rewards == null)
                 return;
 
+            countMultiplier = Math.Max(1, countMultiplier);
             foreach (var reward in rewards)
             {
                 if (reward == null || reward.ItemId <= 0 || reward.Count <= 0)
@@ -1397,7 +1428,7 @@ namespace DfoServer.Game.Inventory
                 target.Add(new PvfLib.BoosterRewardEntry
                 {
                     ItemId = reward.ItemId,
-                    Count = Math.Max(1, reward.Count),
+                    Count = Math.Max(1, reward.Count) * countMultiplier,
                     Weight = reward.Weight,
                     Group = reward.Group,
                     DrawCount = reward.DrawCount,
@@ -1405,6 +1436,77 @@ namespace DfoServer.Game.Inventory
                     UsablePeriodDays = reward.UsablePeriodDays,
                 });
             }
+        }
+
+        private static string FormatRewardEntryList(IEnumerable<PvfLib.BoosterRewardEntry> rewards)
+        {
+            if (rewards == null)
+                return "none";
+
+            var parts = rewards
+                .Where(reward => reward != null && reward.ItemId > 0 && reward.Count > 0)
+                .Select(reward => $"0x{reward.ItemId:X8}x{Math.Max(1, reward.Count)}")
+                .ToList();
+            return parts.Count > 0 ? string.Join(",", parts) : "none";
+        }
+
+        private static string FormatRewardEntryTotals(IEnumerable<PvfLib.BoosterRewardEntry> rewards)
+        {
+            if (rewards == null)
+                return "none";
+
+            var parts = rewards
+                .Where(reward => reward != null && reward.ItemId > 0 && reward.Count > 0)
+                .GroupBy(reward => reward.ItemId)
+                .Select(group => $"0x{group.Key:X8}x{group.Sum(reward => Math.Max(1, reward.Count))}")
+                .ToList();
+            return parts.Count > 0 ? string.Join(",", parts) : "none";
+        }
+
+        private static string FormatRewardRequestTotals(IEnumerable<InventoryRewardGrantRequest> requests)
+        {
+            if (requests == null)
+                return "none";
+
+            var parts = requests
+                .Where(request => request != null)
+                .Select(request => new
+                {
+                    ItemId = request.UseExistingCore && request.Core != null
+                        ? request.Core.ItemId
+                        : request.ItemTemplateId,
+                    Count = request.Count,
+                })
+                .Where(request => request.ItemId > 0 && request.Count > 0)
+                .GroupBy(request => request.ItemId)
+                .Select(group => $"0x{group.Key:X8}x{group.Sum(request => Math.Max(1, request.Count))}")
+                .ToList();
+            return parts.Count > 0 ? string.Join(",", parts) : "none";
+        }
+
+        private static string FormatBoosterRewardList(IEnumerable<BoosterRewardResult> rewards)
+        {
+            if (rewards == null)
+                return "none";
+
+            var parts = rewards
+                .Where(reward => reward != null && reward.ItemTemplateId > 0 && reward.GrantedCount > 0)
+                .Select(reward => $"{reward.ListType}:0x{reward.ItemTemplateId:X8}x{reward.GrantedCount}@{reward.SlotIndex}")
+                .ToList();
+            return parts.Count > 0 ? string.Join(",", parts) : "none";
+        }
+
+        private static string FormatBoosterRewardTotals(IEnumerable<BoosterRewardResult> rewards)
+        {
+            if (rewards == null)
+                return "none";
+
+            var parts = rewards
+                .Where(reward => reward != null && reward.ItemTemplateId > 0 && reward.GrantedCount > 0)
+                .GroupBy(reward => reward.ItemTemplateId)
+                .Select(group => $"0x{group.Key:X8}x{group.Sum(reward => Math.Max(1, reward.GrantedCount))}")
+                .ToList();
+            return parts.Count > 0 ? string.Join(",", parts) : "none";
         }
 
         private static void SetMaterialNotEnoughResult(

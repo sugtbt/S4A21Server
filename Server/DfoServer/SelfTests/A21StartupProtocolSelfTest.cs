@@ -243,7 +243,7 @@ namespace DfoServer.SelfTests
                 && BitConverter.ToUInt16(
                     expertJobUserInfo,
                     afterAliveOffset
-                    + UserInfoSubtype0Builder.A21AfterAliveChannelIdOffset) == 2
+                    + UserInfoSubtype0Builder.A21AfterAliveMoodValueOffset) == 0
                 && expertJobUserInfo[afterAliveOffset + 61] == 0xFF,
                 ref failures);
 
@@ -319,6 +319,52 @@ namespace DfoServer.SelfTests
                     == DfoServer.Game.Skills.SkillTreeExpansionState.LockedWireValue,
                 ref failures);
 
+            var defaultMoodUserInfo = UserInfoSubtype0Builder.BuildNotificationBody(
+                new CharacterRecord
+                {
+                    CharacterId = 7,
+                    Name = new byte[] { (byte)'a' },
+                    Subtype0Tail = new UserInfoMinimumTailSnapshot
+                    {
+                        ChannelId = 11,
+                    },
+                });
+            var defaultMoodAfterAliveOffset = defaultMoodUserInfo.Length
+                - UserInfoSubtype0Builder.A21AfterAliveLength;
+            Check(
+                "A21 USERINFO0 64-byte tail defaults mood popup to 0 at +59",
+                defaultMoodAfterAliveOffset >= 0
+                && BitConverter.ToUInt16(
+                    defaultMoodUserInfo,
+                    defaultMoodAfterAliveOffset
+                    + UserInfoSubtype0Builder.A21AfterAliveMoodValueOffset) == 0,
+                ref failures);
+
+            var setMoodUserInfo = UserInfoSubtype0Builder.BuildNotificationBody(
+                new CharacterRecord
+                {
+                    CharacterId = 7,
+                    Name = new byte[] { (byte)'a' },
+                    Subtype0Tail = new UserInfoMinimumTailSnapshot
+                    {
+                        ChannelId = 11,
+                        MoodValue = 6,
+                        SkillTreeIndex = 0,
+                    },
+                });
+            var setMoodAfterAliveOffset = setMoodUserInfo.Length
+                - UserInfoSubtype0Builder.A21AfterAliveLength;
+            Check(
+                "A21 USERINFO0 writes MoodValue at 64B-tail +59 without channel_id",
+                setMoodAfterAliveOffset >= 0
+                && BitConverter.ToUInt16(
+                    setMoodUserInfo,
+                    setMoodAfterAliveOffset
+                    + UserInfoSubtype0Builder.A21AfterAliveMoodValueOffset) == 6
+                && setMoodUserInfo[setMoodAfterAliveOffset
+                    + UserInfoSubtype0Builder.A21AfterAliveSkillTreeIndexOffset] == 0,
+                ref failures);
+
             var skillTreeBroadcastDbPath = System.IO.Path.Combine(
                 System.IO.Path.GetTempPath(),
                 $"dfo_a21_startup_skilltree_{Guid.NewGuid():N}.db");
@@ -353,6 +399,55 @@ INSERT INTO characters(character_id, account_id, name, job) VALUES(9602, 9601, '
             finally
             {
                 try { if (System.IO.File.Exists(skillTreeBroadcastDbPath)) System.IO.File.Delete(skillTreeBroadcastDbPath); }
+                catch { }
+            }
+
+            var moodDbPath = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(),
+                $"dfo_a21_startup_mood_{Guid.NewGuid():N}.db");
+            try
+            {
+                var moodDb = new DfoServer.Infrastructure.GameDatabase(
+                    moodDbPath,
+                    DfoServer.Infrastructure.ServerPaths.SchemaFilePath);
+                using (var connection = moodDb.OpenConnection())
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = @"
+INSERT INTO accounts(account_id, m_id, password_hash) VALUES(9611, 'a21-startup-mood', '');
+INSERT INTO characters(character_id, account_id, name, job) VALUES(9612, 9611, 'a21-startup-mood-c', 0);";
+                    command.ExecuteNonQuery();
+                }
+
+                var moodStateRepo = new DfoServer.Game.CharacterData.SqliteCharacterStateRepository(moodDb);
+                var moodSubtype0Repo = new DfoServer.Game.CharacterData.SqliteSubtype0FieldsRepository(moodDb);
+                moodStateRepo.SaveMoodValue(9612, 6);
+                var persistedMoodTail = moodSubtype0Repo.Load(9612);
+                var persistedMoodUserInfo = UserInfoSubtype0Builder.BuildNotificationBody(
+                    new CharacterRecord
+                    {
+                        CharacterId = 9612,
+                        Name = new byte[] { (byte)'a' },
+                        Subtype0Tail = persistedMoodTail,
+                    });
+                var persistedMoodAfterAliveOffset = persistedMoodUserInfo.Length
+                    - UserInfoSubtype0Builder.A21AfterAliveLength;
+                Check(
+                    "CHANGE_EMOTION mood_value round-trips into USERINFO0 +59",
+                    persistedMoodTail != null
+                    && persistedMoodTail.MoodValue == 6
+                    && persistedMoodTail.ChannelId == 2
+                    && persistedMoodTail.EmotionIndex == 0
+                    && persistedMoodAfterAliveOffset >= 0
+                    && BitConverter.ToUInt16(
+                        persistedMoodUserInfo,
+                        persistedMoodAfterAliveOffset
+                        + UserInfoSubtype0Builder.A21AfterAliveMoodValueOffset) == 6,
+                    ref failures);
+            }
+            finally
+            {
+                try { if (System.IO.File.Exists(moodDbPath)) System.IO.File.Delete(moodDbPath); }
                 catch { }
             }
 
@@ -478,6 +573,50 @@ INSERT INTO characters(character_id, account_id, name, job) VALUES(9602, 9601, '
                 && roster[0] == 2
                 && BitConverter.ToUInt16(roster, 16) == 1
                 && BitConverter.ToUInt16(roster, 18) == 0,
+                ref failures);
+
+            var hotkeyIndex = initSequence.FindIndex(entry =>
+                entry.Kind == SelectCharacterPacketTemplateKind.Raw
+                && entry.Command == 0x00
+                && entry.Type == 0x01C7);
+            var townUserInfo0Index = initSequence.FindIndex(entry =>
+                entry.Kind == SelectCharacterPacketTemplateKind.Raw
+                && entry.Command == 0x00
+                && entry.Type == (ushort)NotiPacketTypeA21.USERINFO
+                && entry.OccurrenceIndex == 3);
+            var firstUserInfo0Index = initSequence.FindIndex(entry =>
+                entry.Kind == SelectCharacterPacketTemplateKind.Raw
+                && entry.Command == 0x00
+                && entry.Type == (ushort)NotiPacketTypeA21.USERINFO
+                && entry.OccurrenceIndex == 0);
+            Check(
+                "A21 init sends a second USERINFO0 immediately before HOTKEY 0x01C7",
+                firstUserInfo0Index >= 0
+                && townUserInfo0Index > firstUserInfo0Index
+                && hotkeyIndex == townUserInfo0Index + 1,
+                ref failures);
+            var townUserInfoBuilder = new UserInfoBodyBuilder();
+            Check(
+                "A21 USERINFO occ=3 rebuilds subtype 0 for the town update",
+                townUserInfoBuilder.TryBuild(
+                    new SelectCharacterDataSnapshot
+                    {
+                        CharacterRecord = new CharacterRecord
+                        {
+                            CharacterId = 7,
+                            Name = new byte[] { (byte)'a' },
+                            Subtype0Tail = new UserInfoMinimumTailSnapshot { MoodValue = 6 },
+                        },
+                    },
+                    3,
+                    out var townUserInfo0)
+                && townUserInfo0 != null
+                && townUserInfo0[0] == 0
+                && BitConverter.ToUInt16(
+                    townUserInfo0,
+                    townUserInfo0.Length
+                    - UserInfoSubtype0Builder.A21AfterAliveLength
+                    + UserInfoSubtype0Builder.A21AfterAliveMoodValueOffset) == 6,
                 ref failures);
 
             var singleRecordLength = roster.Length - 18;

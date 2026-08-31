@@ -101,6 +101,57 @@ WHERE c.character_id=@cid AND c.delete_flag=0;";
             }
         }
 
+        internal bool TryGrantBonusSp(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            int characterId,
+            int amount,
+            out int updatedBonusSp)
+        {
+            updatedBonusSp = 0;
+            if (connection == null)
+                throw new ArgumentNullException(nameof(connection));
+            if (transaction == null)
+                throw new ArgumentNullException(nameof(transaction));
+            if (characterId <= 0 || amount <= 0)
+                return false;
+
+            using (var update = connection.CreateCommand())
+            {
+                update.Transaction = transaction;
+                update.CommandText = @"
+UPDATE characters
+SET bonus_sp = bonus_sp + @amount,
+    updated_at = CURRENT_TIMESTAMP
+WHERE character_id = @cid
+  AND delete_flag = 0
+  AND bonus_sp BETWEEN 0 AND @maximum;";
+                update.Parameters.AddWithValue("@amount", amount);
+                update.Parameters.AddWithValue(
+                    "@maximum",
+                    int.MaxValue - amount);
+                update.Parameters.AddWithValue("@cid", characterId);
+                if (update.ExecuteNonQuery() != 1)
+                    return false;
+            }
+
+            using (var readback = connection.CreateCommand())
+            {
+                readback.Transaction = transaction;
+                readback.CommandText = @"
+SELECT bonus_sp
+FROM characters
+WHERE character_id = @cid AND delete_flag = 0;";
+                readback.Parameters.AddWithValue("@cid", characterId);
+                var value = readback.ExecuteScalar();
+                if (value == null || value == DBNull.Value)
+                    return false;
+
+                updatedBonusSp = Convert.ToInt32(value);
+                return true;
+            }
+        }
+
         public SkillInfoSnapshot LoadSkills(int characterId)
         {
             using (var conn = new SqliteConnection(_connectionString))

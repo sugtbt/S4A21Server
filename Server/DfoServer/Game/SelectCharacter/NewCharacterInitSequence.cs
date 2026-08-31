@@ -54,6 +54,8 @@ namespace DfoServer.Game.SelectCharacter
             Raw(0x00, 0x021E);
             Raw(0x00, 0x0286);
             Raw(0x00, 0x00AD);
+            // 城镇对象创建后、HOTKEY 前再发一次 USERINFO0（更新路径）。
+            Raw(0x00, (ushort)NotiPacketTypeA21.USERINFO, 3);
             Raw(0x00, 0x01C7);
             Raw(0x00, 0x006C);
             Raw(0x00, 0x0187);
@@ -61,6 +63,7 @@ namespace DfoServer.Game.SelectCharacter
             Raw(0x00, 0x015F);                      
             Raw(0x00, 0x00AC);                      
             Raw(0x00, 0x00AE);                      
+            Raw(0x00, (ushort)NotiPacketTypeA21.CHARACTER_ADD_BUFF);
             Raw(0x00, 0x017B);                      
             Raw(0x00, 0x03EB, 0);
             Raw(0x00, 0x03EB, 1);

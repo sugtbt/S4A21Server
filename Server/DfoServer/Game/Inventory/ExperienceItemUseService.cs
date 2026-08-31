@@ -4,6 +4,7 @@ using DfoServer.Game.Characters;
 using DfoServer.Game.Dungeon;
 using DfoServer.Game.Quests;
 using DfoServer.Game.ReviveCoin;
+using DfoServer.Game.SelectCharacter;
 using DfoServer.Game.Skills;
 using DfoServer.GameWorld;
 using DfoServer.Infrastructure;
@@ -16,6 +17,8 @@ namespace DfoServer.Game.Inventory
     internal sealed class ExperienceItemUseService
     {
         private const string LevelUpTicketActionType = "[level up ticket]";
+        internal const int SkillPointBook5ItemId = 1031;
+        internal const int SkillPointBook20ItemId = 1038;
 
         private readonly string _connectionString;
         private readonly IRentalTimeProvider _timeProvider;
@@ -159,6 +162,21 @@ namespace DfoServer.Game.Inventory
                             ConsumedItem = BuildConsumedMutation(
                                 listType, slotIndex, sourceSnapshot, deleteResult),
                         };
+                    }
+
+                    if (TryResolveSkillPointBook(
+                            resolvedItemId,
+                            out var grantedSkillPoints))
+                    {
+                        return UseSkillPointBook(
+                            lease,
+                            characterId,
+                            accountId,
+                            listType,
+                            slotIndex,
+                            sourceSnapshot,
+                            resolvedItemId,
+                            grantedSkillPoints);
                     }
 
                     var definition = ExperienceItemDataProvider.Resolve(resolvedItemId);
@@ -440,6 +458,179 @@ namespace DfoServer.Game.Inventory
                     ExperienceItemUseStatus.PersistenceFailed,
                     resolvedItemId,
                     "inventory transaction failed");
+            }
+        }
+
+        private ExperienceItemUseResult UseSkillPointBook(
+            InventoryLease lease,
+            int characterId,
+            int accountId,
+            InventoryListType listType,
+            short slotIndex,
+            ItemCore sourceSnapshot,
+            int resolvedItemId,
+            int grantedSkillPoints)
+        {
+            var failureStatus = ExperienceItemUseStatus.PersistenceFailed;
+            var failureDetail = "skill-point book transaction failed";
+            InventoryDeleteResult deleteResult = null;
+            CharacterProgressSnapshot character = null;
+            SkillInfoSnapshot syncedSkills = null;
+            SkillPointState syncedPoints = null;
+
+            var committed = OnlineInventoryMutationCommitCoordinator.TryCommit(
+                lease,
+                "skill-point-book",
+                (connection, transaction) =>
+                {
+                    var inventory = lease.Inventory;
+                    var currentSource = inventory.GetItem(listType, slotIndex);
+                    if (currentSource == null
+                        || currentSource.ItemId != resolvedItemId)
+                    {
+                        failureStatus = ExperienceItemUseStatus.NotApplicable;
+                        failureDetail = "source slot changed during use";
+                        return false;
+                    }
+                    if (currentSource.Count <= 0)
+                    {
+                        failureStatus = ExperienceItemUseStatus.ConsumeFailed;
+                        failureDetail = "source stack is empty";
+                        return false;
+                    }
+
+                    var lifecyclePlan = InventoryItemLifecycleService.PrepareUse(
+                        inventory,
+                        listType,
+                        slotIndex,
+                        resolvedItemId,
+                        _timeProvider.UtcNowUnixSeconds());
+                    if (!lifecyclePlan.Success)
+                    {
+                        failureStatus = MapLifecycleStatus(lifecyclePlan.Status);
+                        failureDetail = lifecyclePlan.Detail;
+                        return false;
+                    }
+
+                    character = _progressRepository.LoadProgressSnapshot(
+                        connection,
+                        transaction,
+                        characterId);
+                    if (character == null
+                        || accountId <= 0
+                        || character.AccountId != accountId)
+                    {
+                        failureStatus = ExperienceItemUseStatus.InvalidOwner;
+                        failureDetail = "character/account ownership mismatch";
+                        return false;
+                    }
+
+                    if (!_progressRepository.TryGrantBonusSp(
+                            connection,
+                            transaction,
+                            characterId,
+                            grantedSkillPoints,
+                            out var updatedBonusSp))
+                    {
+                        failureDetail = "bonus SP persistence failed";
+                        return false;
+                    }
+
+                    if (!InventoryDeleteService.TryConsumeFromSlot(
+                            inventory,
+                            listType,
+                            slotIndex,
+                            resolvedItemId,
+                            1,
+                            out deleteResult)
+                        || !deleteResult.Success
+                        || deleteResult.DeletedCount != 1)
+                    {
+                        failureStatus = ExperienceItemUseStatus.ConsumeFailed;
+                        failureDetail = "inventory deduction failed";
+                        return false;
+                    }
+
+                    Characters.CharacterStatComputer.DecodeGrowType(
+                        character.GrowType,
+                        out var firstGrow,
+                        out var secondGrow);
+                    var synced = SkillStateService.LoadAndSync(
+                        _progressRepository,
+                        connection,
+                        transaction,
+                        characterId,
+                        character.Job,
+                        character.Level,
+                        updatedBonusSp,
+                        character.BonusTp,
+                        persist: true,
+                        growType: firstGrow,
+                        secondGrowType: secondGrow);
+                    if (synced.Skills == null || synced.Points == null)
+                    {
+                        failureDetail = "skill-point synchronization failed";
+                        return false;
+                    }
+
+                    syncedSkills = synced.Skills;
+                    syncedPoints = synced.Points;
+                    InventoryItemLifecycleService.ApplyUseSuccess(
+                        inventory,
+                        lifecyclePlan);
+                    return true;
+                });
+
+            if (!committed
+                || character == null
+                || syncedSkills == null
+                || syncedPoints == null
+                || deleteResult == null)
+            {
+                return Reject(
+                    failureStatus,
+                    resolvedItemId,
+                    failureDetail);
+            }
+
+            return new ExperienceItemUseResult
+            {
+                Status = ExperienceItemUseStatus.Success,
+                AccountId = accountId,
+                ItemTemplateId = resolvedItemId,
+                ConsumedItem = BuildConsumedMutation(
+                    listType,
+                    slotIndex,
+                    sourceSnapshot,
+                    deleteResult),
+                PreviousLevel = character.Level,
+                NewLevel = character.Level,
+                PreviousExp = character.Exp,
+                NewExp = character.Exp,
+                GrantedExp = 0,
+                SyncedSkills = syncedSkills,
+                SkillPoints = SkillStateService.GetProtocolState(
+                    syncedSkills,
+                    syncedPoints),
+                Detail = $"bonus SP +{grantedSkillPoints}",
+            };
+        }
+
+        private static bool TryResolveSkillPointBook(
+            int itemTemplateId,
+            out int grantedSkillPoints)
+        {
+            switch (itemTemplateId)
+            {
+                case SkillPointBook5ItemId:
+                    grantedSkillPoints = 5;
+                    return true;
+                case SkillPointBook20ItemId:
+                    grantedSkillPoints = 20;
+                    return true;
+                default:
+                    grantedSkillPoints = 0;
+                    return false;
             }
         }
 

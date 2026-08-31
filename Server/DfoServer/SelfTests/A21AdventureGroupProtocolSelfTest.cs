@@ -37,7 +37,7 @@ namespace DfoServer.SelfTests
             CheckCombatStatBlobIsShared(ref failures);
             CheckMercenaryWaitingAndReturn(ref failures);
             CheckInitSequencePushesMercenaryInfo(ref failures);
-            CheckUserInfoSubtype6AndChannelId(ref failures);
+            CheckUserInfoSubtype6AndMoodValue(ref failures);
             CheckRosterWireIndex(ref failures);
             CheckHandlerRegistrationConstants(ref failures);
 
@@ -391,7 +391,7 @@ namespace DfoServer.SelfTests
                 ref failures);
         }
 
-        private static void CheckUserInfoSubtype6AndChannelId(ref int failures)
+        private static void CheckUserInfoSubtype6AndMoodValue(ref int failures)
         {
             var subtype6 = UserInfoSubtype6Builder.BuildNotificationBody(0x092B);
             Check(
@@ -428,14 +428,14 @@ namespace DfoServer.SelfTests
                 ref failures);
 
             var userInfo0 = UserInfoSubtype0Builder.BuildNotificationBody(snapshot.CharacterRecord);
-            var channelOffset = userInfo0.Length
+            var moodOffset = userInfo0.Length
                 - UserInfoSubtype0Builder.A21AfterAliveLength
-                + UserInfoSubtype0Builder.A21AfterAliveChannelIdOffset;
+                + UserInfoSubtype0Builder.A21AfterAliveMoodValueOffset;
             Check(
-                "USERINFO0 writes ChannelId at 64B-tail +59",
-                channelOffset >= 0
-                && channelOffset + 1 < userInfo0.Length
-                && BitConverter.ToUInt16(userInfo0, channelOffset) == 2,
+                "USERINFO0 writes MoodValue at 64B-tail +59",
+                moodOffset >= 0
+                && moodOffset + 1 < userInfo0.Length
+                && BitConverter.ToUInt16(userInfo0, moodOffset) == 0,
                 ref failures);
         }
 
