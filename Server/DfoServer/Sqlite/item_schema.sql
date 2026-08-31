@@ -420,6 +420,16 @@ CREATE TABLE IF NOT EXISTS character_item_states (
     FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
 );
 
+-- Persistent [exp bonus rate] stackable effects, such as Ancient Elf Elixir.
+-- bonus_rate 存千分率（倍率 * 1000），expires_at 为到期 unix 秒。
+CREATE TABLE IF NOT EXISTS character_experience_bonus_effects (
+    character_id INTEGER PRIMARY KEY,
+    source_item_id INTEGER NOT NULL,
+    bonus_rate INTEGER NOT NULL CHECK (bonus_rate > 0),
+    expires_at INTEGER NOT NULL CHECK (expires_at > 0),
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS character_item_locks (
     character_id INTEGER NOT NULL,
     equipment_lock_id INTEGER NOT NULL,

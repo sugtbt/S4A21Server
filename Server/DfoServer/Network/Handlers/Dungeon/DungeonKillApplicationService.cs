@@ -1,4 +1,5 @@
 using DfoServer.Game.Dungeon;
+using DfoServer.Game.Inventory;
 using DfoServer.Game.Progression;
 using DfoServer.Infrastructure;
 using DfoServer.Network.Builders;
@@ -820,9 +821,25 @@ namespace DfoServer.Network.Handlers.Dungeon
                     session,
                     monsterAwardBaseExp)
                 : 0;
+            var equipmentBonusPercent = allowsExperience
+                ? GetQuickSlotCharmBonusPercent(session)
+                : 0;
+            uint equipmentBonus = 0;
+            if (equipmentBonusPercent > 0)
+            {
+                // 进位零头在台账内按 run 粒度累计, 须在 SyncRoot 下计算。
+                lock (run.SyncRoot)
+                {
+                    equipmentBonus = run.Combat.Experience.ApplyEquipmentBonusRate(
+                        monsterAwardBaseExp,
+                        equipmentBonusPercent);
+                }
+            }
             var awardedExp = CharacterExperienceService.AddSaturating(
-                monsterAwardBaseExp,
-                growthContractBonus);
+                CharacterExperienceService.AddSaturating(
+                    monsterAwardBaseExp,
+                    growthContractBonus),
+                equipmentBonus);
 
             var dungeonBasisLevel = (int)monster.Level;
             var dungeonMinimumLevel = (int)monster.Level;
@@ -916,7 +933,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                     isChampion,
                     isSuperChampion,
                     isNamed,
-                    actorSequenceId: sequenceId);
+                    actorSequenceId: sequenceId,
+                    equipmentBonusExperience: equipmentBonus);
                 run.TotalGold = checked(run.TotalGold + goldGained);
             }
 
@@ -941,6 +959,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                     $"eliteDisplayBonus={eliteMonsterKillBonusExp} " +
                     $"awardBase={monsterAwardBaseExp} " +
                     $"growthContract={growthContractBonus} " +
+                    $"equipBonus={equipmentBonus} " +
                     $"awarded={awardedExp}");
             }
 
@@ -1516,6 +1535,19 @@ namespace DfoServer.Network.Handlers.Dungeon
             return Game.Premium.PremiumEffectProvider
                 .GetCombinedEffects(connectionString, accountId)
                 .ComputeBonusExp(baseMonsterExp);
+        }
+
+        // 快捷栏纹章 [exp advantage](百分比)实时扫描, 进本后换上/换下即时生效。
+        // 加成整数由 DungeonParticipantExperienceRuntime.ApplyEquipmentBonusRate
+        // 以进位零头方式在 run.SyncRoot 下计算, 避免逐只 floor 吞掉小基数加成。
+        private static int GetQuickSlotCharmBonusPercent(EnhancedClientSession session)
+        {
+            if (session?.Player == null)
+                return 0;
+
+            return CharmExpAdvantageService.GetQuickSlotCharmExpAdvantagePercent(
+                session.SessionId,
+                session.Player.CharacterId);
         }
 
         private static void WriteUnclearedBossDiagnostic(

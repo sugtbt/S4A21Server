@@ -254,6 +254,7 @@ namespace DfoServer.Game.SelectCharacter
             _dailyChallengeService.EnsureInitialized(characterId);
             _initFlagsRepository.LoadAll(characterId, initSnapshot);
             ApplyOnlineItemStates(characterId, initSnapshot);
+            ApplyExperienceBonusPotionEffect(characterId, initSnapshot);
             var loginPermissions = _dungeonDifficultyPermissions
                 .BuildLoginPermissions(
                     accountId,
@@ -519,6 +520,53 @@ namespace DfoServer.Game.SelectCharacter
 
             if (removedExpired)
                 InventoryPersistenceService.SaveDirty(lease);
+        }
+
+        // 秘药效果（0x00AE）从未到期的 character_experience_bonus_effects 生成，
+        // 恢复客户端状态栏图标；Value 语义为剩余秒。
+        private void ApplyExperienceBonusPotionEffect(
+            int characterId,
+            SelectCharacterInitializationSnapshot initSnapshot)
+        {
+            if (initSnapshot == null)
+                return;
+
+            AppendExperienceBonusPotionEffect(
+                _connectionString,
+                characterId,
+                initSnapshot.EffectItemStates,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        }
+
+        internal static void AppendExperienceBonusPotionEffect(
+            string connectionString,
+            int characterId,
+            List<ItemStateEntrySnapshot> effectItems,
+            long now)
+        {
+            if (effectItems == null)
+                return;
+            if (!ExperienceBonusPotionService.TryGetActiveEffect(
+                    connectionString,
+                    characterId,
+                    now,
+                    out var effectItemId,
+                    out var effectRemainingSec))
+            {
+                return;
+            }
+
+            foreach (var entry in effectItems)
+            {
+                if (entry != null && entry.ItemId == effectItemId)
+                    return;
+            }
+
+            effectItems.Add(new ItemStateEntrySnapshot
+            {
+                ItemId = effectItemId,
+                ExpireTime = effectRemainingSec,
+            });
         }
 
         private static void ProjectLoadedItemStateSnapshots(

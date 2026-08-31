@@ -98,14 +98,17 @@ namespace DfoServer.Game.Inventory
                 return Fail(result, InventoryTitleChangeError.TargetNotFound);
             if (target.ItemId != request.TargetItemId)
                 return Fail(result, InventoryTitleChangeError.TargetItemMismatch);
-            if (target.ItemKind != ItemCore.KindEquipment
-                || !ItemMetadataResolver.IsTitleEquipment(target.ItemId))
+            if ((!resolution.IsLimitedCube
+                    && target.ItemKind != ItemCore.KindEquipment)
+                || (!resolution.IsLimitedCube
+                    && !ItemMetadataResolver.IsTitleEquipment(target.ItemId)))
             {
                 return Fail(result, InventoryTitleChangeError.TargetNotTitle);
             }
             if (InventoryLockService.IsEquipmentItemLocked(inventory, target))
                 return Fail(result, InventoryTitleChangeError.TargetLocked);
-            if (!ItemMetadataResolver.IsTitleEquipment(resolution.ResultItemId))
+            if (!resolution.IsLimitedCube
+                && !ItemMetadataResolver.IsTitleEquipment(resolution.ResultItemId))
                 return Fail(result, InventoryTitleChangeError.ResultNotTitle);
 
             var additionalMaterials = resolution.AdditionalMaterials

@@ -196,6 +196,11 @@ namespace DfoServer.Game.Dungeon
             get => Experience.MonsterGrowthContractBonusExperience;
             set => Experience.SetGrowthContractBonusForCompatibility(value);
         }
+        internal uint MonsterEquipmentBonusExp
+        {
+            get => Experience.MonsterEquipmentBonusExperience;
+            set => Experience.SetEquipmentBonusForCompatibility(value);
+        }
         internal int TotalGold { get; set; }
 
         internal ushort SceneSlotCounter { get; set; }

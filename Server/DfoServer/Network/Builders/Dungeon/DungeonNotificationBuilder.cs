@@ -415,11 +415,16 @@ namespace DfoServer.Network.Builders
         // df_game_r CParty::clear_reward / getClearRewardBonusExp:
         // 总经验显示由通关基础经验、通关奖励字段、额外经验槽位、尾部杀怪经验共同组成。
         // 槽位：1-13 通关额外奖励，14-25 杀怪额外奖励，101-108 后置额外奖励。
+        // 快捷栏纹章 [exp advantage] 杀怪加成槽位, 2026-08-21 实机标记法确认:
+        // 装备加成奖励行读 i==20(槽位21)。
+        internal const int MonsterEquipmentBonusSlotIndex = 20;
         public static byte[] BuildClearDungeonReward(uint clearBaseExp, int scoreBonusExp = 0,
             uint partyClearBreakdownExp = 0,
             int avatarExp = 0, int creatureExp = 0,
             int blackDiamondExp = 0, int growthContractExp = 0,
             int monsterGrowthContractExp = 0, int adventureGroupExp = 0,
+            int experiencePotionExp = 0,
+            int monsterEquipmentExp = 0,
             uint monsterExp = 0, int bossExp = 0, int championExp = 0, int superChampionExp = 0,
             int freeCardGold = 0, int freeCardItemId = 0, int freeCardItemCount = 0,
             int paidCardCost = 0,
@@ -440,11 +445,18 @@ namespace DfoServer.Network.Builders
             for (int i = 0; i < FixedRewardSlotCount; i++)
             {
                 var value = 0;
-                if (i == 2) value = blackDiamondExp;       // 槽位3: 黑钻
+                // 槽位映射经实机标记法确认（2026-08-20）：
+                // i==0 活动额外经验，i==1 远古精灵的秘药，i==3 QQ网吧经验值，i==10 疲劳值燃烧。
+                // 2026-08-21 探针补充：i==13 组队奖励，i==14 幸运角色组队奖励，
+                // i==15 归来的勇士，i==16 疲劳值燃烧(杀怪侧行)，i==17 疲劳值Buff，
+                // i==19 周末加成奖励，i==20 装备加成奖励，i==21 公会奖励。
+                if (i == 1) value = experiencePotionExp;  // 槽位2: 远古精灵的秘药
+                else if (i == 2) value = blackDiamondExp;       // 槽位3: 黑钻
                 else if (i == 5) value = creatureExp;       // 槽位6: 宠物通关奖励
                 else if (i == 7) value = adventureGroupExp; // 槽 8：冒险团通关经验
                 else if (i == 9) value = growthContractExp; // 槽位10: 成长之契约
                 else if (i == 18) value = monsterGrowthContractExp; // 槽位19: 杀怪成长之契约
+                else if (i == MonsterEquipmentBonusSlotIndex) value = monsterEquipmentExp; // 槽位21: 装备加成奖励
                 w.WriteInt32(value);
             }
 

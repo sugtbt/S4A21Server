@@ -371,6 +371,16 @@ namespace DfoServer.Game.Inventory
                     == EquipmentType.TitleName;
         }
 
+        // 快捷栏纹章 [exp advantage] 杀怪经验加成(百分比)。非纹章/无该字段返回 0。
+        public static int ResolveExpAdvantage(int itemTemplateId)
+        {
+            if (itemTemplateId <= 0)
+                return 0;
+            return TryLoadEquipmentFile(itemTemplateId, out var equipment)
+                ? Math.Max(0, equipment.ExpAdvantage)
+                : 0;
+        }
+
         internal static bool IsEquipmentUsableByJob(int itemTemplateId, byte characterJob)
         {
             if (!TryLoadEquipmentFile(itemTemplateId, out var equipment)

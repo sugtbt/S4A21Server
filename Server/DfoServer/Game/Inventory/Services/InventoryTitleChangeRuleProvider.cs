@@ -20,6 +20,8 @@ namespace DfoServer.Game.Inventory
 
         public bool IsSuccessBranch { get; set; }
 
+        public bool IsLimitedCube { get; set; }
+
         public IReadOnlyList<InventoryMaterialRequirement> AdditionalMaterials { get; set; } =
             Array.Empty<InventoryMaterialRequirement>();
     }
@@ -243,7 +245,7 @@ namespace DfoServer.Game.Inventory
         {
             resolution = null;
             return PvfTitleChangeTableRuleProvider.TryGetRule(sourceItemId, out var rule)
-                && TryResolveRule(sourceItemId, targetItemId, rule, next, out resolution);
+                && TryResolveRule(sourceItemId, targetItemId, rule, next, false, out resolution);
         }
 
         internal static bool TryResolveLimitedCube(
@@ -253,7 +255,7 @@ namespace DfoServer.Game.Inventory
         {
             resolution = null;
             return PvfLimitedCubeTitleChangeRuleProvider.TryGetRule(sourceItemId, out var rule)
-                && TryResolveRule(sourceItemId, targetItemId, rule, null, out resolution);
+                && TryResolveRule(sourceItemId, targetItemId, rule, null, true, out resolution);
         }
 
         private static bool TryResolveRule(
@@ -261,20 +263,21 @@ namespace DfoServer.Game.Inventory
             int targetItemId,
             InventoryTitleChangeRule rule,
             Func<int, int> next,
+            bool isLimitedCube,
             out InventoryTitleChangeResolution resolution)
         {
             resolution = null;
             if (sourceItemId <= 0
                 || targetItemId <= 0
                 || rule == null
-                || !ItemMetadataResolver.IsTitleEquipment(targetItemId)
+                || (!isLimitedCube && !ItemMetadataResolver.IsTitleEquipment(targetItemId))
                 || !rule.TrySelectResult(
                     targetItemId,
                     next,
                     out var resultOption,
                     out var isSuccessBranch)
                 || resultOption == null
-                || !ItemMetadataResolver.IsTitleEquipment(resultOption.ItemId))
+                || (!isLimitedCube && !ItemMetadataResolver.IsTitleEquipment(resultOption.ItemId)))
             {
                 return false;
             }
@@ -286,6 +289,7 @@ namespace DfoServer.Game.Inventory
                 ResultItemId = resultOption.ItemId,
                 ResultValue = resultOption.ResultValue,
                 IsSuccessBranch = isSuccessBranch,
+                IsLimitedCube = isLimitedCube,
                 AdditionalMaterials = rule.AdditionalMaterials,
             };
             return true;

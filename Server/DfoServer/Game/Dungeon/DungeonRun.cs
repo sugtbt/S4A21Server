@@ -266,6 +266,7 @@ namespace DfoServer.Game.Dungeon
         public uint SuperChampionTotalExp { get => Combat.SuperChampionTotalExp; set => Combat.SuperChampionTotalExp = value; }
         public uint NamedMonsterTotalExp { get => Combat.NamedMonsterTotalExp; set => Combat.NamedMonsterTotalExp = value; }
         public uint MonsterGrowthContractBonusExp { get => Combat.MonsterGrowthContractBonusExp; set => Combat.MonsterGrowthContractBonusExp = value; }
+        public uint MonsterEquipmentBonusExp { get => Combat.MonsterEquipmentBonusExp; set => Combat.MonsterEquipmentBonusExp = value; }
         public int TotalGold { get => Combat.TotalGold; set => Combat.TotalGold = value; }
         public ushort SceneSlotCounter { get => Combat.SceneSlotCounter; set => Combat.SceneSlotCounter = value; }
         public Dictionary<ushort, DropInfo> Drops { get => Combat.Drops; set => Combat.Drops = value; }

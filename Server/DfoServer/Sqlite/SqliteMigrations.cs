@@ -40,6 +40,9 @@ namespace DfoServer.Sqlite
                 new MigrationStep(15, "add_pcroom_timepoint_event", ApplyPcRoomTimePointEvent),
                 new MigrationStep(16, "add_daily_attendance_anytime_event", ApplyDailyAttendanceAnytimeEvent),
                 new MigrationStep(17, "add_total_attendance_event", ApplyTotalAttendanceEvent),
+                // 18: 远古精灵秘药 [exp bonus rate] 效果持久化表（IF NOT EXISTS 幂等，
+                // 新库由 item_schema.sql 已建，此处自动跳过）。
+                new MigrationStep(18, "add_character_experience_bonus_effects", ApplyCharacterExperienceBonusEffects),
             };
 
         internal static int CurrentVersion =>
@@ -1041,6 +1044,20 @@ CREATE INDEX IF NOT EXISTS idx_event_total_attendance_weekly_week
 
 INSERT OR IGNORE INTO game_event_state(event_id, state)
 VALUES(2208, 0);");
+        }
+
+        private static void ApplyCharacterExperienceBonusEffects(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            ExecuteSql(connection, transaction, @"
+CREATE TABLE IF NOT EXISTS character_experience_bonus_effects (
+    character_id INTEGER PRIMARY KEY,
+    source_item_id INTEGER NOT NULL,
+    bonus_rate INTEGER NOT NULL CHECK (bonus_rate > 0),
+    expires_at INTEGER NOT NULL CHECK (expires_at > 0),
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);");
         }
 
         private static void ImportCharacterNewItems(

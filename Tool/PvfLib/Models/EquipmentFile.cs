@@ -71,6 +71,8 @@ namespace PvfLib
         public int HitRecovery { get; set; }
         public int AttackSuccess { get; set; }
         public int CreatureFoodConsumeRate { get; set; }
+        // 快捷栏纹章的杀怪经验加成（百分比, 如 30 = +30%）。
+        public int ExpAdvantage { get; set; }
 
         #endregion
 
@@ -181,6 +183,7 @@ namespace PvfLib
                     case "hit recovery": equ.HitRecovery = ParseInt(data); break;
                     case "attack success": equ.AttackSuccess = ParseInt(data); break;
                     case "creature food consume rate": equ.CreatureFoodConsumeRate = ParseInt(data); break;
+                    case "exp advantage": equ.ExpAdvantage = ParseInt(data); break;
 
                     
                     case "price": equ.Price = ParseInt(data); break;
