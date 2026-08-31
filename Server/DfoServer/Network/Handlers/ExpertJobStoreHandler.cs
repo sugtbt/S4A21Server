@@ -363,7 +363,7 @@ namespace DfoServer.Network.Handlers
                         store.OwnerCharacterId,
                         out var exhaustedStore))
                 {
-                    await BroadcastClose(session, exhaustedStore, includeOwner: true);
+                    await BroadcastClose(ownerSession, exhaustedStore, includeOwner: true);
                 }
                 var questManager = session.GameSession?.QuestManager;
                 if (questManager != null)
@@ -758,7 +758,7 @@ namespace DfoServer.Network.Handlers
             if (removedVisitor)
                 return;
 
-            await session.SendPacketAsync(BuildCloseNotification(player.UserId));
+            await session.SendPacketAsync(BuildCloseNotification(player.UserId, characterId));
         }
 
         public async Task CloseSessionAsync(EnhancedClientSession session, bool includeOwner)
@@ -808,14 +808,27 @@ namespace DfoServer.Network.Handlers
             }
         }
 
+        // CLOSE 与店主 USERINFO0 必须发给商店所有者会话，不能用访客请求会话。
         private async Task BroadcastClose(
             EnhancedClientSession ownerSession,
             ExpertJobStoreSession store,
             bool includeOwner)
         {
-            var notification = BuildCloseNotification(store.OwnerUserId);
+            var notification = BuildCloseNotification(store.OwnerUserId, store.OwnerCharacterId);
             if (includeOwner)
+            {
                 await ownerSession.SendPacketAsync(notification);
+                var owner = ownerSession.Player;
+                if (owner != null && owner.CurrentRun == null)
+                {
+                    await UserInfoBroadcastService.SendSubtype0Async(
+                        ownerSession,
+                        _characterRepository,
+                        _subtype0Repository,
+                        _honorLevel,
+                        "EXPERT_JOB_STORE_CLOSE");
+                }
+            }
             await _sessions.BroadcastToAreaAsync(
                 store.TownId,
                 store.AreaId,
@@ -841,12 +854,12 @@ namespace DfoServer.Network.Handlers
                 ExpertJobStorePacketBuilder.BuildCreateExpertJobNotification(store));
         }
 
-        private static byte[] BuildCloseNotification(ushort ownerUserId)
+        private static byte[] BuildCloseNotification(ushort ownerUserId, int ownerCharacterId)
         {
             return GamePacketEnvelopeBuilder.Build(
                 0x00,
                 CloseExpertJobNotification,
-                ExpertJobStorePacketBuilder.BuildCloseNotification(ownerUserId));
+                ExpertJobStorePacketBuilder.BuildCloseNotification(ownerUserId, ownerCharacterId));
         }
 
         private static Task SendDisjointError(EnhancedClientSession session, byte errorCode)

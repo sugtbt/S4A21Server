@@ -5,7 +5,10 @@ namespace DfoServer.Network.Builders.ExpertJob
 {
     internal static class ExpertJobStorePacketBuilder
     {
-        private const byte PlayerAttachedStoreMode = 1;
+        // CREATE_EXPERT_JOB_STORE 公共前缀末字节为 mode。
+        // mode=0：把店主城镇分身转成商店。mode=1 会再生成实体并残留分身。
+        // 分解与附魔共用该字段；附魔卡片资格写在 mode 之后。
+        private const byte ReplaceOwnerAvatarMode = 0;
 
         internal static byte[] BuildCreateExpertJobNotification(ExpertJobStoreSession store)
         {
@@ -36,7 +39,7 @@ namespace DfoServer.Network.Builders.ExpertJob
             writer.WriteInt16(store.PositionX);
             writer.WriteInt16(store.PositionY);
             writer.WriteInt32(store.Cost);
-            writer.WriteByte(PlayerAttachedStoreMode);
+            writer.WriteByte(ReplaceOwnerAvatarMode);
             if (store.Kind == ExpertJobStoreKind.EnchantShop)
             {
                 writer.WriteByte((byte)Math.Min(
@@ -52,10 +55,11 @@ namespace DfoServer.Network.Builders.ExpertJob
             return writer.ToArray();
         }
 
-        internal static byte[] BuildCloseNotification(ushort ownerUserId)
+        internal static byte[] BuildCloseNotification(ushort ownerUserId, int ownerCharacterId)
         {
             var writer = new GamePacketWriter();
             writer.WriteUInt16(ownerUserId);
+            writer.WriteUInt16((ushort)ownerCharacterId);
             return writer.ToArray();
         }
 
