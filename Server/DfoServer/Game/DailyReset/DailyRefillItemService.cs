@@ -45,7 +45,15 @@ namespace DfoServer.Game.DailyReset
                             {
                                 var key = CounterKeyPrefix + rule.ItemId;
                                 if (dailyReset.GetCounter(connection, transaction, lease.CharacterId, key) > 0)
+                                {
+                                    if (rule.ItemId == 4183)
+                                    {
+                                        FileLogger.Log(
+                                            $"[DailyRefillItem] skip fixed ticket cid={lease.CharacterId} " +
+                                            "reason=already-applied-today");
+                                    }
                                     continue;
+                                }
 
                                 var metadata = ItemMetadataResolver.Resolve(rule.ItemId);
                                 var stackLimit = metadata?.StackLimit ?? 0;

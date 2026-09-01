@@ -24,16 +24,19 @@ namespace DfoServer.Game.DailyReset
     {
         internal static int CalculateGrant(DailyRefillItemRule rule, int currentCount, int stackLimit)
         {
-            if (rule == null || rule.Quantity <= 0 || stackLimit <= 0)
+            if (rule == null || rule.Quantity <= 0)
                 return 0;
 
             currentCount = Math.Max(0, currentCount);
+            // Keep daily refill semantics consistent with inventory insertion:
+            // non-positive PVF stack limits represent an unlimited stack.
+            var effectiveStackLimit = stackLimit > 0 ? stackLimit : int.MaxValue;
             switch (rule.Mode)
             {
                 case DailyRefillMode.RefillToTarget:
-                    return Math.Max(0, Math.Min(rule.Quantity, stackLimit) - currentCount);
+                    return Math.Max(0, Math.Min(rule.Quantity, effectiveStackLimit) - currentCount);
                 case DailyRefillMode.AddUpToStackLimit:
-                    return Math.Min(rule.Quantity, Math.Max(0, stackLimit - currentCount));
+                    return Math.Min(rule.Quantity, Math.Max(0, effectiveStackLimit - currentCount));
                 default:
                     return 0;
             }
@@ -43,6 +46,7 @@ namespace DfoServer.Game.DailyReset
     internal static class PvfDailyRefillItemProvider
     {
         private const string PvfPath = "etc/chn_server_limititemusageinfo.etc";
+        private const int FixedDailyTicketItemId = 4183;
         private static readonly Lazy<IReadOnlyList<DailyRefillItemRule>> Rules =
             new Lazy<IReadOnlyList<DailyRefillItemRule>>(Load, true);
 
@@ -51,7 +55,41 @@ namespace DfoServer.Game.DailyReset
         private static IReadOnlyList<DailyRefillItemRule> Load()
         {
             var parsed = Parse(PvfArchiveAccessor.ReadText(PvfPath), DateTime.UtcNow.AddHours(8));
+            parsed = AddFixedDailyTicketRule(parsed);
             FileLogger.Log($"[DailyRefillItem] PVF loaded rules={parsed.Count} path={PvfPath}");
+            return parsed;
+        }
+
+        internal static IReadOnlyList<DailyRefillItemRule> AddFixedDailyTicketRule(
+            IReadOnlyList<DailyRefillItemRule> rules)
+        {
+            var parsed = rules ?? Array.Empty<DailyRefillItemRule>();
+            var hasFixedDailyTicket = false;
+            foreach (var rule in parsed)
+            {
+                if (rule.ItemId == FixedDailyTicketItemId)
+                {
+                    hasFixedDailyTicket = true;
+                    break;
+                }
+            }
+
+            // 4183 exists in the normal item PVF, but its daily grant is a
+            // server rule and is intentionally absent from the refill PVF.
+            if (!hasFixedDailyTicket)
+            {
+                parsed = new List<DailyRefillItemRule>(parsed)
+                {
+                    new DailyRefillItemRule
+                    {
+                        ItemId = FixedDailyTicketItemId,
+                        Quantity = 5,
+                        ExpirationBeijing = DateTime.MaxValue,
+                        Mode = DailyRefillMode.RefillToTarget,
+                    },
+                };
+                FileLogger.Log("[DailyRefillItem] added fixed daily ticket item=4183 target=5");
+            }
             return parsed;
         }
 
