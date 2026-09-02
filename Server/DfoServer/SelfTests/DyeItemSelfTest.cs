@@ -24,6 +24,7 @@ namespace DfoServer.SelfTests
             VerifyUseDyeRecordsCooltime(ref failures);
             VerifyUseDyeRejectsInvalidItems(ref failures);
             VerifyCloneAvatarCopiesDyeWhenEquipped(ref failures);
+            VerifyAuroraLookReplaceDoesNotBorrowAppearance(ref failures);
 
             Console.WriteLine(failures == 0
                 ? "DYE_ITEM selftest passed"
@@ -391,6 +392,69 @@ namespace DfoServer.SelfTests
                 && cloneDetail.ClearAvatarId == 0
                 && cloneDetail.Color1 == 0
                 && cloneDetail.Color2 == 0,
+                ref failures);
+        }
+
+        private static void VerifyAuroraLookReplaceDoesNotBorrowAppearance(ref int failures)
+        {
+            var auroraReplace = EquipmentFile.Parse(@"
+[equipment type]
+`[aurora avatar]` 0
+[item category]
+`clear avatar`
+[/item category]
+[aurora virtual motion]
+`[swordman]` 3 `[rest motion]` `Character/Swordman/Animation/Challenge2ndBerserker.ani` 14
+[/aurora virtual motion]
+");
+            var hatClone = EquipmentFile.Parse(@"
+[equipment type]
+`[hat avatar]` 0
+[item category]
+`clear avatar`
+[/item category]
+");
+            Check(
+                "aurora clear-avatar with virtual motion replaces look instead of cloning the previous aurora",
+                ItemMetadataResolver.IsAuroraLookReplaceAvatar(auroraReplace)
+                && !ItemMetadataResolver.IsAuroraLookReplaceAvatar(hatClone),
+                ref failures);
+
+            if (!ItemMetadataResolver.IsAuroraLookReplaceAvatar(113590006))
+            {
+                Console.WriteLine("aurora look-replace PVF item 113590006 skipped");
+                return;
+            }
+
+            var inventory = CreateInventory();
+            var baseAurora = CreateAvatar(itemId: 101590032, avatarUid: 9201);
+            var lookReplace = CreateAvatar(itemId: 113590006, avatarUid: 9202);
+            inventory.AvatarDetails.Attach(CreateAvatarDetail(inventory, baseAurora));
+            inventory.AvatarDetails.Attach(CreateAvatarDetail(inventory, lookReplace, color1: 3, color2: 4));
+
+            InventoryMoveService.SyncAvatarClearAvatarId(
+                inventory,
+                lookReplace,
+                InventoryListType.Equipment,
+                (short)EquipmentType.AuroraAvatar,
+                baseAurora,
+                itemId => itemId == 113590006);
+
+            var detail = inventory.AvatarDetails.GetDetail(9202);
+            Check(
+                "equipping 转职光环 does not copy the previous aurora into clear_avatar_id",
+                detail != null
+                && detail.ClearAvatarId == 0
+                && detail.Color1 == 0
+                && detail.Color2 == 0,
+                ref failures);
+
+            var stale = new AvatarDetail { ClearAvatarId = 101590032 };
+            var projection = new Noti2InventoryProjectionBuilder();
+            Check(
+                "stale clear_avatar_id is ignored for 转职光环 appearance",
+                projection.ResolveAppearanceDisplayItemId(lookReplace, stale) == 113590006
+                && Noti2InventoryProjectionBuilder.ResolveAppearanceLinkItemId(lookReplace, stale) == 0,
                 ref failures);
         }
 

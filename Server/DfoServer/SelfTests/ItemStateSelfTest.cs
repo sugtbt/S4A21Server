@@ -22,6 +22,7 @@ namespace DfoServer.SelfTests
             VerifyOnlineCacheAndProjection(ref failures);
             VerifyEpicBuffPotionBuffProjection(ref failures);
             VerifyPvfLifecycleParsing(ref failures);
+            VerifyExperienceBonusEffectLookup(ref failures);
             VerifyLifecycleRules(ref failures);
 
             Console.WriteLine(failures == 0
@@ -340,6 +341,42 @@ PRAGMA user_version = 6;";
                 && stackable.StatChangeDurationMilliseconds == 1800000
                 && string.Equals(stackable.StatChangeDurationTarget, "myself", StringComparison.Ordinal)
                 && stackable.CoolTime == 10000,
+                ref failures);
+        }
+
+        private static void VerifyExperienceBonusEffectLookup(ref int failures)
+        {
+            const long now = 1700000300;
+            const int itemId = 10089614;
+            var stackable = PvfLib.StackableItemFile.Parse(@"
+[effect maintenance]
+[stat change duration]
+    1800000 `myself`
+[exp bonus rate]
+    1
+");
+
+            var inventory = new InventoryService(73111, 73112);
+            inventory.ItemStates.Upsert(ItemStateKinds.Effect, itemId, (int)now + 60);
+            Check(
+                "experience bonus effect reads active live item state",
+                ExperienceBonusEffectService.GetActiveRate(
+                    inventory,
+                    now,
+                    id => id == itemId ? stackable : null) == 1000,
+                ref failures);
+
+            Check(
+                "experience bonus effect ignores expired live item state",
+                ExperienceBonusEffectService.GetActiveRate(
+                    inventory,
+                    now + 61,
+                    id => id == itemId ? stackable : null) == 0,
+                ref failures);
+
+            Check(
+                "experience bonus effect calculation uses scaled rate",
+                ExperienceBonusEffectService.CalculateBonus(188, 1000) == 188,
                 ref failures);
         }
 

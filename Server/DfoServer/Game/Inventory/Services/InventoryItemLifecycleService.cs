@@ -244,15 +244,42 @@ namespace DfoServer.Game.Inventory
                 if (stackable.CoolTime <= 0)
                     return Reject(result, InventoryItemLifecycleStatus.InvalidDefinition, "missing [cool time]");
 
+                var currentCooltimeGroup = StackableItemProvider.ResolveCooltimeGroup(source.ItemId);
+                foreach (var cooltimeState in inventory.ItemStates.BuildActiveSnapshots(
+                    ItemStateKinds.Cooltime,
+                    nowUnixSeconds))
+                {
+                    if (cooltimeState == null || cooltimeState.ItemId <= 0)
+                    {
+                        continue;
+                    }
+
+                    if (cooltimeState.ItemId == source.ItemId)
+                    {
+                        return Reject(
+                            result,
+                            InventoryItemLifecycleStatus.CooltimeActive,
+                            "cooltime is still active");
+                    }
+
+                    if (currentCooltimeGroup > 0
+                        && StackableItemProvider.ResolveCooltimeGroup(cooltimeState.ItemId)
+                            == currentCooltimeGroup)
+                    {
+                        return Reject(
+                            result,
+                            InventoryItemLifecycleStatus.CooltimeActive,
+                            "cooltime is still active");
+                    }
+                }
+
                 if (inventory.ItemStates.TryGetExpireTime(
                         ItemStateKinds.Cooltime,
                         source.ItemId,
-                        out var cooltimeExpireTime))
+                        out var previousCooltimeExpireTime))
                 {
                     result.HadPreviousCooltimeState = true;
-                    result.PreviousCooltimeExpireTime = cooltimeExpireTime;
-                    if (cooltimeExpireTime > nowUnixSeconds)
-                        return Reject(result, InventoryItemLifecycleStatus.CooltimeActive, "cooltime is still active");
+                    result.PreviousCooltimeExpireTime = previousCooltimeExpireTime;
                 }
 
                 result.CooltimeExpireTime = ToUnixDeadline(

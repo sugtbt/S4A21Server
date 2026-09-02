@@ -14,14 +14,14 @@ using System.Linq;
 namespace DfoServer.Network.Builders
 {
     // 从选中的支援角色构建动态 TAG_CHARACTER_INFO 0x019F。
-    // 包体为 count:u16 + record；record 使用与 USERINFO subtype1 相同的 88B 战斗块，
-    // 技能表与 0x01E5 共用支援角色技能树页 [slot, skillId, displayLevel]，skillTree 固定 0xFF。
+    // 包体为 count:u16 + record；record 使用与 USERINFO subtype1 相同的 88B 战斗块
+    // 和 WriteNoti2EquippedEntry 装备项（含宠物槽 25、勋章槽 31 的变长尾）。
+    // 技能表与 0x01E5 共用支援角色技能树页 [slot, skillId, displayLevel]。
     public static class StrikerSupportTagCharacterPacketBuilder
     {
         private static readonly ushort TagCharacterInfoNotiType = (ushort)NotiPacketTypeA21.TAG_CHARACTER_INFO;
         public const byte RecordOpaquePrefix = 0x6F;
         private const int LastDefaultAvatarSlot = 8;
-        private const int LastClientEquipmentSlot = 29;
         public static bool TryBuildOwnerSupportBody(
             int activeCharacterId,
             IGameDatabase database,
@@ -233,20 +233,14 @@ namespace DfoServer.Network.Builders
             {
                 if (entry == null)
                     continue;
-                if (entry.Slot < 0 || entry.Slot > LastClientEquipmentSlot)
-                {
-                    reason = $"equipment slot {entry.Slot} is outside client range 0..{LastClientEquipmentSlot}";
-                    return false;
-                }
+                // 与 USERINFO subtype1 相同：只发 Noti2 装备槽（0-28 和勋章 31）。
+                // 名牌 29 / 纹章 30 不在该表。槽 31 旧上限 29 会整包失败，无法链接。
+                if (!EquipmentTypeInfo.IsA21Noti2EquippedSlot(entry.Slot))
+                    continue;
                 var core = entry.Core;
                 if (core == null)
                 {
                     reason = $"slot {entry.Slot} has no ItemCore";
-                    return false;
-                }
-                if (!IsEquipmentSlotMatch(entry.Slot, core, out var slotReason))
-                {
-                    reason = slotReason;
                     return false;
                 }
                 if (!bySlot.TryAdd((byte)entry.Slot, entry))
@@ -268,11 +262,8 @@ namespace DfoServer.Network.Builders
                     if (defaults == null || defaults.Count <= slot || defaults[slot] <= 0)
                         continue;
                     var defaultItem = CreateDefaultAvatarItem((byte)slot, defaults[slot]);
-                    if (!IsEquipmentSlotMatch(defaultItem.Slot, defaultItem.Core, out var slotReason))
-                    {
-                        reason = slotReason;
-                        return false;
-                    }
+                    if (!IsEquipmentSlotMatch(defaultItem.Slot, defaultItem.Core, out _))
+                        continue;
                     bySlot[(byte)slot] = defaultItem;
                 }
             }
@@ -415,6 +406,20 @@ WHERE character_id IN (@owner, @support) AND delete_flag=0", conn))
                     }
                 }
             }
+        }
+
+        internal static bool TryBuildEquipmentListForTest(
+            UserInfoAdditionSnapshot snapshot,
+            byte job,
+            byte growType,
+            out List<EquippedEntrySnapshot> result,
+            out string reason)
+        {
+            return TryBuildEquipmentList(
+                snapshot,
+                new CharacterSummary { Job = job, GrowType = growType },
+                out result,
+                out reason);
         }
 
         internal static byte[] BuildRecordForTest(

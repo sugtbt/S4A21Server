@@ -964,6 +964,8 @@ namespace DfoServer.Game.Inventory
 
             cloneAvatarResolver = cloneAvatarResolver ?? ItemMetadataResolver.IsCloneAvatarItem;
             var isCloneAvatar = cloneAvatarResolver(item.ItemId);
+            var borrowCloneAppearance = isCloneAvatar
+                && !ItemMetadataResolver.IsAuroraLookReplaceAvatar(item.ItemId);
             var clearAvatarId = 0;
             var color1 = detail.Color1;
             var color2 = detail.Color2;
@@ -974,7 +976,7 @@ namespace DfoServer.Game.Inventory
                 color2 = 0;
             }
 
-            if (IsEquippedAvatarSlot(listType, slotIndex) && isCloneAvatar)
+            if (IsEquippedAvatarSlot(listType, slotIndex) && borrowCloneAppearance)
             {
                 if (previousItemAtSlot != null
                     && previousItemAtSlot.ItemKind == ItemCore.KindAvatar

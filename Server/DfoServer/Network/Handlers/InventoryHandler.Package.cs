@@ -288,52 +288,6 @@ namespace DfoServer.Network.Handlers
                 return;
             }
 
-            // 远古精灵秘药 [exp bonus rate]：服务端权威使用链路（副本内限制、
-            // 共享冷却、效果持久化），成功/拦截都要回 ACK 阻断通用消耗流程。
-            // 客户端对该道具类型不做本地扣减预测（PVF 侧原为"非消耗品"），
-            // 成功后必须补发槽位更新，否则物品要到回城刷新背包才消失。
-            InventoryMutationResult experiencePotionMutation = null;
-            string experiencePotionDetail = null;
-            var experiencePotionHandled = false;
-            if (TryGetOwnedInventoryLease(session, cid, out lease))
-            {
-                lock (lease.SyncRoot)
-                {
-                    experiencePotionHandled = ExperienceBonusPotionService.TryUse(
-                        lease,
-                        cid,
-                        listType,
-                        slotIndex,
-                        itemCode,
-                        session.Player?.CurrentRun != null,
-                        out experiencePotionMutation,
-                        out experiencePotionDetail);
-                }
-            }
-
-            if (experiencePotionHandled)
-            {
-                var potionSuccess = experiencePotionMutation != null;
-                var potionPlan = BuildUseStackableResponsePlan(
-                    potionSuccess,
-                    experiencePotionMutation,
-                    listType,
-                    slotIndex,
-                    instanceValue,
-                    itemCode);
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                    0x01,
-                    header.type,
-                    potionPlan.AckBody));
-                if (potionSuccess)
-                    await _refresh.SendUpdateItemList(session, listType, slotIndex);
-                FileLogger.Log(
-                    $"[{ProtocolName}] USE_STACKABLE exp-bonus potion: "
-                    + $"cid={cid} item=0x{itemCode:X8} success={potionSuccess} "
-                    + experiencePotionDetail);
-                return;
-            }
-
             InventoryMutationResult result = null;
             InventoryStackableUseCommitResult stackableUseResult = null;
             if (TryGetOwnedInventoryLease(session, cid, out lease))

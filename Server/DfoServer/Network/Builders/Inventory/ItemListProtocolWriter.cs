@@ -300,7 +300,8 @@ namespace DfoServer.Network.Builders
         {
             if (core.ItemKind == ItemCore.KindAvatar
                 && avatarDetail != null
-                && avatarDetail.ClearAvatarId != 0)
+                && avatarDetail.ClearAvatarId != 0
+                && ItemMetadataResolver.ShouldApplyCloneAppearance(core.ItemId))
                 return unchecked((uint)avatarDetail.ClearAvatarId);
 
             return core.SealFlag;

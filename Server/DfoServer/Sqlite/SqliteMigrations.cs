@@ -40,9 +40,12 @@ namespace DfoServer.Sqlite
                 new MigrationStep(15, "add_pcroom_timepoint_event", ApplyPcRoomTimePointEvent),
                 new MigrationStep(16, "add_daily_attendance_anytime_event", ApplyDailyAttendanceAnytimeEvent),
                 new MigrationStep(17, "add_total_attendance_event", ApplyTotalAttendanceEvent),
-                // 18: 远古精灵秘药 [exp bonus rate] 效果持久化表（IF NOT EXISTS 幂等，
-                // 新库由 item_schema.sql 已建，此处自动跳过）。
-                new MigrationStep(18, "add_character_experience_bonus_effects", ApplyCharacterExperienceBonusEffects),
+                new MigrationStep(18, "add_character_abyss_epic_pity", ApplyCharacterAbyssEpicPity),
+                new MigrationStep(19, "drop_character_experience_bonus_effects", ApplyCharacterExperienceBonusEffects),
+                new MigrationStep(20, "add_character_fatigue", ApplyCharacterFatigue),
+                new MigrationStep(21, "rename_character_fatigue_columns", RenameCharacterFatigueColumns),
+                new MigrationStep(22, "add_character_fatigue_reset_day", ApplyCharacterFatigueResetDay),
+                new MigrationStep(23, "drop_character_experience_bonus_effects_cleanup", ApplyCharacterExperienceBonusEffects),
             };
 
         internal static int CurrentVersion =>
@@ -1046,18 +1049,106 @@ INSERT OR IGNORE INTO game_event_state(event_id, state)
 VALUES(2208, 0);");
         }
 
+        private static void ApplyCharacterAbyssEpicPity(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            ExecuteSql(connection, transaction, @"
+CREATE TABLE IF NOT EXISTS character_abyss_epic_pity (
+    character_id INTEGER NOT NULL PRIMARY KEY,
+    no_epic_streak INTEGER NOT NULL DEFAULT 0 CHECK(no_epic_streak >= 0),
+    updated_at_unix INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);");
+        }
+
         private static void ApplyCharacterExperienceBonusEffects(
             SqliteConnection connection,
             SqliteTransaction transaction)
         {
             ExecuteSql(connection, transaction, @"
-CREATE TABLE IF NOT EXISTS character_experience_bonus_effects (
-    character_id INTEGER PRIMARY KEY,
-    source_item_id INTEGER NOT NULL,
-    bonus_rate INTEGER NOT NULL CHECK (bonus_rate > 0),
-    expires_at INTEGER NOT NULL CHECK (expires_at > 0),
-    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
-);");
+DROP TABLE IF EXISTS character_experience_bonus_effects;");
+        }
+
+        private static void ApplyCharacterFatigue(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            AddColumnIfMissing(
+                connection,
+                transaction,
+                "characters",
+                "fatigue",
+                "INTEGER NOT NULL DEFAULT 0");
+            AddColumnIfMissing(
+                connection,
+                transaction,
+                "characters",
+                "usedFatigue",
+                "INTEGER NOT NULL DEFAULT 0");
+            AddColumnIfMissing(
+                connection,
+                transaction,
+                "characters",
+                "maxFatigue",
+                "INTEGER NOT NULL DEFAULT 188");
+
+            ExecuteSql(
+                connection,
+                transaction,
+                "UPDATE characters SET maxFatigue = 188 " +
+                "WHERE maxFatigue IS NULL OR maxFatigue <= 0;");
+        }
+
+        private static void RenameCharacterFatigueColumns(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            RenameColumnIfPresent(
+                connection,
+                transaction,
+                "characters",
+                "used_fatigue",
+                "usedFatigue");
+            RenameColumnIfPresent(
+                connection,
+                transaction,
+                "characters",
+                "max_fatigue",
+                "maxFatigue");
+
+            AddColumnIfMissing(
+                connection,
+                transaction,
+                "characters",
+                "fatigue",
+                "INTEGER NOT NULL DEFAULT 0");
+            AddColumnIfMissing(
+                connection,
+                transaction,
+                "characters",
+                "usedFatigue",
+                "INTEGER NOT NULL DEFAULT 0");
+            AddColumnIfMissing(
+                connection,
+                transaction,
+                "characters",
+                "maxFatigue",
+                "INTEGER NOT NULL DEFAULT 188");
+            ExecuteSql(
+                connection,
+                transaction,
+                "UPDATE characters SET maxFatigue = 188 " +
+                "WHERE maxFatigue IS NULL OR maxFatigue <= 0;");
+        }
+
+        private static void ApplyCharacterFatigueResetDay(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            // v22 was published once with a provisional per-character reset
+            // column. Keep the version for existing databases, but the
+            // active reset gate is account_daily_reset.last_logout_at.
         }
 
         private static void ImportCharacterNewItems(
@@ -1482,6 +1573,34 @@ WHERE type = 'table' AND name = @name;";
                 connection,
                 transaction,
                 $"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnDefinition};");
+        }
+
+        private static void RenameColumnIfPresent(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string tableName,
+            string oldColumnName,
+            string newColumnName)
+        {
+            if (!ColumnExists(
+                    connection,
+                    transaction,
+                    tableName,
+                    oldColumnName)
+                || ColumnExists(
+                    connection,
+                    transaction,
+                    tableName,
+                    newColumnName))
+            {
+                return;
+            }
+
+            ExecuteSql(
+                connection,
+                transaction,
+                $"ALTER TABLE {tableName} RENAME COLUMN " +
+                $"{oldColumnName} TO {newColumnName};");
         }
 
         internal static long ReadVersion(SqliteConnection connection)

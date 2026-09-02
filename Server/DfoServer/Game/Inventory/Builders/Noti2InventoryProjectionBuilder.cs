@@ -251,7 +251,8 @@ namespace DfoServer.Game.Inventory
         {
             if (core.ItemKind == ItemCore.KindAvatar
                 && avatarDetail != null
-                && avatarDetail.ClearAvatarId != 0)
+                && avatarDetail.ClearAvatarId != 0
+                && ItemMetadataResolver.ShouldApplyCloneAppearance(core.ItemId))
                 return avatarDetail.ClearAvatarId;
 
             return core.ItemId;
@@ -264,7 +265,8 @@ namespace DfoServer.Game.Inventory
             if (core != null
                 && core.ItemKind == ItemCore.KindAvatar
                 && avatarDetail != null
-                && avatarDetail.ClearAvatarId != 0)
+                && avatarDetail.ClearAvatarId != 0
+                && ItemMetadataResolver.ShouldApplyCloneAppearance(core.ItemId))
             {
                 return core.ItemId;
             }

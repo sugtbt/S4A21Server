@@ -690,7 +690,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             var scoreDelta = scoreBonus > previousScore
                 ? scoreBonus - previousScore
                 : 0;
-            var updatedPotionBonus = ExperienceBonusPotionService.CalculateBonus(
+            var updatedPotionBonus = ExperienceBonusEffectService.CalculateBonus(
                 CalculatePrePotionTotal(settlement, scoreBonus),
                 settlement.ExperiencePotionBonusRate);
             var potionDelta = updatedPotionBonus
@@ -771,7 +771,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             settlement.RankBonusIndex = rank.RankBonusIndex;
             settlement.ScoreBonusExp = scoreBonus;
             settlement.ExperiencePotionBonusExp =
-                ExperienceBonusPotionService.CalculateBonus(
+                ExperienceBonusEffectService.CalculateBonus(
                     CalculatePrePotionTotal(settlement, scoreBonus),
                     settlement.ExperiencePotionBonusRate);
             settlement.ClearBonusExp = CharacterExperienceService.AddSaturating(
@@ -1490,12 +1490,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                     definition,
                     storyAdjustedBaseExp,
                     experienceBonusSnapshot);
-            // 远古精灵秘药: 对基础+评分+时装+宠物+契约+黑钻+冒险团加成后的
-            // 总经验应用倍率（千分率）。
-            var experiencePotionBonusRate =
-                ExperienceBonusPotionService.GetActiveRate(
-                    connStr,
-                    session.Player.CharacterId);
+            // 经验加成只在结算阶段按当前 active item state 读取。
+            var experienceBonusRate = GetActiveExperienceBonusRate(session);
             var prePotionTotal = CharacterExperienceService.AddSaturating(
                 storyAdjustedBaseExp,
                 CharacterExperienceService.AddSaturating(
@@ -1509,10 +1505,10 @@ namespace DfoServer.Network.Handlers.Dungeon
                     CharacterExperienceService.AddSaturating(
                         blackDiamondBonus,
                         adventureGroupBonus)));
-            var experiencePotionBonus =
-                ExperienceBonusPotionService.CalculateBonus(
+            var experienceBonus =
+                ExperienceBonusEffectService.CalculateBonus(
                     prePotionTotal,
-                    experiencePotionBonusRate);
+                    experienceBonusRate);
             FileLogger.Log(
                 $"[{DungeonSharedServices.ProtocolLogName}] "
                 + $"CLEAR_EXP: dungeon={run.DungeonId} "
@@ -1531,8 +1527,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                 growthContractBonus,
                 blackDiamondBonus,
                 adventureGroupBonus,
-                experiencePotionBonusRate,
-                experiencePotionBonus);
+                experienceBonusRate,
+                experienceBonus);
         }
 
         private static uint CalculateNonStandardCompatibilityClearBase(
@@ -1586,6 +1582,35 @@ namespace DfoServer.Network.Handlers.Dungeon
             }
 
             return session.Player.Level >= highestLevel;
+        }
+
+        private static int GetActiveExperienceBonusRate(EnhancedClientSession session)
+        {
+            var characterId = session?.Player?.CharacterId ?? 0;
+            if (session == null
+                || characterId <= 0
+                || !InventoryContext.TryGetOwnedLease(
+                    session.SessionId,
+                    characterId,
+                    out var lease))
+            {
+                return 0;
+            }
+
+            lock (lease.SyncRoot)
+            {
+                if (!InventoryContext.IsCurrentLease(
+                        lease,
+                        session.SessionId,
+                        characterId))
+                {
+                    return 0;
+                }
+
+                return ExperienceBonusEffectService.GetActiveRate(
+                    lease.Inventory,
+                    InventoryItemLifecycleService.UtcNowUnixSeconds());
+            }
         }
 
         private static uint ToUInt32Floor(float value)
