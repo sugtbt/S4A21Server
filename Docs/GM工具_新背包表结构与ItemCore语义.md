@@ -1,9 +1,8 @@
 # GM工具新背包数据结构说明
 
-> 文档版本：1.1.2
+> 文档版本：1.1.4
 > 数据库基线：`86jp-database-v1` / schema v1
-> 更新日期：2026-08-22
-> 本版登记：新增 `character_item_states` 冷却与持续效果状态账本说明；`R-DOC-ITEMCORE-001` 的 A21 `ItemCore` 99B 修正继续有效。
+> 更新日期：2026-09-02
 
 本文面向 GM 工具重写。当前背包已经从旧 `character_items + extra_json`、`character_equipped_entries.raw_entry`、旧 DTO/InvenItem 过渡到在线 `InventoryService + ItemCore + Detail` 模型。GM 工具不要再直接构造旧 DTO，也不要再依赖 `extra_json` 字节段名称。
 
@@ -363,6 +362,23 @@ CREATE TABLE IF NOT EXISTS character_collectbox_slots (
 
 放入收集箱时，背包扣除 1 个对应物品；取出时，根据 `item_id` 创建一个默认 `ItemCore` 并插回背包。
 
+### character_knight_shield_deck
+
+- 只保存 itemId：槽 0 为主盾，槽 1-4 为备用盾，空槽不落行。
+- 主盾真实 `ItemCore` 仍在穿戴栏 `list_type=3, slot_index=24`。
+- 33/34 是虚拟空间，GM 不要写入 `character_inventory_items`。
+- 图鉴以 PVF `shieldwindownewdata.etc` 为准；quest 盾看任务完成记录，level 盾看角色等级，未满足条件时不要写入 deck。
+
+```sql
+CREATE TABLE IF NOT EXISTS character_knight_shield_deck (
+    character_id INTEGER NOT NULL,
+    slot_index INTEGER NOT NULL CHECK (slot_index >= 0 AND slot_index <= 4),
+    shield_item_id INTEGER NOT NULL CHECK (shield_item_id > 0),
+    PRIMARY KEY (character_id, slot_index),
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);
+```
+
 ## InventoryListType
 
 | 值 | 名称 | 说明 |
@@ -379,8 +395,8 @@ CREATE TABLE IF NOT EXISTS character_collectbox_slots (
 | 22 | TitleBookDespair | 称号簿 despair |
 | 23 | TitleBookEvent | 称号簿 event |
 | 29 | QuickSlot | 快捷栏协议/系统枚举，不是普通新物品表空间 |
-| 33 | KnightShieldEquipped | 骑士盾穿戴枚举 |
-| 34 | KnightShieldCatalog | 骑士盾图鉴枚举 |
+| 33 | KnightShieldEquipped | 骑士盾 deck 虚拟穿戴空间（槽 0=主盾，1-4=备用盾），不写物品主表 |
+| 34 | KnightShieldCatalog | 骑士盾图鉴虚拟空间，itemId 来自 PVF `shieldwindownewdata.etc` |
 | 38 | GuildMedal | 勋章栏，公会勋章/守护珠共用 0-97 |
 
 ## 槽位边界

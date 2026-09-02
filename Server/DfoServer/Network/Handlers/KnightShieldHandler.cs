@@ -11,7 +11,7 @@ namespace DfoServer.Network.Handlers
 {
     public sealed class KnightShieldHandler
     {
-        private const int MoveRequestLength = 24;
+        private const int MinMoveRequestLength = 14;
         private const int ChangeDeckRequestLength = KnightShieldDeckSnapshot.SlotCount * sizeof(int);
         private readonly KnightShieldService _service;
         private readonly ICharacterRepository _characterRepository;
@@ -35,39 +35,39 @@ namespace DfoServer.Network.Handlers
             if (!MentionsShieldSpace(body, out var sourceListType, out var destinationListType))
                 return false;
 
-            if (body.Length != MoveRequestLength)
+            if (body == null || body.Length < MinMoveRequestLength)
             {
                 await SendMoveError(session, sourceListType, destinationListType, "malformed body");
                 return true;
             }
 
-            // 86JP MOVE_ITEMSPACE 请求为固定 24B；当前盾牌路径只消费已证实的前 14B。
+            // A21 实机盾牌 MOVE 为 28B；与普通背包相同，只消费已证实的前 14B。
             var sourceSlot = BitConverter.ToInt16(body, 0x01);          // +0x01 [i16]
             var sourceShieldItemId = BitConverter.ToInt32(body, 0x03); // +0x03 [i32]
             var moveValue = BitConverter.ToInt32(body, 0x07);          // +0x07 [i32]
             var destinationSlot = BitConverter.ToInt16(body, 0x0C);    // +0x0C [i16]
-            // +0x00/+0x0B 分别是来源/目标空间；+0x0E..+0x17 的语义尚未证明，不参与写入。
+            // +0x00/+0x0B 分别是来源/目标空间；+0x0E 之后的语义尚未证明，不参与写入。
             var character = ResolveCharacter(session);
-
             KnightShieldDeckSnapshot deck;
             string rejectReason;
             bool success;
             if (sourceListType == InventoryListType.KnightShieldCatalog
                 && destinationListType == InventoryListType.KnightShieldEquipped
-                && destinationSlot == KnightShieldDeckSnapshot.MainSlotIndex)
+                && IsDeckSlotIndex(destinationSlot))
             {
-                success = _service.TryEquipMain(
+                success = _service.TryEquipSlot(
                     character,
+                    destinationSlot,
                     sourceShieldItemId,
                     out deck,
                     out rejectReason);
             }
             else if (sourceListType == InventoryListType.KnightShieldEquipped
                 && destinationListType == InventoryListType.KnightShieldCatalog
-                && sourceSlot == KnightShieldDeckSnapshot.MainSlotIndex)
+                && IsDeckSlotIndex(sourceSlot))
             {
                 // 客户端卸下时 source item id 固定为 0，权威状态必须从持久化 deck 读取。
-                success = _service.TryUnequipMain(character, out deck, out rejectReason);
+                success = _service.TryUnequipSlot(character, sourceSlot, out deck, out rejectReason);
             }
             else if (sourceListType == InventoryListType.KnightShieldEquipped
                 && destinationListType == InventoryListType.KnightShieldEquipped)
@@ -104,7 +104,7 @@ namespace DfoServer.Network.Handlers
             };
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
                 0x01,
-                (ushort)CmdPacketType.MOVE_ITEMSPACE,
+                (ushort)CmdPacketTypeA21.MOVE_ITEMSPACE,
                 MoveItemSpaceAckBuilder.Build(moveResult)));
             await SendDeckNotification(session, deck);
             await SendAppearanceIfMainShieldChanged(session, deck);
@@ -131,7 +131,11 @@ namespace DfoServer.Network.Handlers
             for (var slotIndex = 0; slotIndex < values.Length; slotIndex++)
                 values[slotIndex] = BitConverter.ToInt32(body, slotIndex * sizeof(int));
 
-            if (!_service.TrySaveDeck(character, values, out var deck, out var rejectReason))
+            if (!_service.TrySaveDeck(
+                character,
+                values,
+                out var deck,
+                out var rejectReason))
             {
                 await SendRejectedDeckChange(session, character, rejectReason);
                 return;
@@ -141,6 +145,7 @@ namespace DfoServer.Network.Handlers
                 0x01,
                 KnightShieldDeckBodyBuilder.ChangeDeckCommandType,
                 KnightShieldDeckBodyBuilder.BuildChangeDeckAck(deck)));
+            await SendDeckNotification(session, deck);
             await SendAppearanceIfMainShieldChanged(session, deck);
             FileLogger.Log($"[GameProtocol] CHANGE_DECK_INFO OK deck=[{string.Join(",", deck.ShieldItemIds)}]");
         }
@@ -217,12 +222,13 @@ namespace DfoServer.Network.Handlers
             // 0x04 会被客户端解释为“仓库/金库空间不足”；盾牌校验失败使用通用无效操作码。
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
                 0x01,
-                (ushort)CmdPacketType.MOVE_ITEMSPACE,
+                (ushort)CmdPacketTypeA21.MOVE_ITEMSPACE,
                 MoveItemSpaceAckBuilder.BuildError(
                     MoveItemSpaceAckBuilder.InvalidOperationErrorCode,
                     (byte)sourceListType,
                     (byte)destinationListType)));
-            FileLogger.Log($"[GameProtocol] KNIGHT_SHIELD MOVE REJECT: {rejectReason}");
+            FileLogger.Log(
+                $"[GameProtocol] KNIGHT_SHIELD MOVE REJECT: {rejectReason}");
         }
 
         private CharacterRecord ResolveCharacter(EnhancedClientSession session)
@@ -250,6 +256,12 @@ namespace DfoServer.Network.Handlers
         {
             return listType == InventoryListType.KnightShieldEquipped
                 || listType == InventoryListType.KnightShieldCatalog;
+        }
+
+        private static bool IsDeckSlotIndex(int slotIndex)
+        {
+            return slotIndex >= KnightShieldDeckSnapshot.MainSlotIndex
+                && slotIndex < KnightShieldDeckSnapshot.SlotCount;
         }
     }
 }

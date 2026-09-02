@@ -116,8 +116,12 @@ namespace DfoServer.Game.ItemUpgrade
 
         public static bool IsA21RosterAppearanceSlot(int slot)
         {
-            return slot >= (short)EquipmentType.HatAvatar
-                && slot <= (short)EquipmentType.TitleName;
+            // 选角/城镇外观主列表是装扮+武器+称号。A21 在槽 11 插入光环皮肤后，
+            // 副武器是 SupportWeapon=24。守护者主盾和剑影副武器都走这个槽，
+            // 必须作为例外进入外观投影，不能只投影到 TitleName。
+            return (slot >= (short)EquipmentType.HatAvatar
+                    && slot <= (short)EquipmentType.TitleName)
+                || slot == (short)EquipmentType.SupportWeapon;
         }
 
         public static bool IsA21Noti2EquippedSlot(int slot)

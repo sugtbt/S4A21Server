@@ -299,7 +299,7 @@ namespace DfoServer.Game.Appearance
                     continue;
 
                 // 外观列表的 itemId 保持真实穿戴模板；替换称号动画还会由 subtype0 tail 首字段刷新。
-                // slot23 是客户端原生副武器外观槽；守护者主盾也通过同一标准装备槽进入快照。
+                // A21 副武器外观槽是 EquipmentType.SupportWeapon（24）；守护者主盾走同一标准装备槽。
                 if (!EquipmentTypeInfo.IsA21RosterAppearanceSlot(entry.Slot))
                     continue;
                 var core = entry.Core;

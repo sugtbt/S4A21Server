@@ -18,11 +18,26 @@ namespace DfoServer.Game.KnightShield
                 return result.ToArray();
 
             var supportWeaponSlot = KnightShieldEquipmentSnapshotSynchronizer.SupportWeaponSlot;
-            result.RemoveAll(entry => entry != null && entry.Slot == supportWeaponSlot);
-
             var shieldItemId = deck.MainShieldItemId;
-            if (shieldItemId == 0
-                || !KnightShieldDataProvider.IsCatalogShield(growType, shieldItemId))
+            var hasValidDeckShield = shieldItemId > 0
+                && KnightShieldDataProvider.IsCatalogShield(growType, shieldItemId);
+            if (!hasValidDeckShield)
+                return result.ToArray();
+
+            CharacterAppearanceEntry existing = null;
+            for (var index = 0; index < result.Count; index++)
+            {
+                var entry = result[index];
+                if (entry != null && entry.Slot == supportWeaponSlot)
+                {
+                    existing = entry;
+                    break;
+                }
+            }
+
+            // A real slot-24 appearance is authoritative; the deck only
+            // fills the slot when no physical support weapon is present.
+            if (existing != null)
                 return result.ToArray();
 
             result.Add(new CharacterAppearanceEntry(

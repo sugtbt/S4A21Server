@@ -208,8 +208,7 @@ namespace DfoServer.Infrastructure
                 core.SelectCharacterDataSource,
                 core.CharacterRepository,
                 core.Database);
-            var knightShieldService = new KnightShieldService(
-                new KnightShieldDeckRepository(core.Database));
+            var knightShieldService = core.SelectCharacterDataSource.KnightShieldService;
             var expertJobStateRepository =
                 new SqliteExpertJobStateRepository(core.Database);
             var mailboxService = new MailboxService(
@@ -372,7 +371,8 @@ namespace DfoServer.Infrastructure
                     world.MercenaryRestrictions,
                     core.Database,
                     inventory.OverflowRewardSink,
-                    inventory.MailboxService),
+                    inventory.MailboxService,
+                    inventory.KnightShieldService),
                 new KnightShieldHandler(
                     inventory.KnightShieldService,
                     core.CharacterRepository,

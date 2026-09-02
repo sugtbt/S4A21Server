@@ -1,5 +1,6 @@
 using DfoServer.Game.Inventory;
 using DfoServer.Game.ItemUpgrade;
+using DfoServer.Game.KnightShield;
 using DfoServer.Network.Builders;
 using DfoServer.Network.Handlers.Pets;
 using System;
@@ -120,6 +121,7 @@ namespace DfoServer.Network.Handlers
                 ackResult,
                 trackedPetRuntimeMove,
                 _refresh);
+            await TrySyncGuardianShieldDeckAsync(session, lease, moveResult);
 
             if (!PetInventoryMoveCoordinator.HandlesDefaultAppearanceRefresh(ackResult)
                 && ShouldSendSubtype0AppearanceUpdate(session, moveResult))
@@ -245,10 +247,71 @@ namespace DfoServer.Network.Handlers
         private static bool IsAppearanceEquipmentSlot(short slot)
         {
             // 客户端收到移动应答后不会自行刷新外观，这些槽位变化必须跟发 subtype0。
-            // 装扮0-10、武器11、称号12、宠物24、名称装饰卡28。
-            return (slot >= (short)EquipmentType.HatAvatar && slot <= (short)EquipmentType.TitleName)
+            // 装扮/武器/称号走 IsA21RosterAppearanceSlot（含守护者副武器槽 24），再加上宠物和名称装饰卡。
+            return EquipmentTypeInfo.IsA21RosterAppearanceSlot(slot)
                 || slot == (short)EquipmentType.Creature
                 || slot == (short)EquipmentType.NameTag;
+        }
+
+        private async Task TrySyncGuardianShieldDeckAsync(
+            EnhancedClientSession session,
+            InventoryLease lease,
+            InventoryMoveServiceResult moveResult)
+        {
+            if (_knightShieldService == null
+                || session?.Player == null
+                || lease?.Inventory == null
+                || moveResult?.Changes == null
+                || !KnightShieldDataProvider.IsEligibleCharacter(session.Player.Job))
+                return;
+
+            var touchedSupportWeapon = false;
+            foreach (var change in moveResult.Changes.Slots)
+            {
+                if (change.ListType == InventoryListType.Equipment
+                    && change.SlotIndex == (short)EquipmentType.SupportWeapon)
+                {
+                    touchedSupportWeapon = true;
+                    break;
+                }
+            }
+
+            if (!touchedSupportWeapon)
+                return;
+
+            var equippedItemId = 0;
+            lock (lease.SyncRoot)
+            {
+                var equipped = lease.Inventory.GetItem(
+                    InventoryListType.Equipment,
+                    (short)EquipmentType.SupportWeapon);
+                if (equipped != null && !equipped.IsEmpty)
+                    equippedItemId = equipped.ItemId;
+            }
+
+            var character = _characterRepository.GetById(session.Player.CharacterId);
+            KnightShieldDeckSnapshot deck;
+            bool synced;
+            if (equippedItemId > 0 && KnightShieldDataProvider.IsKnightShield(equippedItemId))
+            {
+                synced = _knightShieldService.TryReplaceMainFromOwnedShield(
+                    character,
+                    equippedItemId,
+                    out deck,
+                    out _);
+            }
+            else
+            {
+                synced = _knightShieldService.TryUnequipMain(character, out deck, out _);
+            }
+
+            if (!synced || deck == null)
+                return;
+
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x00,
+                KnightShieldDeckBodyBuilder.DeckNotificationType,
+                KnightShieldDeckBodyBuilder.BuildDeck(deck)));
         }
 
         public async Task Handle_ENUM_CMDPACKET_SORT_ITEM(EnhancedClientSession session, GamePacketHeader header, byte[] body)

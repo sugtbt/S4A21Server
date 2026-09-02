@@ -20,6 +20,7 @@ namespace DfoServer
             ("--selftest-packet-framing-bounds", SelfTests.PacketFramingBoundsSelfTest.Run),
             ("--selftest-a21-channel-protocol", SelfTests.A21ChannelProtocolSelfTest.Run),
             ("--selftest-a21-create-character-protocol", SelfTests.A21CreateCharacterProtocolSelfTest.Run),
+            ("--selftest-a21-knight-shield-deck", SelfTests.A21KnightShieldDeckSelfTest.Run),
             ("--selftest-a21-tutorial-protocol", SelfTests.A21TutorialProtocolSelfTest.Run),
             ("--selftest-story-book-info-replay", SelfTests.StoryBookInfoReplaySelfTest.Run),
             ("--selftest-a21-adventure-group-protocol", SelfTests.A21AdventureGroupProtocolSelfTest.Run),

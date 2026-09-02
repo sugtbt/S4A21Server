@@ -1,6 +1,8 @@
 using DfoServer.Game.SelectCharacter;
 using DfoServer.Game.Quests;
 using DfoServer.Game.Inventory;
+using DfoServer.Game.KnightShield;
+using DfoServer.GameWorld;
 using DfoServer.Infrastructure;
 using DfoServer.Network;
 using System.Collections.Generic;
@@ -56,6 +58,13 @@ namespace DfoServer.Network.Builders
                 clearedSet,
                 clearedFlags,
                 allowedCreatureKinds);
+            AppendGuardianShieldOpenQuests(
+                questIds,
+                level,
+                job,
+                growType,
+                clearedSet,
+                clearedFlags);
 
             var writer = new GamePacketWriter();
             writer.WriteByte((byte)level);
@@ -63,6 +72,64 @@ namespace DfoServer.Network.Builders
             foreach (var questId in questIds)
                 writer.WriteUInt16(questId);
             return writer.ToArray();
+        }
+
+        // 图鉴 [open quest index] 常带 [exposed by npc]=0，主循环不会列出；只补当前可接的 catalog open。
+        private static void AppendGuardianShieldOpenQuests(
+            List<ushort> questIds,
+            int level,
+            int job,
+            int growType,
+            HashSet<int> clearedSet,
+            Dictionary<int, int> clearedFlags)
+        {
+            if (job != KnightShieldDataProvider.GuardianJob)
+                return;
+
+            var seen = new HashSet<int>();
+            for (var index = 0; index < questIds.Count; index++)
+                seen.Add(questIds[index]);
+
+            var prerequisiteState = new QuestPrerequisiteEvaluationState(
+                clearedSet,
+                clearedFlags ?? new Dictionary<int, int>());
+
+            var entries = KnightShieldDataProvider.GetCatalogEntries(growType);
+            for (var index = 0; index < entries.Count; index++)
+            {
+                var entry = entries[index];
+                var openQuestId = entry.OpenQuestId;
+                if (openQuestId <= 0 || openQuestId > 29999)
+                    continue;
+                if (clearedSet.Contains(openQuestId))
+                    continue;
+                if (entry.ClearQuestId > 0 && clearedSet.Contains(entry.ClearQuestId))
+                    continue;
+
+                var quest = QuestCatalog.Get(openQuestId);
+                if (quest == null || quest.IsEvent)
+                    continue;
+                if (!QuestRelationIndex.MeetsCharacterRestrictions(
+                        openQuestId,
+                        level,
+                        job,
+                        growType))
+                {
+                    continue;
+                }
+
+                var prerequisiteDefinition = QuestPrerequisiteCatalog.Get(openQuestId);
+                if (prerequisiteDefinition == null
+                    || !prerequisiteDefinition.Evaluate(prerequisiteState).IsAllowed)
+                {
+                    continue;
+                }
+
+                if (!seen.Add(openQuestId))
+                    continue;
+
+                questIds.Add((ushort)openQuestId);
+            }
         }
     }
 }
