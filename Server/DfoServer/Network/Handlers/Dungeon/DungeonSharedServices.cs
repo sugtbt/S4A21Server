@@ -68,6 +68,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             BloodAltars { get; }
         internal Game.Dungeon.BloodAltar.BloodAltarRewardPlanningService
             BloodAltarRewardPlanner { get; }
+        internal Game.Dungeon.LicensedDungeonService LicensedDungeons { get; }
 
         internal DungeonSharedServices(
             Game.ReviveCoin.ReviveCoinService reviveCoin,
@@ -182,6 +183,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             BloodAltarRewardPlanner =
                 new Game.Dungeon.BloodAltar
                     .BloodAltarRewardPlanningService();
+            LicensedDungeons = new Game.Dungeon.LicensedDungeonService(Database);
 
             PersistentMechanisms = new DungeonPersistentMechanismCoordinator(
                 CharacterStateRepository);

@@ -55,6 +55,25 @@ namespace DfoServer.GameWorld
             }
         }
 
+        internal static bool IsSoulDungeon(int dungeonId)
+        {
+            if (dungeonId <= 0)
+                return false;
+
+            try
+            {
+                return IsSoulDungeon(GetDungeonFile(dungeonId));
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        internal static bool IsSoulDungeon(DungeonFile dungeon)
+            => dungeon?.AncientDungeon == true
+               && dungeon.RiskDungeon;
+
         internal static (DungeonFile File, string FilePath)
             GetDungeonFileWithPath(int dungeonId)
         {

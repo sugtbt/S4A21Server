@@ -41,6 +41,16 @@ namespace DfoServer.GameWorld
             }
         }
 
+        internal static bool TryGetPath(int questId, out string path)
+        {
+            path = string.Empty;
+            if (questId <= 0)
+                return false;
+
+            return Index.Value.Paths.TryGetValue(questId, out path)
+                && !string.IsNullOrWhiteSpace(path);
+        }
+
         private static CatalogIndex BuildIndex()
         {
             var index = new CatalogIndex();

@@ -812,6 +812,33 @@ CREATE TABLE IF NOT EXISTS character_daily_counters (
     FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
 );
 
+-- 暗精灵遗迹周期状态。日/月边界均采用北京时间06:00；每日进入次数与
+-- 月累计进入/骨龙出现次数属于同一角色业务状态，由 LicensedDungeonService
+-- 在同一事务内滚动和提交，不复用仅支持 day/week 的通用计数器。
+CREATE TABLE IF NOT EXISTS character_license_dungeon_period_state (
+    character_id INTEGER PRIMARY KEY,
+    day_id INTEGER NOT NULL DEFAULT 0,
+    daily_entry_count INTEGER NOT NULL DEFAULT 0 CHECK(daily_entry_count >= 0),
+    month_id INTEGER NOT NULL DEFAULT 0,
+    monthly_entry_count INTEGER NOT NULL DEFAULT 0 CHECK(monthly_entry_count >= 0),
+    monthly_groop_appear_count INTEGER NOT NULL DEFAULT 0 CHECK(monthly_groop_appear_count >= 0),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);
+
+-- 暗精灵遗迹 759 许可星级。每个角色、每个 PVF group 独立保存当前已解锁
+-- 星级；新角色从该 group 的最低许可等级开始，只能在当前星级通关后推进一档。
+CREATE TABLE IF NOT EXISTS character_license_dungeon_progress (
+    character_id INTEGER NOT NULL,
+    group_id INTEGER NOT NULL CHECK (group_id > 0),
+    license_level INTEGER NOT NULL CHECK (license_level > 0),
+    no_revive_clear_count INTEGER NOT NULL DEFAULT 0
+        CHECK (no_revive_clear_count >= 0),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (character_id, group_id),
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS character_usable_count_limits (
     character_id INTEGER NOT NULL,
     item_id INTEGER NOT NULL,

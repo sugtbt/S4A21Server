@@ -9,8 +9,10 @@ using DfoServer.Game.Progression;
 using DfoServer.Game.SecretShop;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.Game.Skills;
+using DfoServer.GameWorld;
 using DfoServer.Infrastructure;
 using DfoServer.Network.Builders;
+using DfoServer.Network.Parsers.Dungeon;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -69,6 +71,42 @@ namespace DfoServer.Network.Handlers.Dungeon
             var run = session?.Player?.CurrentRun;
             if (run == null)
                 return;
+            if (LicensedDungeonCatalog.TryGetDefinition(
+                    run.DungeonId,
+                    out _))
+            {
+                if (run.ClearedFact == null
+                    || run.RunState != DungeonRunState.Cleared)
+                {
+                    var pendingRank = ExtractClientRankPoint(body);
+                    if (run.TryQueueSettlementPresentation(pendingRank))
+                    {
+                        FileLogger.Log(
+                            $"[DungeonHandler] SET_PLAY_RESULT queued for " +
+                            $"licensed dungeon until clear commit: " +
+                            $"cid={session.Player.CharacterId} " +
+                            $"dungeon={run.DungeonId} run={run.RunId} " +
+                            $"rank={pendingRank}");
+                    }
+                    return;
+                }
+
+                FileLogger.Log(
+                    $"[DungeonHandler] SET_PLAY_RESULT routed to licensed " +
+                    $"dungeon: cid={session.Player.CharacterId} " +
+                    $"dungeon={run.DungeonId} run={run.RunId}");
+                // Some A21 clients use the generic SET_PLAY_RESULT command
+                // for the first licensed-dungeon result request. Reuse the
+                // dedicated state machine so this compatibility path still
+                // emits the verified 0x02F9/0x032C exchange without creating
+                // a second settlement implementation.
+                await HandleLicensedDungeonPlayResultCore(
+                    session,
+                    header,
+                    body,
+                    validateLicensedWireBody: false);
+                return;
+            }
             if (_svc.BloodAltars.IsBloodAltar(run))
             {
                 FileLogger.Log(
@@ -95,6 +133,356 @@ namespace DfoServer.Network.Handlers.Dungeon
                 session,
                 run,
                 presentationRankPoint);
+        }
+
+        internal async Task HandleLicensedDungeonPlayResult(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body)
+        {
+            await HandleLicensedDungeonPlayResultCore(
+                session,
+                header,
+                body,
+                validateLicensedWireBody: true);
+        }
+
+        internal async Task ProjectLicensedBossClearNotificationsAsync(
+            EnhancedClientSession session,
+            DungeonRun run,
+            BossDieCheckRequest request)
+        {
+            if (session?.Player == null
+                || run == null
+                || run.ClearedFact == null
+                || run.ClearedFact.PresentationKind
+                    != DungeonClearPresentationKind.LicensedDungeon
+                || run.RunState != DungeonRunState.Cleared)
+            {
+                return;
+            }
+
+            if (!LicensedDungeonCatalog.TryGetDefinition(
+                    run.DungeonId,
+                    out _))
+            {
+                return;
+            }
+
+            var identity = run.CaptureIdentity();
+            var bossNotification = await ExecuteSettlementProjectionEffectAsync(
+                session,
+                run,
+                identity,
+                "licensed-boss-die-check-notification",
+                async () => await session.SendPacketAsync(
+                    GamePacketEnvelopeBuilder.Build(
+                        0x00,
+                        (ushort)NotiPacketTypeA21.BOSS_DIE_CHECK,
+                        DungeonNotificationBuilder.BuildBossDieCheck(
+                            result: 1,
+                            state: 1,
+                            request.BossSequence))));
+            if (!bossNotification)
+                return;
+
+            await ExecuteSettlementProjectionEffectAsync(
+                session,
+                run,
+                identity,
+                "licensed-enable-clear-notification",
+                async () => await session.SendPacketAsync(
+                    GamePacketEnvelopeBuilder.Build(
+                        0x00,
+                        (ushort)NotiPacketTypeA21.ENABLE_CLEAR_DUNGEON,
+                        DungeonNotificationBuilder.BuildEnableClearDungeon())));
+
+            FileLogger.Log(
+                $"[DungeonHandler] licensed clear preamble projected: " +
+                $"cid={session.Player.CharacterId} dungeon={run.DungeonId} " +
+                $"run={run.RunId} bossSeq={request.BossSequence} " +
+                "order=0073,001F");
+        }
+
+        private async Task HandleLicensedDungeonPlayResultCore(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body,
+            bool validateLicensedWireBody)
+        {
+            var run = session?.Player?.CurrentRun;
+            if (run == null
+                || !GameWorld.LicensedDungeonCatalog.TryGetDefinition(
+                    run.DungeonId,
+                    out _))
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] LICENSE_DUNGEON_PLAY_RESULT rejected: " +
+                    $"cid={session?.Player?.CharacterId ?? 0} " +
+                    $"dungeon={run?.DungeonId ?? 0} reason=not-licensed-run");
+                return;
+            }
+
+            LicensedDungeonPlayResultRequest request = null;
+            if (validateLicensedWireBody
+                && !LicensedDungeonPlayResultRequest.TryParse(
+                    body,
+                    out request,
+                    out var failureReason))
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] LICENSE_DUNGEON_PLAY_RESULT rejected: " +
+                    $"cid={session.Player.CharacterId} dungeon={run.DungeonId} " +
+                    $"length={body?.Length ?? 0} reason={failureReason}");
+                return;
+            }
+
+            var requestLength = request?.Body.Length ?? body?.Length ?? 0;
+
+            if (run.ClearedFact == null
+                || run.RunState != DungeonRunState.Cleared)
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] LICENSE_DUNGEON_PLAY_RESULT rejected: " +
+                    $"cid={session.Player.CharacterId} dungeon={run.DungeonId} " +
+                    $"runState={run.RunState} reason=clear-fact-missing");
+                return;
+            }
+
+            if (run.SettlementRuntime?.LicensedDungeon == null)
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] LICENSE_DUNGEON_PLAY_RESULT rejected: " +
+                    $"cid={session.Player.CharacterId} dungeon={run.DungeonId} " +
+                    "reason=licensed-reward-runtime-missing");
+                return;
+            }
+
+            var gate = run.Settlement.LicensedPlayResultGate;
+            await gate.WaitAsync();
+            try
+            {
+                DungeonRunLifecycle.CancelAutoFlip(session);
+                run.CardRewards = null;
+                run.PaidCardCost = 0;
+
+                int requestCount;
+                lock (run.SyncRoot)
+                {
+                    requestCount = ++run.Settlement
+                        .LicensedPlayResultRequestCount;
+                }
+
+                if (requestCount == 1)
+                {
+                    try
+                    {
+                        await SendLicensedDungeonClearInfoAsync(session, run);
+                    }
+                    catch
+                    {
+                        lock (run.SyncRoot)
+                        {
+                            run.Settlement.LicensedPlayResultRequestCount = 0;
+                        }
+                        throw;
+                    }
+
+                    lock (run.SyncRoot)
+                    {
+                        run.Settlement.LicensedClearInfoSent = true;
+                    }
+                    FileLogger.Log(
+                        $"[DungeonHandler] LICENSE_DUNGEON_PLAY_RESULT " +
+                        $"first request projected clear info: " +
+                        $"cid={session.Player.CharacterId} " +
+                        $"dungeon={run.DungeonId} run={run.RunId} " +
+                        $"length={requestLength} " +
+                        $"source={(validateLicensedWireBody ? "032C" : "002E")} " +
+                        "next=PLAY_RESULT");
+                    return;
+                }
+
+                if (run.SettlementState != DungeonSettlementState.ResultShown
+                    && run.SettlementState != DungeonSettlementState.Completed
+                    && !run.TryMarkResultShown())
+                {
+                    FileLogger.Log(
+                        $"[DungeonHandler] LICENSE_DUNGEON_PLAY_RESULT " +
+                        $"rejected after first request: " +
+                        $"cid={session.Player.CharacterId} dungeon={run.DungeonId} " +
+                        $"run={run.RunId} settlement={run.SettlementState}");
+                    return;
+                }
+
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x01,
+                    header.type,
+                    CommonPacketBodyBuilder.BuildSuccessAck()));
+                lock (run.SyncRoot)
+                {
+                    run.Settlement.LicensedPlayResultAckSent = true;
+                }
+
+                bool sendLicenseProjection;
+                lock (run.SyncRoot)
+                {
+                    sendLicenseProjection = !run.Settlement
+                        .LicensedLicenseProjectionSent;
+                }
+                if (sendLicenseProjection)
+                {
+                    await SendLicensedDungeonLicenseProjectionAsync(
+                        session,
+                        run);
+                    lock (run.SyncRoot)
+                    {
+                        run.Settlement.LicensedLicenseProjectionSent = true;
+                    }
+                }
+
+                var settlement = run.SettlementRuntime;
+                if (settlement?.ExperienceGrant != null)
+                {
+                    await ExecuteSettlementProjectionEffectAsync(
+                        session,
+                        run,
+                        run.CaptureIdentity(),
+                        "licensed-experience-notification",
+                        async () => await _svc.ProgressNotifications
+                            .SendExpGrantNotificationAsync(
+                                session,
+                                settlement.ExperienceGrant,
+                                "LICENSE_DUNGEON_PLAY_RESULT",
+                                growthContractBonusExp:
+                                    settlement.GrowthContractBonusExp,
+                                eliteMonsterKillBonusExp: 0,
+                                reloadMissingAccountProgress: true));
+                }
+                FileLogger.Log(
+                    $"[DungeonHandler] LICENSE_DUNGEON_PLAY_RESULT acknowledged: " +
+                    $"cid={session.Player.CharacterId} dungeon={run.DungeonId} " +
+                    $"instance={run.PartyDungeonInstanceId} run={run.RunId} " +
+                    $"length={requestLength} " +
+                    $"source={(validateLicensedWireBody ? "032C" : "002E")} " +
+                    $"next=LICENSE_DUNGEON_REQUEST_REWARD");
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        internal async Task HandleLicensedDungeonRequestReward(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body)
+        {
+            var run = session?.Player?.CurrentRun;
+            if (run == null
+                || !LicensedDungeonCatalog.TryGetDefinition(
+                    run.DungeonId,
+                    out _))
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] LICENSE_DUNGEON_REQUEST_REWARD " +
+                    $"rejected: cid={session?.Player?.CharacterId ?? 0} " +
+                    $"dungeon={run?.DungeonId ?? 0} " +
+                    "reason=not-licensed-run");
+                return;
+            }
+
+            if (!LicensedDungeonRequestRewardRequest.TryParse(
+                    body,
+                    out _,
+                    out var failureReason))
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] LICENSE_DUNGEON_REQUEST_REWARD " +
+                    $"rejected: cid={session.Player.CharacterId} " +
+                    $"dungeon={run.DungeonId} " +
+                    $"length={body?.Length ?? 0} reason={failureReason}");
+                return;
+            }
+
+            var clearFact = run.ClearedFact;
+            var settlement = run.SettlementRuntime;
+            var licensed = settlement?.LicensedDungeon;
+            if (clearFact == null
+                || licensed == null
+                || run.RunState != DungeonRunState.Cleared
+                || (run.SettlementState != DungeonSettlementState.ResultShown
+                    && run.SettlementState != DungeonSettlementState.Completed))
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] LICENSE_DUNGEON_REQUEST_REWARD " +
+                    $"rejected: cid={session.Player.CharacterId} " +
+                    $"dungeon={run.DungeonId} run={run.RunId} " +
+                    $"runState={run.RunState} settlement={run.SettlementState} " +
+                    "reason=play-result-not-acknowledged");
+                return;
+            }
+
+            if (!InventoryContext.TryGetOwnedLease(
+                    session.SessionId,
+                    session.Player.CharacterId,
+                    out var lease))
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] LICENSE_DUNGEON_REQUEST_REWARD " +
+                    $"rejected: cid={session.Player.CharacterId} " +
+                    "reason=inventory-lease-missing");
+                return;
+            }
+
+            var effectId = new DungeonEffectId(
+                run.GetSettlementSourceEventId(),
+                DungeonPersistentEffectKinds.LicensedDungeonRewardCommit,
+                DungeonEffectScope.Player,
+                run.RunId);
+            if (!_svc.PersistentEffects.TryApplyLicensedDungeonReward(
+                    effectId,
+                    lease,
+                    session.SessionId,
+                    licensed.DungeonId,
+                    licensed.LicenseLevel,
+                    licensed.GroupBossPresent,
+                    licensed.Rewards,
+                    out var result,
+                    out var error))
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] LICENSE_DUNGEON_REQUEST_REWARD " +
+                    $"failed: cid={session.Player.CharacterId} " +
+                    $"dungeon={run.DungeonId} run={run.RunId} " +
+                    $"error={error ?? "unknown"}");
+                return;
+            }
+
+            if (result?.Changes != null && _svc.InventoryRefresh != null)
+            {
+                foreach (var group in result.Changes.GroupBy(
+                             change => change.ListType))
+                {
+                    await _svc.InventoryRefresh.SendUpdateItemList(
+                        session,
+                        group.Key,
+                        group.Select(change => change.SlotIndex));
+                    if (!session.Player.IsCurrentDungeonRun(run.CaptureIdentity()))
+                        return;
+                }
+            }
+
+            run.TryCompleteSettlement();
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x01,
+                header.type,
+                CommonPacketBodyBuilder.BuildSuccessAck()));
+            FileLogger.Log(
+                $"[DungeonHandler] LICENSE_DUNGEON_REQUEST_REWARD " +
+                $"committed: cid={session.Player.CharacterId} " +
+                $"dungeon={run.DungeonId} run={run.RunId} " +
+                $"changes={result?.Changes.Count ?? 0}");
         }
 
         private async Task ProjectSettlementPresentationAsync(
@@ -377,14 +765,35 @@ namespace DfoServer.Network.Handlers.Dungeon
             EnhancedClientSession session)
         {
             var run = session?.Player?.CurrentRun;
+            var isLicensed = run?.ClearedFact?.PresentationKind
+                == DungeonClearPresentationKind.LicensedDungeon;
             if (run == null
-                || (run.ClearedFact != null
+                || (!isLicensed
+                    && run.ClearedFact != null
                     && !DungeonClearPresentationPolicy
                         .UsesStandardResultProjection(
                             run.ClearedFact.PresentationKind))
                 || !run.TryGetPendingSettlementPresentation(
                     out var presentationRankPoint))
             {
+                return;
+            }
+
+            if (isLicensed)
+            {
+                var pendingRank = run.Settlement
+                    .PendingPresentationRankPoint ?? 0;
+                var syntheticHeader = new GamePacketHeader
+                {
+                    cmd = 0x01,
+                    type = (ushort)CmdPacketTypeA21.SET_PLAY_RESULT,
+                };
+                await HandleLicensedDungeonPlayResultCore(
+                    session,
+                    syntheticHeader,
+                    Array.Empty<byte>(),
+                    validateLicensedWireBody: false);
+                run.TryAcknowledgePendingSettlementPresentation(pendingRank);
                 return;
             }
 
@@ -582,6 +991,42 @@ namespace DfoServer.Network.Handlers.Dungeon
                         "persistent-dungeon-mechanisms",
                         async () => await _svc.PersistentMechanisms
                             .ApplyDungeonClearAsync(session, run)))
+                {
+                    run.Effects.TryFail(authoritativeReservation);
+                    return false;
+                }
+
+                if (_svc.LicensedDungeons.IsLicensedDungeon(run.DungeonId)
+                    && !await ExecuteSettlementEffectAsync(
+                        session,
+                        run,
+                        identity,
+                        "licensed-dungeon-license-progress",
+                        () =>
+                        {
+                            if (!_svc.LicensedDungeons
+                                    .TryAdvanceLicenseOnClear(
+                                        session.Player.CharacterId,
+                                        run.DungeonId,
+                                        run.LicensedDungeonReviveUsed,
+                                        out var advanced,
+                                        out var noReviveClearCount,
+                                        out var failureReason))
+                            {
+                                throw new InvalidOperationException(
+                                    "Licensed dungeon license progression " +
+                                    $"failed: {failureReason}");
+                            }
+
+                            FileLogger.Log(
+                                $"[DungeonHandler] licensed dungeon license " +
+                                $"progression: cid={session.Player.CharacterId} " +
+                                $"dungeon={run.DungeonId} " +
+                                $"revive={(run.LicensedDungeonReviveUsed ? 1 : 0)} " +
+                                $"noReviveCount={noReviveClearCount} " +
+                                $"advanced={(advanced ? 1 : 0)}");
+                            return Task.CompletedTask;
+                        }))
                 {
                     run.Effects.TryFail(authoritativeReservation);
                     return false;
@@ -991,6 +1436,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             {
                 IsTowerOfDespair = isTowerOfDespair,
                 BloodAltar = bloodAltarSettlement,
+                LicensedDungeon = LicensedDungeonRewardService.Prepare(run),
                 TowerOfDespairFloor = towerOfDespairFloor,
                 ShouldScheduleCardRewardFlow = shouldScheduleCardRewardFlow,
                 ClientRankPoint = clearRank.ClientRankPoint,
@@ -1290,9 +1736,12 @@ namespace DfoServer.Network.Handlers.Dungeon
             return ShouldScheduleCardRewardFlow(dungeonId);
         }
 
-        private static bool ShouldScheduleCardRewardFlow(int dungeonId)
+        internal static bool ShouldScheduleCardRewardFlow(int dungeonId)
         {
-            return !DungeonData.TryGetTowerOfDespairFloor(dungeonId, out _);
+            // Licensed dungeons have their own clear/reward request flow.
+            // Never create the ordinary 0x0045/0x0046 card layout for them.
+            return !LicensedDungeonCatalog.TryGetDefinition(dungeonId, out _)
+                && !DungeonData.TryGetTowerOfDespairFloor(dungeonId, out _);
         }
 
         private static ClearRankParts CalculateAuthoritativeClearRank(
@@ -1704,6 +2153,17 @@ namespace DfoServer.Network.Handlers.Dungeon
 
         internal async Task HandleSelectCard(EnhancedClientSession session, GamePacketHeader header, byte[] body)
         {
+            var run = session?.Player?.CurrentRun;
+            if (LicensedDungeonCatalog.TryGetDefinition(
+                    run?.DungeonId ?? 0,
+                    out _))
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] SELECT_CARD ignored for licensed " +
+                    $"dungeon: cid={session?.Player?.CharacterId ?? 0} " +
+                    $"dungeon={run.DungeonId} run={run.RunId}");
+                return;
+            }
             var clearFact = session?.Player?.CurrentRun?.ClearedFact;
             if (clearFact != null
                 && !DungeonClearPresentationPolicy
@@ -1732,6 +2192,19 @@ namespace DfoServer.Network.Handlers.Dungeon
             var run = session?.Player?.CurrentRun;
             if (run == null)
                 return;
+            if (LicensedDungeonCatalog.TryGetDefinition(
+                    run.DungeonId,
+                    out _))
+            {
+                // A stale timer/card plan must not resurrect the ordinary
+                // flip layout while the licensed reward request is pending.
+                DungeonRunLifecycle.CancelAutoFlip(session);
+                run.CardRewards = null;
+                FileLogger.Log(
+                    $"[DungeonHandler] EPLP licensed settlement keeps " +
+                    $"ordinary card layout disabled: cid={session.Player.CharacterId} " +
+                    $"dungeon={run.DungeonId} run={run.RunId}");
+            }
             var runIdentity = run.CaptureIdentity();
             var linkedNextId = run?.LinkedDungeonNextId ?? 0;
             var difficulty = run?.Difficulty ?? 0;
@@ -1757,6 +2230,17 @@ namespace DfoServer.Network.Handlers.Dungeon
 
         internal async Task HandleCardStartRequest(EnhancedClientSession session, GamePacketHeader header, byte[] body)
         {
+            var run = session?.Player?.CurrentRun;
+            if (LicensedDungeonCatalog.TryGetDefinition(
+                    run?.DungeonId ?? 0,
+                    out _))
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] CARD_START_REQUEST ignored for licensed " +
+                    $"dungeon: cid={session?.Player?.CharacterId ?? 0} " +
+                    $"dungeon={run.DungeonId} run={run.RunId}");
+                return;
+            }
             var clearFact = session?.Player?.CurrentRun?.ClearedFact;
             if (clearFact != null
                 && !DungeonClearPresentationPolicy
@@ -1789,6 +2273,23 @@ namespace DfoServer.Network.Handlers.Dungeon
                 || run.Instance.State == DungeonInstanceState.Ended)
             {
                 return;
+            }
+
+            // Licensed dungeons have the same clear facts and experience
+            // authority as ordinary dungeons, but their result UI and reward
+            // request are owned by the dedicated license protocol. Normalize
+            // all clear sources here so boss, passive-object and quest clears
+            // cannot accidentally enter the ordinary card flow.
+            if (intent.PresentationKind == DungeonClearPresentationKind.Standard
+                && LicensedDungeonCatalog.TryGetDefinition(
+                    run.DungeonId,
+                    out _))
+            {
+                intent = new DungeonClearIntent(
+                    intent.Source,
+                    intent.Reason,
+                    intent.BossCode,
+                    DungeonClearPresentationKind.LicensedDungeon);
             }
 
             DungeonEncounterApplicationService.Apply(
@@ -1939,6 +2440,11 @@ namespace DfoServer.Network.Handlers.Dungeon
             DungeonEffectReservation clearReservation = default;
             try
             {
+                // A transport failure can happen after the run has entered
+                // Cleared but before the clear projection lease is committed.
+                // Licensed dungeons defer their dedicated clear-info packet
+                // to the first client 0x032C request; do not replay rewards,
+                // quest effects, or ordinary settlement packets here.
                 if (!run.TryBeginClearCommit(clearFact)
                     && !run.CanResumeClearCommit(clearFact))
                 {
@@ -2007,6 +2513,29 @@ namespace DfoServer.Network.Handlers.Dungeon
                             participantReservation);
                         return false;
                     }
+                }
+
+                if (ShouldProjectSoulRechallengeReady(
+                        standardPresentation,
+                        DfoServer.GameWorld.DungeonCatalog.IsSoulDungeon(
+                            run.DungeonId))
+                    && !await ExecuteClearEffectAsync(
+                        session,
+                        run,
+                        identity,
+                        clearFact,
+                        "soul-eplp-rechallenge-ready",
+                        async () => await session.SendPacketAsync(
+                            GamePacketEnvelopeBuilder.Build(
+                                0x00,
+                                (ushort)NotiPacketTypeA21.EPLP_RECHALLENGE,
+                                DungeonNotificationBuilder
+                                    .BuildEplpRechallengeReady()))))
+                {
+                    run.Effects.TryFail(clearReservation);
+                    run.Instance.ParticipantEffects.TryFail(
+                        participantReservation);
+                    return false;
                 }
 
                 if (!await ExecuteClearEffectAsync(
@@ -2083,6 +2612,23 @@ namespace DfoServer.Network.Handlers.Dungeon
                 {
                     throw new InvalidOperationException(
                         "Dungeon clear effect reservation was lost before commit.");
+                }
+
+                if (run.AnotherAradActive && run.AnotherAradQuest != null)
+                {
+                    run.AnotherAradQuest.EvaluateSettlement(
+                        run.AnotherAradHistoricalDungeonId > 0
+                            ? run.AnotherAradHistoricalDungeonId
+                            : run.DungeonId,
+                        run.Difficulty,
+                        DateTime.UtcNow,
+                        out var mirrorTrigger);
+                    FileLogger.Log(
+                        $"[DungeonHandler] CRACK_OF_DIMENSION quest settlement: " +
+                        $"cid={session.Player.CharacterId} " +
+                        $"quest={run.AnotherAradCrackQuestId} " +
+                        $"trigger={mirrorTrigger} " +
+                        $"completed={(run.AnotherAradQuest.Completed ? 1 : 0)}");
                 }
 
                 if (clearFact.PresentationKind
@@ -2355,6 +2901,92 @@ namespace DfoServer.Network.Handlers.Dungeon
             }
         }
 
+        private static async Task SendLicensedDungeonClearInfoAsync(
+            EnhancedClientSession session,
+            DungeonRun run)
+        {
+            if (session?.Player == null
+                || run == null
+                || !LicensedDungeonCatalog.TryGetDefinition(
+                    run.DungeonId,
+                    out var definition))
+            {
+                throw new InvalidOperationException(
+                    "Licensed dungeon clear info requires a licensed run.");
+            }
+
+            var settlement = run.SettlementRuntime;
+            var licensed = settlement?.LicensedDungeon;
+            if (licensed == null
+                || licensed.DungeonClearReward == null
+                || licensed.DailyClearReward == null)
+            {
+                throw new InvalidOperationException(
+                    "Licensed dungeon clear info requires frozen ETC rewards.");
+            }
+
+            var body = LicensedDungeonPacketBuilder.BuildClearInfo(
+                licensed.GroupBossPresent,
+                settlement.ClearTimeMilliseconds,
+                licensed.DungeonClearReward,
+                licensed.DailyClearReward);
+            await session.SendPacketAsync(
+                GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketTypeA21.LICENSE_DUNGEON_CLEAR_INFO,
+                    body));
+            FileLogger.Log(
+                $"[DungeonHandler] LICENSE_DUNGEON_CLEAR_INFO sent: " +
+                $"cid={session.Player.CharacterId} dungeon={run.DungeonId} " +
+                $"group={definition.GroupId} license={definition.LicenseLevel} " +
+                $"elapsedMs={settlement.ClearTimeMilliseconds} " +
+                $"groupBoss={(licensed.GroupBossPresent ? 1 : 0)} " +
+                $"clearReward={licensed.DungeonClearReward.ItemId}x" +
+                $"{licensed.DungeonClearReward.Count} " +
+                $"dailyReward={licensed.DailyClearReward.ItemId}x" +
+                $"{licensed.DailyClearReward.Count} " +
+                $"body={BitConverter.ToString(body)}");
+        }
+
+        private async Task SendLicensedDungeonLicenseProjectionAsync(
+            EnhancedClientSession session,
+            DungeonRun run)
+        {
+            if (session?.Player == null
+                || run == null
+                || !LicensedDungeonCatalog.TryGetDefinition(
+                    run.DungeonId,
+                    out var definition))
+            {
+                throw new InvalidOperationException(
+                    "Licensed dungeon license projection requires a licensed run.");
+            }
+
+            if (!_svc.LicensedDungeons.TryGetLicenseProjection(
+                    session.Player.CharacterId,
+                    definition.GroupId,
+                    out var record,
+                    out var failureReason))
+            {
+                throw new InvalidOperationException(
+                    "Licensed dungeon license projection failed: " +
+                    failureReason);
+            }
+
+            var body = LicensedDungeonPacketBuilder.BuildCharacterLicenseInfo(
+                new[] { record });
+            await session.SendPacketAsync(
+                GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketTypeA21.CHARAC_DUNGEON_LICENSE_INFO,
+                    body));
+            FileLogger.Log(
+                $"[DungeonHandler] CHARAC_DUNGEON_LICENSE_INFO projected after " +
+                $"licensed clear: cid={session.Player.CharacterId} " +
+                $"group={definition.GroupId} dungeon={record.DungeonId} " +
+                $"license={record.LicenseLevel} body={BitConverter.ToString(body)}");
+        }
+
         internal async Task TryClearQuestNpcDungeonAsync(
             EnhancedClientSession session,
             Game.Quests.QuestSetTriggerResult result,
@@ -2564,6 +3196,11 @@ namespace DfoServer.Network.Handlers.Dungeon
 
             return 0;
         }
+
+        internal static bool ShouldProjectSoulRechallengeReady(
+            bool standardPresentation,
+            bool isSoulDungeon)
+            => standardPresentation && isSoulDungeon;
 
         private static bool ShouldSyncQuestConnectedStartMapOnDungeonClear(
             DungeonRun run,

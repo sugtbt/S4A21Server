@@ -24,6 +24,12 @@ namespace DfoServer.Network.Builders
         public const int ObjectExperienceCountOffset = 155;
         public const int ObjectExperienceEntriesOffset = 159;
         public const byte NoBossMapMarkerCoordinate = 0xFF;
+        public const byte EplpRechallengeReadyResult = 9;
+
+        // The A21 EPLP_RECHALLENGE consumer reads one result byte. The native
+        // ordinary-dungeon success path uses 9 to release the retry UI.
+        public static byte[] BuildEplpRechallengeReady()
+            => new[] { EplpRechallengeReadyResult };
 
         // NOTI 28 (0x001C) DUNGEON_INFO
         // A21 的固定前缀从 u32 dungeonId 开始。客户端 reader 还会读取
@@ -328,6 +334,20 @@ namespace DfoServer.Network.Builders
         public static byte[] BuildEnableClearDungeon()
         {
             return new byte[] { 0x00 };
+        }
+
+        // A21 NOTI 0x0073 BOSS_DIE_CHECK. The verified licensed-dungeon
+        // frame is result/state followed by the boss sequence (u16).
+        internal static byte[] BuildBossDieCheck(
+            byte result,
+            byte state,
+            ushort bossSequence)
+        {
+            var writer = new GamePacketWriter();
+            writer.WriteByte(result);
+            writer.WriteByte(state);
+            writer.WriteUInt16(bossSequence);
+            return writer.ToArray();
         }
 
         public static byte[] BuildLinkedDungeonInfo(

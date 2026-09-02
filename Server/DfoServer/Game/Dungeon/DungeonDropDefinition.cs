@@ -27,6 +27,7 @@ namespace DfoServer.Game.Dungeon
         Standard = 0,
         ImpossibleParty = 1,
         ImpossibleSolo = 2,
+        Licensed = 3,
     }
 
     public sealed class DungeonDropPolicy
@@ -42,6 +43,11 @@ namespace DfoServer.Game.Dungeon
                 DungeonMonsterDropSource.Gold
                 | DungeonMonsterDropSource.Independent
                 | DungeonMonsterDropSource.Dimension);
+
+        // Licensed dungeons use their dedicated ETC reward projection. Their
+        // ordinary monster, world, area and independent drop pools are closed.
+        public static DungeonDropPolicy Licensed { get; } =
+            new DungeonDropPolicy(DungeonMonsterDropSource.None);
 
         private DungeonDropPolicy(DungeonMonsterDropSource allowedSources)
         {
@@ -93,5 +99,16 @@ namespace DfoServer.Game.Dungeon
                 sourcePath,
                 DungeonDropDefinitionKind.Standard,
                 DungeonDropPolicy.Standard);
+
+        internal static DungeonDropDefinition CreateLicensed(
+            int dungeonId,
+            string sourcePath = "")
+            => new DungeonDropDefinition(
+                dungeonId,
+                sharedDungeonId: -1,
+                impossibleClassification: -1,
+                sourcePath,
+                DungeonDropDefinitionKind.Licensed,
+                DungeonDropPolicy.Licensed);
     }
 }

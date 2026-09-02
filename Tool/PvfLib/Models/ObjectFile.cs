@@ -1,14 +1,29 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Text.RegularExpressions;
 
 namespace PvfLib
 {
+    public sealed class TimedMonsterSpawnInfo
+    {
+        public int DelayMilliseconds { get; set; }
+        public int Level { get; set; }
+        public int MonsterId { get; set; }
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int Z { get; set; }
+        public int Flags { get; set; }
+    }
     
     
     
     
     public class ObjectFile : PvfModelBase
     {
+        private static readonly Regex IntegerTokenRegex =
+            new Regex(@"-?\d+", RegexOptions.Compiled);
+
         #region 基本信息
 
         public string Name { get; set; }
@@ -72,6 +87,8 @@ namespace PvfLib
         #region 其他
 
         public string IntData { get; set; }
+        public IReadOnlyList<TimedMonsterSpawnInfo> TimedMonsterSpawns
+            { get; private set; } = Array.Empty<TimedMonsterSpawnInfo>();
         public string StringData { get; set; }
         public string SoundCategory { get; set; }
         public string Particle { get; set; }
@@ -140,7 +157,57 @@ namespace PvfLib
                 }
             }
 
+            obj.TimedMonsterSpawns = ParseTimedMonsterSpawns(obj.IntData);
+
             return obj;
+        }
+
+        private static IReadOnlyList<TimedMonsterSpawnInfo>
+            ParseTimedMonsterSpawns(string data)
+        {
+            if (string.IsNullOrWhiteSpace(data))
+                return Array.Empty<TimedMonsterSpawnInfo>();
+
+            var matches = IntegerTokenRegex.Matches(data);
+            if (matches.Count == 0
+                || !int.TryParse(matches[0].Value, out var count)
+                || count <= 0
+                || matches.Count != 1 + count * 7)
+            {
+                return Array.Empty<TimedMonsterSpawnInfo>();
+            }
+
+            var result = new List<TimedMonsterSpawnInfo>(count);
+            for (var index = 0; index < count; index++)
+            {
+                var offset = 1 + index * 7;
+                var values = new int[7];
+                for (var field = 0; field < values.Length; field++)
+                {
+                    if (!int.TryParse(
+                            matches[offset + field].Value,
+                            out values[field]))
+                    {
+                        return Array.Empty<TimedMonsterSpawnInfo>();
+                    }
+                }
+
+                if (values[0] < 0 || values[1] <= 0 || values[2] <= 0)
+                    return Array.Empty<TimedMonsterSpawnInfo>();
+
+                result.Add(new TimedMonsterSpawnInfo
+                {
+                    DelayMilliseconds = values[0],
+                    Level = values[1],
+                    MonsterId = values[2],
+                    X = values[3],
+                    Y = values[4],
+                    Z = values[5],
+                    Flags = values[6],
+                });
+            }
+
+            return new ReadOnlyCollection<TimedMonsterSpawnInfo>(result);
         }
 
         #endregion

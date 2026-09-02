@@ -1,7 +1,9 @@
 using DfoServer.Game.Characters;
 using DfoServer.Game.Friends;
 using DfoServer.Infrastructure;
+using DfoServer.Network;
 using DfoServer.Network.Builders;
+using DfoServer.Network.Handlers;
 using DfoServer.Sqlite;
 using Microsoft.Data.Sqlite;
 using System;
@@ -57,6 +59,7 @@ namespace DfoServer.SelfTests
                 RunMigrationPathTest(tempDir);
                 RunCharacterLifecycleTests(tempDir);
                 RunBuilderByteTests();
+                RunCrossAreaPartyInviteTests();
             }
             finally
             {
@@ -361,6 +364,82 @@ PRAGMA user_version = 7;";
                 && body.Skip(3).Take(38).All(b => b == 0));
             Check("builder: uid=CharacterId(小端, offset 41)",
                 body != null && body.Length > 42 && body[41] == 0x02 && body[42] == 0x01);
+        }
+
+        private static void RunCrossAreaPartyInviteTests()
+        {
+            var inviter = new EnhancedClientSession(
+                null,
+                new GamePacketHeader(),
+                GameNetworkConfig.NormalGamePort);
+            inviter.Player.CharacterId = 1;
+            inviter.Player.UserId = 1;
+            inviter.Player.UserState = 0x00;
+            inviter.Player.CurTownId = 1;
+            inviter.Player.CurAreaId = 0;
+            inviter.Player.TownPresenceReady = true;
+            inviter.Player.Name = new byte[] { 0x41 };
+            inviter.Player.AppearanceEntries = new[]
+            {
+                new CharacterAppearanceEntry(0, 54601, 4, new byte[4], 0, 0, 0, 0),
+            };
+
+            var invitee = new EnhancedClientSession(
+                null,
+                new GamePacketHeader(),
+                GameNetworkConfig.NormalGamePort);
+            invitee.Player.CharacterId = 2;
+            invitee.Player.UserId = 2;
+            invitee.Player.UserState = 0x00;
+            invitee.Player.CurTownId = 20;
+            invitee.Player.CurAreaId = 3;
+            invitee.Player.TownPresenceReady = true;
+            invitee.Player.Name = new byte[] { 0x42 };
+
+            var otherChannel = new EnhancedClientSession(
+                null,
+                new GamePacketHeader(),
+                GameNetworkConfig.Channel100GamePort);
+            otherChannel.Player.CharacterId = 3;
+            otherChannel.Player.UserId = 3;
+            otherChannel.Player.UserState = 0x00;
+            otherChannel.Player.CurTownId = 20;
+            otherChannel.Player.CurAreaId = 3;
+            otherChannel.Player.TownPresenceReady = true;
+            otherChannel.Player.Name = new byte[] { 0x43 };
+
+            var crossAreaContext =
+                PartyHandler.BuildCrossAreaPartyInviteContextPacket(
+                    inviter,
+                    invitee);
+            invitee.Player.CurTownId = inviter.Player.CurTownId;
+            invitee.Player.CurAreaId = inviter.Player.CurAreaId;
+            var sameAreaContext =
+                PartyHandler.BuildCrossAreaPartyInviteContextPacket(
+                    inviter,
+                    invitee);
+            invitee.Player.CurTownId = 20;
+            invitee.Player.CurAreaId = 3;
+            invitee.Player.TownPresenceReady = false;
+            var unavailableContext =
+                PartyHandler.BuildCrossAreaPartyInviteContextPacket(
+                    inviter,
+                    invitee);
+
+            Check(
+                "跨区域邀请: 仅同频道当前城镇会话前置邀请者 USERINFO subtype0",
+                crossAreaContext != null
+                && crossAreaContext[0] == 0x00
+                && BitConverter.ToUInt16(crossAreaContext, 1)
+                    == (ushort)NotiPacketTypeA21.USERINFO
+                && crossAreaContext[15] == 0x00
+                && BitConverter.ToUInt16(crossAreaContext, 56)
+                    == inviter.Player.UserId
+                && sameAreaContext == null
+                && unavailableContext == null
+                && PartyHandler.BuildCrossAreaPartyInviteContextPacket(
+                    inviter,
+                    otherChannel) == null);
         }
 
         private static object GetStatic(string field)

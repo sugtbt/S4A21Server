@@ -46,6 +46,9 @@ namespace DfoServer.Sqlite
                 new MigrationStep(21, "rename_character_fatigue_columns", RenameCharacterFatigueColumns),
                 new MigrationStep(22, "add_character_fatigue_reset_day", ApplyCharacterFatigueResetDay),
                 new MigrationStep(23, "drop_character_experience_bonus_effects_cleanup", ApplyCharacterExperienceBonusEffects),
+                new MigrationStep(24, "add_license_dungeon_period_state", ApplyLicenseDungeonPeriodState),
+                new MigrationStep(25, "add_license_dungeon_progress", ApplyLicenseDungeonProgress),
+                new MigrationStep(26, "add_license_dungeon_unlock_conditions", ApplyLicenseDungeonUnlockConditions),
             };
 
         internal static int CurrentVersion =>
@@ -426,6 +429,50 @@ CREATE TABLE IF NOT EXISTS event_joust_history (
 
             FileLogger.Log(
                 $"[Db] migration v11 converted {converted} client text blob(s) from legacy UTF-8 to GBK");
+        }
+
+        private static void ApplyLicenseDungeonPeriodState(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            ExecuteSql(connection, transaction, @"
+CREATE TABLE IF NOT EXISTS character_license_dungeon_period_state (
+    character_id INTEGER PRIMARY KEY,
+    day_id INTEGER NOT NULL DEFAULT 0,
+    daily_entry_count INTEGER NOT NULL DEFAULT 0 CHECK(daily_entry_count >= 0),
+    month_id INTEGER NOT NULL DEFAULT 0,
+    monthly_entry_count INTEGER NOT NULL DEFAULT 0 CHECK(monthly_entry_count >= 0),
+    monthly_groop_appear_count INTEGER NOT NULL DEFAULT 0 CHECK(monthly_groop_appear_count >= 0),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);");
+        }
+
+        private static void ApplyLicenseDungeonProgress(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            ExecuteSql(connection, transaction, @"
+CREATE TABLE IF NOT EXISTS character_license_dungeon_progress (
+    character_id INTEGER NOT NULL,
+    group_id INTEGER NOT NULL CHECK (group_id > 0),
+    license_level INTEGER NOT NULL CHECK (license_level > 0),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (character_id, group_id),
+    FOREIGN KEY (character_id) REFERENCES characters(character_id) ON DELETE CASCADE
+);");
+        }
+
+        private static void ApplyLicenseDungeonUnlockConditions(
+            SqliteConnection connection,
+            SqliteTransaction transaction)
+        {
+            AddColumnIfMissing(
+                connection,
+                transaction,
+                "character_license_dungeon_progress",
+                "no_revive_clear_count",
+                "INTEGER NOT NULL DEFAULT 0 CHECK (no_revive_clear_count >= 0)");
         }
 
         private static int ConvertCharacterNames(

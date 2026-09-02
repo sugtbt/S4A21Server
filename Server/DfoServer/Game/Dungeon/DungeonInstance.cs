@@ -12,6 +12,16 @@ namespace DfoServer.Game.Dungeon
         private ClearConditionState _clearConditionTemplate;
 
         public int MazeIndex { get; init; } = -1;
+        internal bool AnotherAradActive { get; init; }
+        internal int AnotherAradWrapperDungeonId { get; init; }
+        internal int AnotherAradHistoricalDungeonId { get; init; }
+        internal int AnotherAradCrackQuestId { get; init; }
+        internal bool AnotherAradQuestAccepted { get; init; }
+        internal GameWorld.AnotherAradQuestDefinition AnotherAradQuestDefinition
+        {
+            get;
+            init;
+        }
         public bool MazeQuestConnected { get; init; }
         public int ActiveQuestMazeQuestId { get; init; }
         public int MazeStartMapId { get; init; }
@@ -67,6 +77,14 @@ namespace DfoServer.Game.Dungeon
                 throw new ArgumentNullException(nameof(run));
 
             run.MazeIndex = MazeIndex;
+            run.AnotherAradActive = AnotherAradActive;
+            run.AnotherAradWrapperDungeonId = AnotherAradWrapperDungeonId;
+            run.AnotherAradHistoricalDungeonId = AnotherAradHistoricalDungeonId;
+            run.AnotherAradCrackQuestId = AnotherAradCrackQuestId;
+            run.AnotherAradQuest = AnotherAradQuestDefinition == null
+                ? null
+                : new AnotherAradQuestRuntime(AnotherAradQuestDefinition);
+            run.AnotherAradQuestAccepted = false;
             run.MazeQuestConnected = MazeQuestConnected;
             run.ActiveQuestMazeQuestId = ActiveQuestMazeQuestId;
             run.MazeStartMapId = MazeStartMapId;

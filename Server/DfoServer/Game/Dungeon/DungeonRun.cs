@@ -239,6 +239,36 @@ namespace DfoServer.Game.Dungeon
             get => Selection.IsA21TutorialEntry;
             set => Selection.IsA21TutorialEntry = value;
         }
+        internal bool AnotherAradActive
+        {
+            get => Selection.AnotherAradActive;
+            set => Selection.AnotherAradActive = value;
+        }
+        internal int AnotherAradWrapperDungeonId
+        {
+            get => Selection.AnotherAradWrapperDungeonId;
+            set => Selection.AnotherAradWrapperDungeonId = value;
+        }
+        internal int AnotherAradHistoricalDungeonId
+        {
+            get => Selection.AnotherAradHistoricalDungeonId;
+            set => Selection.AnotherAradHistoricalDungeonId = value;
+        }
+        internal int AnotherAradCrackQuestId
+        {
+            get => Selection.AnotherAradCrackQuestId;
+            set => Selection.AnotherAradCrackQuestId = value;
+        }
+        internal bool AnotherAradQuestAccepted
+        {
+            get => Selection.AnotherAradQuestAccepted;
+            set => Selection.AnotherAradQuestAccepted = value;
+        }
+        internal AnotherAradQuestRuntime AnotherAradQuest
+        {
+            get => Selection.AnotherAradQuest;
+            set => Selection.AnotherAradQuest = value;
+        }
         public byte HellPartyMode { get => Selection.HellPartyMode; set => Selection.HellPartyMode = value; }
         public bool VeryDifficultHell { get => Selection.VeryDifficultHell; set => Selection.VeryDifficultHell = value; }
         public bool HellGorgeousChallenge { get => Selection.HellGorgeousChallenge; set => Selection.HellGorgeousChallenge = value; }
@@ -313,6 +343,11 @@ namespace DfoServer.Game.Dungeon
         public DeathTower.DeathTowerSession Tower { get => Mechanisms.Tower; set => Mechanisms.Tower = value; }
         public bool IsWaitingDeathRespawn { get => Combat.IsWaitingDeathRespawn; set => Combat.IsWaitingDeathRespawn = value; }
         public DateTime DeathRespawnAvailableAt { get => Combat.DeathRespawnAvailableAt; set => Combat.DeathRespawnAvailableAt = value; }
+        internal bool LicensedDungeonReviveUsed
+        {
+            get => Combat.LicensedDungeonReviveUsed;
+            set => Combat.LicensedDungeonReviveUsed = value;
+        }
 
         public DungeonRunIdentity CaptureIdentity() =>
             new DungeonRunIdentity(PartyDungeonInstanceId, RunId, RunGeneration);

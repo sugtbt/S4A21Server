@@ -22,7 +22,8 @@ namespace DfoServer.Game.Quests
                 {
                     var authority = QuestClientTriggerAuthority.Resolve(
                         quest.QuestId,
-                        request.TriggerType);
+                        request.TriggerType,
+                        request.Increment);
                     if (authority == QuestClientTriggerDisposition.Reject)
                         return result;
                     if (authority == QuestClientTriggerDisposition.Recompute)

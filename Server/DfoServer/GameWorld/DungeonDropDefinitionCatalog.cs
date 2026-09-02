@@ -28,6 +28,18 @@ namespace DfoServer.GameWorld
                 if (file == null)
                     return CreateStandard(dungeonId, loaded.FilePath);
 
+                if (LicensedDungeonCatalog.TryGetDefinition(
+                        dungeonId,
+                        out _))
+                {
+                    FileLogger.Log(
+                        $"[DungeonDropDefinition] licensed whitelist policy: " +
+                        $"dungeon={dungeonId} path={loaded.FilePath}");
+                    return DungeonDropDefinition.CreateLicensed(
+                        dungeonId,
+                        loaded.FilePath);
+                }
+
                 if (file.ImpossibleDungeonClassification >= 0)
                 {
                     return new DungeonDropDefinition(

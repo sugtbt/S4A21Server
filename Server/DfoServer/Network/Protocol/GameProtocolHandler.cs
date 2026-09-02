@@ -660,6 +660,8 @@ namespace DfoServer.Network
         {
             d[0x000F] = _dungeonHandler.Handle_ENUM_CMDPACKET_ENTER_SELECT_DUNGEON;
             d[0x0010] = _dungeonHandler.Handle_ENUM_CMDPACKET_SELECT_DUNGEON;
+            d[(ushort)CmdPacketTypeA21.CRACK_OF_DIMENSION] =
+                _dungeonHandler.Handle_ENUM_CMDPACKET_CRACK_OF_DIMENSION;
             d[(ushort)CmdPacketTypeA21.REQUEST_CIRCLE_ENTER] =
                 _dungeonHandler.Handle_ENUM_CMDPACKET_REQUEST_CIRCLE_ENTER;
             d[(ushort)CmdPacketTypeA21.SEQUENTIAL_DUNGEON_INFO] =
@@ -670,6 +672,10 @@ namespace DfoServer.Network
             d[(ushort)CmdPacketTypeA21.GET_ITEM] = _dungeonHandler.Handle_ENUM_CMDPACKET_GET_ITEM;
             d[0x002D] = _dungeonHandler.Handle_ENUM_CMDPACKET_MOVE_MAP;
             d[0x002E] = HandleRaidAwareSetPlayResult;                    //46
+            d[(ushort)CmdPacketTypeA21.LICENSE_DUNGEON_PLAY_RESULT] =
+                _dungeonHandler.Handle_LICENSE_DUNGEON_PLAY_RESULT;
+            d[(ushort)CmdPacketTypeA21.LICENSE_DUNGEON_REQUEST_REWARD] =
+                _dungeonHandler.Handle_LICENSE_DUNGEON_REQUEST_REWARD;
             d[0x002F] = _dungeonHandler.Handle_ENUM_CMDPACKET_DROP_ITEM;
             d[0x0045] = _dungeonHandler.Handle_CARD_START_REQUEST;
             d[0x0047] = _dungeonHandler.Handle_ENUM_CMDPACKET_SELECT_CARD;
@@ -770,6 +776,8 @@ namespace DfoServer.Network
                 };
             d[0x001F] = async (s, h, b) => //31
             {
+                if (await _dungeonHandler.TryHandleAnotherAradQuestAcceptAsync(s, h, b))
+                    return;
                 if (s.GameSession != null)
                     await s.GameSession.QuestManager.HandleAcceptQuestAsync(
                         h.type,
@@ -786,6 +794,13 @@ namespace DfoServer.Network
             };
             d[0x0021] = async (s, h, b) => //33
             {
+                if (await _dungeonHandler.TryHandleAnotherAradQuestSetTriggerAsync(
+                        s,
+                        h,
+                        b))
+                {
+                    return;
+                }
                 if (s.GameSession != null)
                 {
                     var sourceRun = s.Player?.CurrentRun;
@@ -805,6 +820,13 @@ namespace DfoServer.Network
             };
             d[0x0022] = async (s, h, b) => //34
             {
+                if (await _dungeonHandler.TryHandleAnotherAradQuestFinishAsync(
+                        s,
+                        h,
+                        b))
+                {
+                    return;
+                }
                 if (s.GameSession != null)
                     await s.GameSession.QuestManager.HandleFinishQuestAsync(
                         h.type,

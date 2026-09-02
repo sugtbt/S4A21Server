@@ -13,6 +13,7 @@ namespace DfoServer.Game.Dungeon
         internal int TowerOfDespairFloor;
         internal bool ShouldScheduleCardRewardFlow;
         internal BloodAltar.BloodAltarParticipantSettlementRuntime BloodAltar;
+        internal LicensedDungeonRewardRuntime LicensedDungeon;
 
         // The current protocol supplies a bounded, first-write-wins rank via
         // SET_PLAY_RESULT. It can adjust score EXP; independent server-side

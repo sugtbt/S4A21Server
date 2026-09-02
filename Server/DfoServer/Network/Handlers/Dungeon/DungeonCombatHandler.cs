@@ -217,14 +217,26 @@ namespace DfoServer.Network.Handlers.Dungeon
                 session.Player.UserId);
             if (!session.Player.IsCurrentDungeonRun(runIdentity))
                 return;
-            if (!mechanismClear.ShouldClearDungeon)
-                return;
-            await _settlement.SubmitClearIntentAsync(
-                session,
-                new DungeonClearIntent(
-                    bossCheckEvent,
-                    mechanismClear.ClearReason,
-                    mechanismClear.BossCode));
+            if (mechanismClear.ShouldClearDungeon)
+            {
+                await _settlement.SubmitClearIntentAsync(
+                    session,
+                    new DungeonClearIntent(
+                        bossCheckEvent,
+                        mechanismClear.ClearReason,
+                        mechanismClear.BossCode));
+            }
+
+            // A licensed run can be cleared by the room endpoint before the
+            // client sends 0x0075. Do not return before projecting the
+            // verified 0x0073 -> 0x001F settlement preamble.
+            if (session.Player.IsCurrentDungeonRun(runIdentity))
+            {
+                await _settlement.ProjectLicensedBossClearNotificationsAsync(
+                    session,
+                    run,
+                    request);
+            }
         }
 
         internal static bool IsAiCharacterActorType(byte actorType)
@@ -572,6 +584,8 @@ namespace DfoServer.Network.Handlers.Dungeon
             if (run == null || !session.Player.IsCurrentDungeonRun(runIdentity))
                 return false;
 
+            run.AnotherAradQuest?.MarkReviveUsed();
+
             // 先扣复活币, 成功才发复活通知(旧实现不扣币白送复活)
             short coinSlot;
             int coinRemaining;
@@ -589,6 +603,13 @@ namespace DfoServer.Network.Handlers.Dungeon
                 await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x01, 0x0029, err.ToArray()));
                 FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] USE_COIN: no coin cid={characterId}");
                 return false;
+            }
+
+            if (GameWorld.LicensedDungeonCatalog.TryGetDefinition(
+                    run.DungeonId,
+                    out _))
+            {
+                run.LicensedDungeonReviveUsed = true;
             }
 
             if (!session.Player.IsCurrentDungeonRun(runIdentity))

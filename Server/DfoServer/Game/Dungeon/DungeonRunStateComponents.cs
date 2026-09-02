@@ -110,6 +110,12 @@ namespace DfoServer.Game.Dungeon
     internal sealed class DungeonRunSelectionState
     {
         internal bool IsA21TutorialEntry { get; set; }
+        internal bool AnotherAradActive { get; set; }
+        internal int AnotherAradWrapperDungeonId { get; set; }
+        internal int AnotherAradHistoricalDungeonId { get; set; }
+        internal int AnotherAradCrackQuestId { get; set; }
+        internal bool AnotherAradQuestAccepted { get; set; }
+        internal AnotherAradQuestRuntime AnotherAradQuest { get; set; }
         internal int MazeIndex { get; set; } = -1;
         internal int LayeredMapIndex { get; set; } = -1;
         internal bool MazeQuestConnected { get; set; }
@@ -208,6 +214,7 @@ namespace DfoServer.Game.Dungeon
             = new Dictionary<ushort, DropInfo>();
         internal bool IsWaitingDeathRespawn { get; set; }
         internal DateTime DeathRespawnAvailableAt { get; set; } = DateTime.MinValue;
+        internal bool LicensedDungeonReviveUsed { get; set; }
     }
 
     internal sealed class DungeonRunSettlementData
@@ -233,6 +240,17 @@ namespace DfoServer.Game.Dungeon
         internal int? CapturedPresentationRankPoint { get; set; }
         internal int? PendingPresentationRankPoint { get; set; }
         internal TournamentParticipantRewardState Tournament { get; set; }
+
+        // Licensed-dungeon result requests are a two-step A21 exchange:
+        // first request receives 0x02F9, second request receives the ACK and
+        // the updated 0x02F7 license projection. Serialize the exchange per
+        // run so duplicate client packets cannot advance the phase twice.
+        internal SemaphoreSlim LicensedPlayResultGate { get; } =
+            new SemaphoreSlim(1, 1);
+        internal int LicensedPlayResultRequestCount { get; set; }
+        internal bool LicensedClearInfoSent { get; set; }
+        internal bool LicensedPlayResultAckSent { get; set; }
+        internal bool LicensedLicenseProjectionSent { get; set; }
     }
 
     internal sealed class DungeonRunQuestBridgeState

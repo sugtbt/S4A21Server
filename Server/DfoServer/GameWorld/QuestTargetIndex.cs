@@ -41,6 +41,29 @@ namespace DfoServer.GameWorld
         }
     }
 
+    internal sealed class WorldMapHuntMonsterQuestTarget
+    {
+        internal WorldMapHuntMonsterQuestTarget(
+            int worldMapId,
+            int minimumDifficulty,
+            int selector,
+            int requiredCount,
+            int channelIndex)
+        {
+            WorldMapId = worldMapId;
+            MinimumDifficulty = minimumDifficulty;
+            Selector = selector;
+            RequiredCount = requiredCount;
+            ChannelIndex = channelIndex;
+        }
+
+        internal int WorldMapId { get; }
+        internal int MinimumDifficulty { get; }
+        internal int Selector { get; }
+        internal int RequiredCount { get; }
+        internal int ChannelIndex { get; }
+    }
+
     internal enum HuntEnemyProgressSource
     {
         Invalid = 0,
@@ -123,6 +146,9 @@ namespace DfoServer.GameWorld
                 return result;
             }
 
+            if (TryGetWorldMapHuntMonsterTargets(quest, out _))
+                return result;
+
             var values = QuestData.ParseIntList(quest.IntData);
             const int stride = 4;
             for (var offset = 0;
@@ -152,6 +178,123 @@ namespace DfoServer.GameWorld
             }
 
             return result;
+        }
+
+        internal static bool TryGetWorldMapHuntMonsterTargets(
+            int questId,
+            out List<WorldMapHuntMonsterQuestTarget> targets)
+            => TryGetWorldMapHuntMonsterTargets(
+                QuestData.GetQuestFile(questId),
+                out targets);
+
+        internal static bool TryGetWorldMapHuntMonsterTargets(
+            QuestFile quest,
+            out List<WorldMapHuntMonsterQuestTarget> targets)
+        {
+            targets = new List<WorldMapHuntMonsterQuestTarget>();
+            if (quest == null
+                || QuestData.NormalizeQuestTag(quest.Type) != "hunt monster")
+            {
+                return false;
+            }
+
+            var values = QuestData.ParseIntList(quest.IntData);
+            const int stride = 5;
+            if (values.Count == 0
+                || values.Count % stride != 0
+                || values.Count / stride > 3)
+            {
+                return false;
+            }
+
+            for (var offset = 0; offset < values.Count; offset += stride)
+            {
+                var worldMapSelector = values[offset];
+                var worldMapId = values[offset + 1];
+                var minimumDifficulty = values[offset + 2];
+                var selector = values[offset + 3];
+                var requiredCount = values[offset + 4];
+                if (worldMapSelector != -2
+                    || worldMapId <= 0
+                    || minimumDifficulty < -1
+                    || requiredCount <= 0)
+                {
+                    targets.Clear();
+                    return false;
+                }
+
+                targets.Add(new WorldMapHuntMonsterQuestTarget(
+                    worldMapId,
+                    minimumDifficulty,
+                    selector,
+                    requiredCount,
+                    offset / stride));
+            }
+
+            return targets.Count > 0;
+        }
+
+        internal static bool IsClientWorldMapHuntMonsterTriggerAuthorized(
+            int questId,
+            byte triggerType,
+            bool increment)
+        {
+            if (increment
+                || triggerType == 1
+                || !TryGetWorldMapHuntMonsterTargets(
+                    questId,
+                    out var targets))
+            {
+                return false;
+            }
+
+            if (triggerType == 0)
+                return targets.Count > 0;
+
+            if ((triggerType & ~0x70) != 0 || (triggerType & 0x70) == 0)
+                return false;
+
+            for (var channelIndex = 0; channelIndex < 3; channelIndex++)
+            {
+                var channelMask = 0x10 << channelIndex;
+                if ((triggerType & channelMask) != 0
+                    && channelIndex >= targets.Count)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        internal static bool TryRepairWorldMapHuntMonsterTrigger(
+            int questId,
+            uint trigger,
+            out uint repaired)
+        {
+            repaired = trigger;
+            if (!TryGetWorldMapHuntMonsterTargets(
+                    questId,
+                    out var targets))
+            {
+                return false;
+            }
+
+            foreach (var target in targets)
+            {
+                var actual = QuestData.GetTriggerChannel(
+                    repaired,
+                    target.ChannelIndex);
+                if (actual > target.RequiredCount)
+                {
+                    repaired = QuestData.ReplaceTriggerChannel(
+                        repaired,
+                        target.ChannelIndex,
+                        target.RequiredCount);
+                }
+            }
+
+            return true;
         }
 
         internal static List<HuntEnemyQuestTarget> GetHuntEnemyTargets(

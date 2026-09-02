@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Text.RegularExpressions;
 
 namespace DfoServer.GameWorld
 {
@@ -47,6 +48,15 @@ namespace DfoServer.GameWorld
         {
             return monsterCode > 0
                 && GetDefinition(monsterCode).NoChampionPromotion;
+        }
+
+        // A MOB [item] section is an actor-owned PVF drop pool. These actors
+        // are named/special encounters in normal MAPs and must not be reused
+        // by the dungeon-wide random champion promotion pass.
+        internal static bool HasExclusiveItemDrop(int monsterCode)
+        {
+            return monsterCode > 0
+                && GetDefinition(monsterCode).HasExclusiveItemDrop;
         }
 
         private static MonsterDefinition GetDefinition(int monsterCode)
@@ -98,7 +108,8 @@ namespace DfoServer.GameWorld
                             items.ToArray());
                 return new MonsterDefinition(
                     captureItems,
-                    monster.NoChampion);
+                    monster.NoChampion,
+                    HasEffectiveItemDrop(monster.Item));
             }
             catch (Exception ex)
             {
@@ -114,21 +125,47 @@ namespace DfoServer.GameWorld
             internal static MonsterDefinition Empty { get; } =
                 new MonsterDefinition(
                     MonsterCaptureDefinitionCatalog.Empty,
-                    noChampionPromotion: false);
+                    noChampionPromotion: false,
+                    hasExclusiveItemDrop: false);
 
             internal MonsterDefinition(
                 IReadOnlyList<MonsterCaptureItemDefinition> captureItems,
-                bool noChampionPromotion)
+                bool noChampionPromotion,
+                bool hasExclusiveItemDrop)
             {
                 CaptureItems = captureItems
                     ?? MonsterCaptureDefinitionCatalog.Empty;
                 NoChampionPromotion = noChampionPromotion;
+                HasExclusiveItemDrop = hasExclusiveItemDrop;
             }
 
             internal IReadOnlyList<MonsterCaptureItemDefinition> CaptureItems
             { get; }
 
             internal bool NoChampionPromotion { get; }
+
+            internal bool HasExclusiveItemDrop { get; }
+        }
+
+        private static bool HasEffectiveItemDrop(string itemData)
+        {
+            if (string.IsNullOrWhiteSpace(itemData))
+                return false;
+
+            var values = new List<int>();
+            foreach (Match match in Regex.Matches(itemData, @"-?\d+"))
+            {
+                if (int.TryParse(match.Value, out var value))
+                    values.Add(value);
+            }
+
+            for (var index = 0; index + 1 < values.Count; index += 2)
+            {
+                if (values[index] > 0 && values[index + 1] > 0)
+                    return true;
+            }
+
+            return false;
         }
     }
 }

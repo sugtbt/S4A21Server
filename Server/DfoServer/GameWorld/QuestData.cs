@@ -361,6 +361,29 @@ namespace DfoServer.GameWorld
                 questId,
                 triggerType);
 
+        internal static bool IsClientWorldMapHuntMonsterTriggerAuthorized(
+            int questId,
+            byte triggerType,
+            bool increment)
+            => QuestTargetIndex.IsClientWorldMapHuntMonsterTriggerAuthorized(
+                questId,
+                triggerType,
+                increment);
+
+        internal static bool IsWorldMapHuntMonsterQuest(int questId)
+            => QuestTargetIndex.TryGetWorldMapHuntMonsterTargets(
+                questId,
+                out _);
+
+        internal static bool TryRepairWorldMapHuntMonsterTrigger(
+            int questId,
+            uint trigger,
+            out uint repaired)
+            => QuestTargetIndex.TryRepairWorldMapHuntMonsterTrigger(
+                questId,
+                trigger,
+                out repaired);
+
         internal static List<DungeonQuestActorTarget>
             GetUnfinishedDungeonActorTargets(
                 int questId,
@@ -612,7 +635,25 @@ namespace DfoServer.GameWorld
             if (typeCode == 1)
             {
                 if (typeTag == "hunt monster")
+                {
+                    if (QuestTargetIndex.TryGetWorldMapHuntMonsterTargets(
+                            qst,
+                            out var worldMapTargets))
+                    {
+                        var f0 = worldMapTargets.Count > 0
+                            ? worldMapTargets[0].RequiredCount
+                            : 0;
+                        var f1 = worldMapTargets.Count > 1
+                            ? worldMapTargets[1].RequiredCount
+                            : 0;
+                        var f2 = worldMapTargets.Count > 2
+                            ? worldMapTargets[2].RequiredCount
+                            : 0;
+                        return PackTrigger(f0, f1, f2);
+                    }
+
                     return ComputeTriggerFromIntData(qst.IntData, 4);
+                }
 
                 if (typeTag == "hunt enemy")
                     return ComputeTriggerFromIntData(qst.IntData, 5);

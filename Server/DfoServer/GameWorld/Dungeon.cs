@@ -312,6 +312,8 @@ namespace DfoServer.GameWorld
                     && monster.IsBlocking
                     && monster.Flag0 == 0
                     && !monster.NoChampionPromotion
+                    && !MonsterCaptureDefinitionCatalog.HasExclusiveItemDrop(
+                        monster.Code)
                     && (namedSet == null || !namedSet.Contains(monster.Code))
                     && !SequentialDungeonMonsterCatalog.Contains(
                         dungeonId,

@@ -621,7 +621,7 @@ namespace DfoServer.Game.Friends
         /// CharacterId/onlineUserId 用真实 Player.UserId（与 USER_LEAVE 一致，
         /// 客户端靠同一 id 把"实体注入"与"实体移除"对应起来）。
         /// </summary>
-        private static CharacterRecord BuildUserInfoRecord(PlayerContext p)
+        internal static CharacterRecord BuildUserInfoRecord(PlayerContext p)
         {
             return new CharacterRecord
             {

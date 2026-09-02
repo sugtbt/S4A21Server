@@ -278,6 +278,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                     }
                 }
 
+                await SendLicensedDungeonSelectionStateAsync(session);
+
                 await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
                     0x01,
                     header.type,
@@ -466,6 +468,75 @@ namespace DfoServer.Network.Handlers.Dungeon
             return state;
         }
 
+        private async Task SendLicensedDungeonSelectionStateAsync(
+            EnhancedClientSession session)
+        {
+            var player = session?.Player;
+            if (player == null
+                || !Town.TryGetDungeonGateReturnInfo(
+                    player.CurTownId,
+                    player.CurAreaId,
+                    out var gate)
+                || gate.WorldMapAreaId
+                    != LicensedDungeonCatalog.WorldMapAreaId)
+            {
+                return;
+            }
+
+            var remainingEnterCount = (byte)0;
+            var utcNow = DateTime.UtcNow;
+            var dayIndex = LicensedDungeonPeriod.FromUtc(utcNow).DayIndex;
+            if (!_svc.LicensedDungeons.TryGetSelectionProjection(
+                    player.CharacterId,
+                    utcNow,
+                    out dayIndex,
+                    out remainingEnterCount,
+                    out var failureReason))
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"LICENSE_DUNGEON projection failed: " +
+                    $"cid={player.CharacterId} reason={failureReason}");
+            }
+
+            var licenseRecords =
+                LicensedDungeonCatalog.GetInitialLicenseRecords();
+            if (!_svc.LicensedDungeons.TryGetLicenseProjection(
+                    player.CharacterId,
+                    out licenseRecords,
+                    out failureReason))
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"LICENSE_DUNGEON level projection failed: " +
+                    $"cid={player.CharacterId} reason={failureReason}");
+            }
+
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x00,
+                (ushort)NotiPacketTypeA21.LICENSE_DUNGEON_DAY_INDEX_INFO,
+                LicensedDungeonPacketBuilder.BuildDayIndex(dayIndex)));
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x00,
+                (ushort)NotiPacketTypeA21.LICENSE_DUNGEON_INCOUNT_INFO,
+                LicensedDungeonPacketBuilder.BuildRemainingEnterCount(
+                    remainingEnterCount)));
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x00,
+                (ushort)NotiPacketTypeA21.CHARAC_DUNGEON_LICENSE_INFO,
+                LicensedDungeonPacketBuilder.BuildCharacterLicenseInfo(
+                    licenseRecords)));
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x00,
+                (ushort)NotiPacketTypeA21.LICENSE_DUNGEON_SHOT_COUNT_INFO,
+                LicensedDungeonPacketBuilder.BuildShotCount()));
+            FileLogger.Log(
+                $"[{DungeonSharedServices.ProtocolLogName}] " +
+                $"LICENSE_DUNGEON selection state sent: " +
+                $"cid={player.CharacterId} area={gate.WorldMapAreaId} " +
+                $"day={dayIndex} remaining={remainingEnterCount}");
+        }
+
         private sealed class HellPartySelectionState
         {
             internal WorldMapArea WorldMapArea;
@@ -521,14 +592,400 @@ namespace DfoServer.Network.Handlers.Dungeon
                 header,
                 body,
                 linkedSourceDungeonId: 0,
-                expectedPredecessorIdentity: null);
+                expectedPredecessorIdentity: null,
+                anotherAradSelection: null);
+
+        internal async Task HandleCrackOfDimension(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body)
+        {
+            if (!Network.Parsers.Dungeon.CrackOfDimensionRequest.TryParse(
+                    body,
+                    out var request))
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"CRACK_OF_DIMENSION rejected: invalid body length=" +
+                    $"{body?.Length ?? 0}");
+                await _svc.AdmissionRejects.SendAsync(
+                    session,
+                    header.type,
+                    DungeonAdmissionReject.InvalidSelectionState);
+                return;
+            }
+
+            if (!AnotherAradSelectionResolver.TryResolve(
+                    request.HistoricalDungeonId,
+                    request.CrackQuestId,
+                    out var selection,
+                    out var reason))
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"CRACK_OF_DIMENSION rejected: cid=" +
+                    $"{session?.Player?.CharacterId ?? 0} " +
+                    $"historical={request.HistoricalDungeonId} " +
+                    $"quest={request.CrackQuestId} reason={reason}");
+                await _svc.AdmissionRejects.SendAsync(
+                    session,
+                    header.type,
+                    DungeonAdmissionReject.DungeonUnavailable);
+                return;
+            }
+
+            if (session?.Player?.CurrentDungeonSelection == null
+                || session.Player.CurrentRun != null)
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"CRACK_OF_DIMENSION rejected: no active selection " +
+                    $"cid={session?.Player?.CharacterId ?? 0}");
+                await _svc.AdmissionRejects.SendAsync(
+                    session,
+                    header.type,
+                    DungeonAdmissionReject.InvalidSelectionState);
+                return;
+            }
+
+            var syntheticBody = new byte[9];
+            Array.Copy(
+                BitConverter.GetBytes(selection.HistoricalDungeonId),
+                syntheticBody,
+                4);
+            syntheticBody[4] = (byte)AnotherAradSelectionResolver.ResolveMaximumDifficulty(
+                selection.HistoricalDungeonId);
+            syntheticBody[7] = 0xFF;
+            syntheticBody[8] = 0xFF;
+
+            FileLogger.Log(
+                $"[{DungeonSharedServices.ProtocolLogName}] " +
+                $"CRACK_OF_DIMENSION accepted: cid=" +
+                $"{session.Player.CharacterId} wrapper={selection.WrapperDungeonId} " +
+                $"historical={selection.HistoricalDungeonId} " +
+                $"quest={selection.CrackQuestId} " +
+                $"difficulty={syntheticBody[4]}");
+            await HandleSelectDungeonCore(
+                session,
+                header,
+                syntheticBody,
+                linkedSourceDungeonId: 0,
+                expectedPredecessorIdentity: null,
+                anotherAradSelection: selection);
+        }
+
+        internal async Task<bool> TryHandleAnotherAradQuestAcceptAsync(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body)
+        {
+            var run = session?.Player?.CurrentRun;
+            if (run == null
+                || !run.AnotherAradActive
+                || run.AnotherAradCrackQuestId <= 0
+                || run.AnotherAradQuest == null)
+            {
+                return false;
+            }
+
+            var questId = body != null && body.Length >= 4
+                ? BitConverter.ToUInt16(body, 2)
+                : body != null && body.Length >= 2
+                    ? BitConverter.ToUInt16(body, 0)
+                    : (ushort)0;
+            if (questId == 0
+                || questId != run.AnotherAradCrackQuestId
+                || questId > ushort.MaxValue)
+            {
+                return false;
+            }
+
+            run.AnotherAradQuest.TryAccept(
+                DateTime.UtcNow,
+                out var initialTrigger,
+                out var duplicate);
+            run.AnotherAradQuestAccepted = true;
+            var result = new QuestAcceptResult
+            {
+                QuestId = questId,
+                InitTrigger = initialTrigger,
+            };
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x01,
+                header.type,
+                QuestAckBuilder.BuildAccept(result)));
+            FileLogger.Log(
+                $"[{DungeonSharedServices.ProtocolLogName}] " +
+                $"CRACK_OF_DIMENSION quest accepted session-local: " +
+                $"cid={session.Player.CharacterId} quest={questId} " +
+                $"trigger={initialTrigger} duplicate={(duplicate ? 1 : 0)}");
+            return true;
+        }
+
+        internal async Task<bool> TryHandleAnotherAradQuestSetTriggerAsync(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body)
+        {
+            var run = session?.Player?.CurrentRun;
+            var runtime = run?.AnotherAradQuest;
+            if (run == null
+                || runtime == null
+                || !run.AnotherAradActive
+                || !TryReadQuestCommandId(body, out var questId)
+                || questId != runtime.Definition.QuestId)
+            {
+                return false;
+            }
+
+            var trigger = runtime.CurrentTrigger;
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x01,
+                header.type,
+                QuestAckBuilder.BuildSetTrigger(new QuestSetTriggerResult
+                {
+                    QuestId = questId,
+                    PreviousTriggerValue = trigger,
+                    TriggerValue = trigger,
+                })));
+            FileLogger.Log(
+                $"[{DungeonSharedServices.ProtocolLogName}] " +
+                $"CRACK_OF_DIMENSION quest trigger echoed session-local: " +
+                $"cid={session.Player.CharacterId} quest={questId} " +
+                $"trigger={trigger}");
+            return true;
+        }
+
+        internal async Task<bool> TryHandleAnotherAradQuestFinishAsync(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body)
+        {
+            var run = session?.Player?.CurrentRun;
+            var runtime = run?.AnotherAradQuest;
+            if (run == null
+                || runtime == null
+                || !run.AnotherAradActive
+                || !TryReadQuestCommandId(body, out var requestedQuestId)
+                || requestedQuestId != runtime.Definition.QuestId)
+            {
+                return false;
+            }
+
+            var commandBody = StripQuestCommandEcho(body);
+            if (!Network.Parsers.Quest.QuestCommandParser.TryParseFinish(
+                    commandBody,
+                    out var command)
+                || command.QuestId != runtime.Definition.QuestId
+                || command.CompletionCount != 1)
+            {
+                await SendAnotherAradFinishFailureAsync(session, header.type);
+                return true;
+            }
+
+            var claim = runtime.TryReserveRewardClaim();
+            if (claim == AnotherAradQuestClaimDisposition.Rejected)
+            {
+                await SendAnotherAradFinishFailureAsync(session, header.type);
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"CRACK_OF_DIMENSION quest finish rejected: " +
+                    $"cid={session.Player.CharacterId} quest={command.QuestId} " +
+                    $"accepted={(runtime.Accepted ? 1 : 0)} " +
+                    $"settled={(runtime.SettlementEvaluated ? 1 : 0)} " +
+                    $"completed={(runtime.Completed ? 1 : 0)}");
+                return true;
+            }
+
+            if (claim == AnotherAradQuestClaimDisposition.AlreadyClaimed)
+            {
+                await SendAnotherAradFinishSuccessAsync(
+                    session,
+                    header.type,
+                    runtime,
+                    null,
+                    completionCount: 0);
+                return true;
+            }
+
+            InventoryRewardGrantBatchResult rewardGrant = null;
+            RewardInventoryRollback rollback = null;
+            try
+            {
+                if (!AnotherAradConfigCatalog.TryResolveReward(
+                        session.Player.Level,
+                        out var rewardItemId,
+                        out var rewardItemCount)
+                    || !InventoryContext.TryGetOwnedLease(
+                        session.SessionId,
+                        session.Player.CharacterId,
+                        out var lease))
+                {
+                    throw new InvalidOperationException(
+                        "Another Arad reward or owned inventory lease is unavailable.");
+                }
+
+                lock (lease.SyncRoot)
+                {
+                    if (!session.Player.IsCurrentDungeonRun(run.CaptureIdentity())
+                        || !lease.IsOwnedBy(session.SessionId))
+                    {
+                        throw new InvalidOperationException(
+                            "Another Arad finish owner changed.");
+                    }
+
+                    var requests = new[]
+                    {
+                        InventoryRewardGrantRequest.Create(
+                            rewardItemId,
+                            rewardItemCount,
+                            ItemCreateReason.QuestReward),
+                    };
+                    if (!InventoryRewardGrantService.TryPlanBatch(
+                            lease.Inventory,
+                            requests,
+                            out var rewardPlan)
+                        || rewardPlan.Entries.Count != 1
+                        || !RewardInventoryRollback.CanRestore(
+                            rewardPlan.Entries[0]))
+                    {
+                        throw new InvalidOperationException(
+                            "Another Arad reward planning failed.");
+                    }
+
+                    rollback = RewardInventoryRollback.Capture(
+                        lease.Inventory,
+                        rewardPlan.Entries[0]);
+                    if (!InventoryRewardGrantService.TryApplyPreparedBatch(
+                            lease.Inventory,
+                            rewardPlan,
+                            out rewardGrant)
+                        || rewardGrant == null
+                        || !rewardGrant.Success
+                        || !InventoryPersistenceService.SaveDirty(lease))
+                    {
+                        RewardInventoryRollback.Restore(
+                            lease.Inventory,
+                            rollback,
+                            rewardGrant);
+                        throw new InvalidOperationException(
+                            "Another Arad reward apply or persistence failed.");
+                    }
+                }
+
+                runtime.CommitRewardClaim();
+                await SendAnotherAradFinishSuccessAsync(
+                    session,
+                    header.type,
+                    runtime,
+                    rewardGrant,
+                    completionCount: 1);
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"CRACK_OF_DIMENSION quest finished session-local: " +
+                    $"cid={session.Player.CharacterId} quest={command.QuestId} " +
+                    $"reward={rewardItemId}x{rewardItemCount}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                runtime.AbortRewardClaim();
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"CRACK_OF_DIMENSION quest finish failed: " +
+                    $"cid={session.Player.CharacterId} quest={command.QuestId} " +
+                    $"error={ex.Message}");
+                await SendAnotherAradFinishFailureAsync(session, header.type);
+                return true;
+            }
+        }
+
+        private static async Task SendAnotherAradFinishSuccessAsync(
+            EnhancedClientSession session,
+            ushort wireType,
+            AnotherAradQuestRuntime runtime,
+            InventoryRewardGrantBatchResult rewardGrant,
+            uint completionCount)
+        {
+            var result = new QuestFinishResult
+            {
+                QuestId = runtime.Definition.QuestId,
+                FinishType = runtime.Definition.FinishType,
+                CompletionCount = completionCount,
+                RewardAcquiredAtUnixTime = rewardGrant?.Results.Count > 0
+                    ? unchecked((uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+                    : 0,
+            };
+            if (rewardGrant != null)
+            {
+                foreach (var granted in rewardGrant.Results)
+                {
+                    if (granted == null
+                        || !granted.Success
+                        || granted.SlotIndex < 0
+                        || granted.Kind == InventoryRewardGrantKind.Premium)
+                    {
+                        continue;
+                    }
+
+                    result.InsertedEntries.Add(new InsertedItemEntry
+                    {
+                        SlotIndex = (ushort)granted.SlotIndex,
+                        ItemId = granted.ItemTemplateId,
+                        GrantedCount = (uint)Math.Max(0, granted.GrantedCount),
+                    });
+                }
+            }
+
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x01,
+                wireType,
+                QuestAckBuilder.BuildFinish(result)));
+        }
+
+        private static Task SendAnotherAradFinishFailureAsync(
+            EnhancedClientSession session,
+            ushort wireType)
+            => session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x01,
+                wireType,
+                QuestAckBuilder.BuildFinish(QuestFinishResult.Fail(22))));
+
+        private static bool TryReadQuestCommandId(
+            byte[] body,
+            out ushort questId)
+        {
+            questId = 0;
+            if (body == null)
+                return false;
+            if (body.Length >= 4)
+            {
+                questId = BitConverter.ToUInt16(body, 2);
+                return questId != 0;
+            }
+            if (body.Length < 2)
+                return false;
+
+            questId = BitConverter.ToUInt16(body, 0);
+            return questId != 0;
+        }
+
+        private static byte[] StripQuestCommandEcho(byte[] body)
+        {
+            if (body == null || body.Length <= 2)
+                return body;
+            var stripped = new byte[body.Length - 2];
+            Buffer.BlockCopy(body, 2, stripped, 0, stripped.Length);
+            return stripped;
+        }
 
         private async Task HandleSelectDungeonCore(
             EnhancedClientSession session,
             GamePacketHeader header,
             byte[] body,
             int linkedSourceDungeonId,
-            DungeonRunIdentity? expectedPredecessorIdentity)
+            DungeonRunIdentity? expectedPredecessorIdentity,
+            AnotherAradSelection? anotherAradSelection)
         {
             if (!CanEnterRaidDungeonSelection(session))
             {
@@ -578,28 +1035,43 @@ namespace DfoServer.Network.Handlers.Dungeon
 
             var req = Network.Parsers.Dungeon.SelectDungeonRequest.Parse(body);
             var entryLimitDungeonId = req.DungeonId;
-            try
+            if (anotherAradSelection.HasValue)
             {
-                var resolvedDungeonId = _svc.TowerOfDespairProgress.ResolveEntryDungeonId(
-                    session.Player.CharacterId,
-                    req.DungeonId);
-                if (resolvedDungeonId != req.DungeonId)
+                req = new Network.Parsers.Dungeon.SelectDungeonRequest(
+                    anotherAradSelection.Value.HistoricalDungeonId,
+                    req.Difficulty,
+                    req.Flag1,
+                    req.Flag2,
+                    req.A21Sentinel,
+                    req.TrailingLength,
+                    req.HasNonZeroTrailingBytes);
+            }
+            if (!anotherAradSelection.HasValue)
+            {
+                try
                 {
-                    entryLimitDungeonId = req.DungeonId;
-                    FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] TOWER_OF_DESPAIR_ENTRY: cid={session.Player.CharacterId} requested={req.DungeonId} resolved={resolvedDungeonId}");
-                    req = new Network.Parsers.Dungeon.SelectDungeonRequest(
-                        resolvedDungeonId,
-                        req.Difficulty,
-                        req.Flag1,
-                        req.Flag2);
+                    var resolvedDungeonId = _svc.TowerOfDespairProgress.ResolveEntryDungeonId(
+                        session.Player.CharacterId,
+                        req.DungeonId);
+                    if (resolvedDungeonId != req.DungeonId)
+                    {
+                        entryLimitDungeonId = req.DungeonId;
+                        FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] TOWER_OF_DESPAIR_ENTRY: cid={session.Player.CharacterId} requested={req.DungeonId} resolved={resolvedDungeonId}");
+                        req = new Network.Parsers.Dungeon.SelectDungeonRequest(
+                            resolvedDungeonId,
+                            req.Difficulty,
+                            req.Flag1,
+                            req.Flag2);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] TOWER_OF_DESPAIR_ENTRY ERROR: cid={session.Player.CharacterId} requested={req.DungeonId}: {ex.Message}");
                 }
             }
-            catch (Exception ex)
-            {
-                FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] TOWER_OF_DESPAIR_ENTRY ERROR: cid={session.Player.CharacterId} requested={req.DungeonId}: {ex.Message}");
-            }
 
-            if (!WorldMap.IsStoryDungeon(req.DungeonId)
+            if (!anotherAradSelection.HasValue
+                && !WorldMap.IsStoryDungeon(req.DungeonId)
                 && !DungeonData.MeetsMinimumRequiredLevel(
                     req.DungeonId,
                     session.Player.Level,
@@ -705,11 +1177,17 @@ namespace DfoServer.Network.Handlers.Dungeon
                     $"quest={preferredCircleQuestId} maze={circleSelection.Index}");
             }
 
-            var admission = WorldMap.EvaluateDungeonAdmission(
-                req.DungeonId,
-                session.Player.Level,
-                activeQuestIds,
-                clearedQuestIds);
+            var admission = anotherAradSelection.HasValue
+                ? new DungeonAdmissionDecision(
+                    allowed: true,
+                    mode: DungeonAdmissionMode.Unrestricted,
+                    reason: "another_arad_pair_validated",
+                    requiredQuestIds: Array.Empty<int>())
+                : WorldMap.EvaluateDungeonAdmission(
+                    req.DungeonId,
+                    session.Player.Level,
+                    activeQuestIds,
+                    clearedQuestIds);
             if (!admission.Allowed)
             {
                 FileLogger.Log(
@@ -746,6 +1224,54 @@ namespace DfoServer.Network.Handlers.Dungeon
                     header.type,
                     DungeonAdmissionReject.DungeonUnavailable);
                 return;
+            }
+
+            LicensedDungeonEntryPlan licensedDungeonPlan = null;
+            if (_svc.LicensedDungeons.IsLicensedDungeon(req.DungeonId))
+            {
+                if (!_svc.LicensedDungeons.TryPrepareEntry(
+                        session.Player.CharacterId,
+                        req.DungeonId,
+                        DateTime.UtcNow,
+                        ServerRandom.Next,
+                        out licensedDungeonPlan,
+                        out var licensedFailureReason))
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"SELECT_DUNGEON licensed admission rejected: " +
+                        $"cid={session.Player.CharacterId} " +
+                        $"dungeon={req.DungeonId} " +
+                        $"reason={licensedFailureReason}");
+                    await _svc.AdmissionRejects.SendAsync(
+                        session,
+                        header.type,
+                        DungeonAdmissionReject.DungeonUnavailable);
+                    return;
+                }
+
+                if (req.Difficulty
+                    != licensedDungeonPlan.Definition.Difficulty)
+                {
+                    req = new Network.Parsers.Dungeon.SelectDungeonRequest(
+                        req.DungeonId,
+                        licensedDungeonPlan.Definition.Difficulty,
+                        req.Flag1,
+                        req.Flag2,
+                        req.A21Sentinel,
+                        req.TrailingLength,
+                        req.HasNonZeroTrailingBytes);
+                }
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"SELECT_DUNGEON licensed plan: " +
+                    $"cid={session.Player.CharacterId} " +
+                    $"dungeon={req.DungeonId} " +
+                    $"license={licensedDungeonPlan.Definition.LicenseLevel} " +
+                    $"difficulty={req.Difficulty} " +
+                    $"maze={licensedDungeonPlan.MazeIndex} " +
+                    $"groop={(licensedDungeonPlan.GroupBossPresent ? 1 : 0)} " +
+                    $"rate={licensedDungeonPlan.GroupAppearRate}");
             }
 
             var experienceBonusPlan =
@@ -891,6 +1417,21 @@ namespace DfoServer.Network.Handlers.Dungeon
             }
             var run = session.Player.CurrentRun;
             var runIdentity = run.CaptureIdentity();
+            run.AnotherAradActive = anotherAradSelection.HasValue;
+            run.AnotherAradWrapperDungeonId = anotherAradSelection.HasValue
+                ? anotherAradSelection.Value.WrapperDungeonId
+                : 0;
+            run.AnotherAradHistoricalDungeonId = anotherAradSelection.HasValue
+                ? anotherAradSelection.Value.HistoricalDungeonId
+                : 0;
+            run.AnotherAradCrackQuestId = anotherAradSelection.HasValue
+                ? anotherAradSelection.Value.CrackQuestId
+                : 0;
+            run.AnotherAradQuest = anotherAradSelection.HasValue
+                && anotherAradSelection.Value.QuestDefinition != null
+                ? new AnotherAradQuestRuntime(
+                    anotherAradSelection.Value.QuestDefinition)
+                : null;
             // The first A21 tutorial is a normal flow regardless of the
             // dungeon id selected by the character's job. Ignore stale hell
             // flags so they cannot alter its map projection.
@@ -905,25 +1446,43 @@ namespace DfoServer.Network.Handlers.Dungeon
 
             run.QuestSnapshot = QuestRunSnapshot.Capture(activeQuests);
             string mazeSelectionDiagnostic = preferredCircleDiagnostic;
-            var selection = preferredCircleSelection.HasValue
-                ? preferredCircleSelection.Value
-                : DungeonData.SelectDungeonMaze(
-                    req.DungeonId,
-                    req.Difficulty,
-                    activeQuestIds,
-                    clearedQuestIds,
-                    diagnostic => mazeSelectionDiagnostic = diagnostic);
+            (PvfLib.MazeInfo Maze, int Index) selection;
+            if (licensedDungeonPlan != null)
+            {
+                selection = (
+                    DungeonData.GetDungeonMaze(
+                        req.DungeonId,
+                        licensedDungeonPlan.MazeIndex),
+                    licensedDungeonPlan.MazeIndex);
+                mazeSelectionDiagnostic =
+                    $"licensed_maze={licensedDungeonPlan.MazeIndex} " +
+                    $"groop={(licensedDungeonPlan.GroupBossPresent ? 1 : 0)}";
+            }
+            else
+            {
+                selection = preferredCircleSelection.HasValue
+                    ? preferredCircleSelection.Value
+                    : DungeonData.SelectDungeonMaze(
+                        req.DungeonId,
+                        req.Difficulty,
+                        anotherAradSelection.HasValue ? null : activeQuestIds,
+                        anotherAradSelection.HasValue ? null : clearedQuestIds,
+                        diagnostic => mazeSelectionDiagnostic = diagnostic);
+            }
             run.MazeIndex = selection.Index;
-            run.MazeQuestConnected = DungeonData.IsQuestConnectedSelection(
-                req.DungeonId,
-                selection.Maze,
-                activeQuestIds,
-                req.Difficulty);
-            run.ActiveQuestMazeQuestId = DungeonData.ResolveActiveQuestMazeQuestId(
-                req.DungeonId,
-                selection.Maze,
-                activeQuestIds,
-                req.Difficulty);
+            run.MazeQuestConnected = !anotherAradSelection.HasValue
+                && DungeonData.IsQuestConnectedSelection(
+                    req.DungeonId,
+                    selection.Maze,
+                    activeQuestIds,
+                    req.Difficulty);
+            run.ActiveQuestMazeQuestId = anotherAradSelection.HasValue
+                ? 0
+                : DungeonData.ResolveActiveQuestMazeQuestId(
+                    req.DungeonId,
+                    selection.Maze,
+                    activeQuestIds,
+                    req.Difficulty);
             var storyExperienceBonus =
                 DungeonStoryExperienceProfilePolicy.Capture(run);
             if (storyExperienceBonus.IsStoryRun)
@@ -1034,11 +1593,41 @@ namespace DfoServer.Network.Handlers.Dungeon
                 clearConditionTemplate);
             if (!run.Instance.TryFreezeSelection(selectionSnapshot))
                 throw new InvalidOperationException("Dungeon selection was already frozen for this instance.");
-            var entryCost = _svc.EntryAdmission.TryCommit(
-                entryLease,
-                entryPreparation);
+            var licensedCommittedStatus = default(LicensedDungeonStatus);
+            if (licensedDungeonPlan != null
+                && !_svc.LicensedDungeons.TryCommitEntry(
+                    licensedDungeonPlan,
+                    out licensedCommittedStatus,
+                    out var licensedCommitFailure))
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"SELECT_DUNGEON licensed commit rejected: " +
+                    $"cid={session.Player.CharacterId} " +
+                    $"dungeon={req.DungeonId} reason={licensedCommitFailure}");
+                await RejectEntryAdmissionAsync(
+                    session,
+                    header.type,
+                    run,
+                    DungeonAdmissionReject.DungeonUnavailable);
+                return;
+            }
+
+            EntryCostResult entryCost;
+            try
+            {
+                entryCost = _svc.EntryAdmission.TryCommit(
+                    entryLease,
+                    entryPreparation);
+            }
+            catch
+            {
+                RollbackLicensedDungeonEntry(licensedDungeonPlan);
+                throw;
+            }
             if (!entryCost.Success)
             {
+                RollbackLicensedDungeonEntry(licensedDungeonPlan);
                 FileLogger.Log(
                     $"[{DungeonSharedServices.ProtocolLogName}] " +
                     $"SELECT_DUNGEON admission commit rejected: " +
@@ -1061,11 +1650,15 @@ namespace DfoServer.Network.Handlers.Dungeon
                     entryLimitDungeonId,
                     isDimensionDungeon))
             {
+                RollbackLicensedDungeonEntry(licensedDungeonPlan);
                 return;
             }
             selectionSnapshot.ApplyTo(run);
             if (!run.TryActivate())
+            {
+                RollbackLicensedDungeonEntry(licensedDungeonPlan);
                 throw new InvalidOperationException("Dungeon run could not enter the active state after selection.");
+            }
             var consumedDungeonBuffUse = _svc.DevilContracts.TryConsume(
                 session.Player.CharacterId,
                 session.Account?.AccountId ?? 0,
@@ -1076,6 +1669,19 @@ namespace DfoServer.Network.Handlers.Dungeon
                     $"[{DungeonSharedServices.ProtocolLogName}] " +
                     $"DEVIL_CONTRACT_DUNGEON_BUFF: consumed " +
                     $"cid={session.Player.CharacterId} dungeon={run.DungeonId}");
+            }
+            if (licensedDungeonPlan != null)
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"SELECT_DUNGEON licensed entry committed: " +
+                    $"cid={session.Player.CharacterId} " +
+                    $"dungeon={req.DungeonId} " +
+                    $"daily={licensedCommittedStatus.DailyEntryCount}/" +
+                    $"{LicensedDungeonCatalog.DailyEnterCount} " +
+                    $"monthly={licensedCommittedStatus.MonthlyEntryCount} " +
+                    $"groop={licensedCommittedStatus.MonthlyGroupAppearCount}/" +
+                    $"{LicensedDungeonCatalog.GroupAppearCountPerMonth}");
             }
             RegisterActiveParticipant(session, run);
             // 城镇残留白影：进本提交后离开城镇，向旧区域广播不含离开者的名册清残留白影。
@@ -1229,7 +1835,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                 header,
                 BuildLinkedDungeonSelectBody(dungeonId, difficulty),
                 sourceDungeonId,
-                sourceRunIdentity);
+                sourceRunIdentity,
+                anotherAradSelection: null);
         }
 
         internal static byte[] BuildLinkedDungeonSelectBody(
@@ -1397,6 +2004,16 @@ namespace DfoServer.Network.Handlers.Dungeon
             if (run == null)
                 return;
             var runIdentity = run.CaptureIdentity();
+            if (run.AnotherAradActive && run.AnotherAradCrackQuestId > 0)
+            {
+                await s.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketTypeA21.CRACK_OF_DIMENSION,
+                    BitConverter.GetBytes(
+                        (uint)run.AnotherAradCrackQuestId)));
+                if (!s.Player.IsCurrentDungeonRun(runIdentity))
+                    return;
+            }
             var extraPairGroups =
                 DungeonMechanismCoordinator.ResolveSelectionMinimapIconGroups(
                     run,
@@ -1691,6 +2308,12 @@ namespace DfoServer.Network.Handlers.Dungeon
             return new DungeonSelectionSnapshot
             {
                 MazeIndex = run.MazeIndex,
+                AnotherAradActive = run.AnotherAradActive,
+                AnotherAradWrapperDungeonId = run.AnotherAradWrapperDungeonId,
+                AnotherAradHistoricalDungeonId = run.AnotherAradHistoricalDungeonId,
+                AnotherAradCrackQuestId = run.AnotherAradCrackQuestId,
+                AnotherAradQuestAccepted = run.AnotherAradQuestAccepted,
+                AnotherAradQuestDefinition = run.AnotherAradQuest?.Definition,
                 MazeQuestConnected = run.MazeQuestConnected,
                 ActiveQuestMazeQuestId = run.ActiveQuestMazeQuestId,
                 MazeStartMapId = run.MazeStartMapId,
@@ -2041,6 +2664,26 @@ namespace DfoServer.Network.Handlers.Dungeon
                     wireType,
                     rejection);
             }
+        }
+
+        private void RollbackLicensedDungeonEntry(
+            LicensedDungeonEntryPlan plan)
+        {
+            if (plan == null)
+                return;
+            if (_svc.LicensedDungeons.TryRollbackEntry(
+                    plan,
+                    out var failureReason))
+            {
+                return;
+            }
+
+            FileLogger.Log(
+                $"[{DungeonSharedServices.ProtocolLogName}] " +
+                $"licensed dungeon entry rollback failed: " +
+                $"cid={plan.CharacterId} " +
+                $"dungeon={plan.Definition.DungeonId} " +
+                $"reason={failureReason}");
         }
 
         internal static DungeonAdmissionReject ResolveEntryAdmissionReject(

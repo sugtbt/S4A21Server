@@ -16,6 +16,7 @@ namespace DfoServer.Game.Quests
         private readonly QuestGiveupApplicationService _giveup;
         private readonly QuestCompletionApplicationService _completion;
         private readonly QuestScenarioModeClearApplicationService _scenarioModeClear;
+        private readonly QuestActiveTriggerRepairService _triggerRepair;
 
         public QuestService(string connectionString)
         {
@@ -31,6 +32,8 @@ namespace DfoServer.Game.Quests
                 _repository);
             _scenarioModeClear = new QuestScenarioModeClearApplicationService(
                 _repository);
+            _triggerRepair = new QuestActiveTriggerRepairService(
+                connectionString);
         }
 
         public static List<ActiveQuest> LoadActiveQuests(
@@ -147,6 +150,21 @@ namespace DfoServer.Game.Quests
             var questId = BitConverter.ToUInt16(body, 0);
             var triggerType = body[2];
             var increment = body.Length >= 4 && body[3] != 0;
+            if (GameWorld.QuestData.IsWorldMapHuntMonsterQuest(questId))
+            {
+                try
+                {
+                    _triggerRepair.RepairWorldMapHuntMonsterTriggers(
+                        characterId);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[QuestService] regional hunt trigger repair failed: " +
+                        $"cid={characterId} quest={questId} {ex.Message}");
+                    return QuestSetTriggerResult.Fail(22);
+                }
+            }
             var activeQuest = QuestActiveListRules.FindByQuestId(
                 _repository.LoadActiveQuests(characterId),
                 questId);
@@ -164,7 +182,8 @@ namespace DfoServer.Game.Quests
 
             var disposition = QuestClientTriggerAuthority.Resolve(
                 questId,
-                triggerType);
+                triggerType,
+                increment);
             IReadOnlyCollection<int> itemFilter = null;
             IReadOnlyDictionary<int, int> heldItemCounts = null;
             if (disposition == QuestClientTriggerDisposition.Recompute

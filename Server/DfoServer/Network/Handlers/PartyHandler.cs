@@ -1151,6 +1151,11 @@ namespace DfoServer.Network.Handlers
                 return;
             }
 
+            var inviteContext =
+                BuildCrossAreaPartyInviteContextPacket(
+                    session,
+                    targetSession);
+
             // 给目标发 REQUEST_PEER(0x0007) 弹邀请框。body 照 df type=7 包: 邀请者 uid + 结果类型0 + int + 3×u16。
             var w = new GamePacketWriter();
             w.WriteUInt16(inviterUid);   // 邀请者 uid(目标据此显示"谁邀请")
@@ -1161,17 +1166,28 @@ namespace DfoServer.Network.Handlers
             w.WriteUInt16(0);
             var inviteSent = await Game.Session.SessionDirectory
                 .TrySendBestEffortAsync(
-                    cancellationToken =>
-                        targetSession.SendPacketAsync(
+                    async cancellationToken =>
+                    {
+                        if (inviteContext != null)
+                        {
+                            await targetSession.SendPacketAsync(
+                                inviteContext,
+                                cancellationToken);
+                        }
+                        await targetSession.SendPacketAsync(
                             GamePacketEnvelopeBuilder.Build(
                                 0x00,
-                                0x0007,
+                                (ushort)NotiPacketTypeA21.REQUEST_PEER,
                                 w.ToArray()),
-                            cancellationToken),
+                            cancellationToken);
+                    },
                     $"party invite target={targetUid}");
             if (inviteSent)
             {
-                FileLogger.Log($"[{ProtocolName}] REQUEST_PEER → 给 uid={targetUid} 发 REQUEST_PEER(0x0007) 邀请弹框");
+                FileLogger.Log(
+                    $"[{ProtocolName}] REQUEST_PEER → 给 uid={targetUid} " +
+                    $"发 REQUEST_PEER(0x0007) 邀请弹框 " +
+                    $"crossAreaContext={inviteContext != null}");
             }
         }
 
@@ -1415,6 +1431,36 @@ namespace DfoServer.Network.Handlers
             return left.ListenerPort <= 0 ||
                    right.ListenerPort <= 0 ||
                    left.ListenerPort == right.ListenerPort;
+        }
+
+        internal static byte[] BuildCrossAreaPartyInviteContextPacket(
+            EnhancedClientSession inviter,
+            EnhancedClientSession invitee)
+        {
+            var inviterPlayer = inviter?.Player;
+            var inviteePlayer = invitee?.Player;
+            if (!IsSameGameChannel(inviter, invitee) ||
+                inviterPlayer?.UserId == 0 ||
+                inviteePlayer?.UserId == 0 ||
+                !Game.Session.SessionDirectory.IsTownPresence(
+                    inviterPlayer) ||
+                !Game.Session.SessionDirectory.IsTownPresence(
+                    inviteePlayer) ||
+                (inviterPlayer.CurTownId == inviteePlayer.CurTownId &&
+                 inviterPlayer.CurAreaId == inviteePlayer.CurAreaId))
+            {
+                return null;
+            }
+
+            // 0x0007 只带邀请者 UID。单向好友关系下，接收端可能没有
+            // 邀请者的全局用户记录；先复用好友系统已验证的 subtype0
+            // 注册该 UID，不发 USER_AREA/AREA_USERS，不制造跨区域位置实体。
+            var body = UserInfoSubtype0Builder.BuildNotificationBody(
+                UnitedFriendSystem.BuildUserInfoRecord(inviterPlayer));
+            return GamePacketEnvelopeBuilder.Build(
+                0x00,
+                (ushort)NotiPacketTypeA21.USERINFO,
+                body);
         }
 
         // 向队伍全体在线成员广播整份 PARTY_INFO(0x09 type=0)+ 实时信息(0x99)+ P2P 端点(0x0B)。

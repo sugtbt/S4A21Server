@@ -12,7 +12,8 @@ namespace DfoServer.Game.Quests
     {
         internal static QuestClientTriggerDisposition Resolve(
             ushort questId,
-            byte triggerType)
+            byte triggerType,
+            bool increment = false)
         {
             var quest = GameWorld.QuestData.GetQuestFile(questId);
             if (quest == null || !IsSupportedTriggerType(triggerType))
@@ -39,6 +40,18 @@ namespace DfoServer.Game.Quests
                     return QuestClientTriggerDisposition.Recompute;
 
                 case "hunt monster":
+                    if (GameWorld.QuestData.IsWorldMapHuntMonsterQuest(questId))
+                    {
+                        return GameWorld.QuestData
+                            .IsClientWorldMapHuntMonsterTriggerAuthorized(
+                                questId,
+                                triggerType,
+                                increment)
+                            ? QuestClientTriggerDisposition.Mutate
+                            : QuestClientTriggerDisposition.Reject;
+                    }
+                    return QuestClientTriggerDisposition.EchoOnly;
+
                 case "clear map":
                 case "clear quest":
                 case "quest clear":

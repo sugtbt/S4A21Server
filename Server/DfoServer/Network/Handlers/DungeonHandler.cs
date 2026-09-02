@@ -135,6 +135,18 @@ namespace DfoServer.Network.Handlers
         public Task Handle_ENUM_CMDPACKET_SELECT_DUNGEON(EnhancedClientSession session, GamePacketHeader header, byte[] body)
             => _entry.HandleSelectDungeon(session, header, body);
 
+        public Task Handle_ENUM_CMDPACKET_CRACK_OF_DIMENSION(EnhancedClientSession session, GamePacketHeader header, byte[] body)
+            => _entry.HandleCrackOfDimension(session, header, body);
+
+        public Task<bool> TryHandleAnotherAradQuestAcceptAsync(EnhancedClientSession session, GamePacketHeader header, byte[] body)
+            => _entry.TryHandleAnotherAradQuestAcceptAsync(session, header, body);
+
+        public Task<bool> TryHandleAnotherAradQuestSetTriggerAsync(EnhancedClientSession session, GamePacketHeader header, byte[] body)
+            => _entry.TryHandleAnotherAradQuestSetTriggerAsync(session, header, body);
+
+        public Task<bool> TryHandleAnotherAradQuestFinishAsync(EnhancedClientSession session, GamePacketHeader header, byte[] body)
+            => _entry.TryHandleAnotherAradQuestFinishAsync(session, header, body);
+
         public Task Handle_ENUM_CMDPACKET_REQUEST_CIRCLE_ENTER(EnhancedClientSession session, GamePacketHeader header, byte[] body)
             => _entry.HandleRequestCircleEnter(session, header, body);
 
@@ -185,6 +197,24 @@ namespace DfoServer.Network.Handlers
 
         public Task Handle_SET_PLAY_RESULT(EnhancedClientSession session, GamePacketHeader header, byte[] body)
             => _settlement.HandleSetPlayResult(session, header, body);
+
+        public Task Handle_LICENSE_DUNGEON_PLAY_RESULT(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body)
+            => _settlement.HandleLicensedDungeonPlayResult(
+                session,
+                header,
+                body);
+
+        public Task Handle_LICENSE_DUNGEON_REQUEST_REWARD(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body)
+            => _settlement.HandleLicensedDungeonRequestReward(
+                session,
+                header,
+                body);
 
         public Task Handle_ENUM_CMDPACKET_DUNGEON_EVENT_STORY_PAUSE(EnhancedClientSession session, GamePacketHeader header, byte[] body)
             => _tutorial.HandleStoryPause(session, header, body);

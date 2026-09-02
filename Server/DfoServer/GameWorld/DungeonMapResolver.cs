@@ -135,30 +135,32 @@ namespace DfoServer.GameWorld
                 // assets owned by another quest maze. Anchor the implicit Boss
                 // to this maze's declared MAP resource group before using the
                 // directory-wide coordinate fallback.
-                if (!HasMapSpecificationAt(maze, x, y))
+                // Some wrapper/legacy DGN files declare the terminal cell as a
+                // normal [map] specification even though the authored MAP
+                // directory contains a dedicated PVF [type] [boss] resource.
+                // Prefer that maze-local Boss resource before allowing the
+                // ordinary map specification to win.
+                var expectedGreed = TryGetMazeCellGreed(
+                    maze,
+                    x,
+                    y,
+                    out var bossGreed)
+                        ? bossGreed
+                        : string.Empty;
+                var anchoredBoss = PickImplicitBossByExplicitMapAffinity(
+                    index,
+                    maze,
+                    maplst,
+                    dungeonId,
+                    expectedGreed);
+                if (anchoredBoss > 0)
                 {
-                    var expectedGreed = TryGetMazeCellGreed(
-                        maze,
-                        x,
-                        y,
-                        out var bossGreed)
-                            ? bossGreed
-                            : string.Empty;
-                    var anchoredBoss = PickImplicitBossByExplicitMapAffinity(
-                        index,
-                        maze,
-                        maplst,
-                        dungeonId,
-                        expectedGreed);
-                    if (anchoredBoss > 0)
-                    {
-                        FileLogger.Log(
-                            $"[DungeonMapResolver] BOSS_AFFINITY: " +
-                            $"dungeon={dungeonId} maze={mazeIndex} " +
-                            $"room=({x},{y}) greed={expectedGreed} " +
-                            $"map={anchoredBoss}");
-                        return anchoredBoss;
-                    }
+                    FileLogger.Log(
+                        $"[DungeonMapResolver] BOSS_AFFINITY: " +
+                        $"dungeon={dungeonId} maze={mazeIndex} " +
+                        $"room=({x},{y}) greed={expectedGreed} " +
+                        $"map={anchoredBoss}");
+                    return anchoredBoss;
                 }
             }
 
@@ -852,6 +854,31 @@ namespace DfoServer.GameWorld
             {
                 var startPool = PickFromPool(index, MapFileType.Start);
                 if (startPool > 0) return startPool;
+
+                // Legacy and wrapper DGN files may omit the start MAP from
+                // [map specification] and keep every resource filename
+                // numeric.  In that layout the maze cell greed plus the PVF
+                // MAP type is the only stable authored identity; prefer the
+                // owned normal MAP with the same gate signature before any
+                // directory-order fallback can choose a random room.
+                var normalStartByGreed = PickOwnedByGreed(
+                    index,
+                    maplst,
+                    dungeonId,
+                    MapFileType.Normal,
+                    expectedGreed,
+                    x,
+                    y,
+                    out var normalStartExact);
+                if (normalStartByGreed > 0)
+                {
+                    FileLogger.Log(
+                        $"[DungeonMapResolver] START_GREED_MATCH: " +
+                        $"dungeon={dungeonId} maze={mazeIndex} " +
+                        $"room=({x},{y}) greed={expectedGreed} " +
+                        $"map={normalStartByGreed} exact={normalStartExact}");
+                    return normalStartByGreed;
+                }
 
                 // Some DGN mazes use logical grid coordinates while their MAP file
                 // names retain the expanded physical grid coordinates. When the
@@ -1738,7 +1765,13 @@ namespace DfoServer.GameWorld
                 var fileName = Path.GetFileName(entry.FilePath);
                 var stem = Path.GetFileNameWithoutExtension(fileName) ?? string.Empty;
 
-                var fileType = ClassifyFileType(stem);
+                // The MAP's PVF [type] is the authoritative room role.  A
+                // number of legacy dungeons use numeric filenames for their
+                // boss resources (for example RanjerusDogs05.map and
+                // Impossible06.map), so filename-only classification silently
+                // places those maps in the ordinary pool and makes the boss
+                // coordinate fall back to the last normal room.
+                var fileType = ClassifyFileType(entry.Id, stem);
                 TryParseMapFileCoordinate(fileName, out var hasCoord, out var cx, out var cy);
 
                 index.Add(new MapFileEntry
@@ -1851,6 +1884,74 @@ namespace DfoServer.GameWorld
 
             // Unrecognized — treat as Normal
             return MapFileType.Normal;
+        }
+
+        private static MapFileType ClassifyFileType(int mapId, string stem)
+        {
+            if (mapId > 0)
+            {
+                try
+                {
+                    var mapType = DungeonMapCatalog.GetMapFile(mapId).Type;
+                    if (TryParseMapFileType(mapType, out var pvfType))
+                        return pvfType;
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[DungeonMapResolver] MAP type read failed: " +
+                        $"map={mapId} error={ex.Message}");
+                }
+            }
+
+            return ClassifyFileType(stem);
+        }
+
+        private static bool TryParseMapFileType(
+            string rawType,
+            out MapFileType fileType)
+        {
+            fileType = MapFileType.Normal;
+            if (string.IsNullOrWhiteSpace(rawType))
+                return false;
+
+            var normalized = rawType.Trim().Trim('`');
+            if (normalized.StartsWith("[", StringComparison.Ordinal)
+                && normalized.EndsWith("]", StringComparison.Ordinal)
+                && normalized.Length > 2)
+            {
+                normalized = normalized.Substring(1, normalized.Length - 2);
+            }
+
+            switch (normalized.Trim().ToLowerInvariant())
+            {
+                case "start":
+                    fileType = MapFileType.Start;
+                    return true;
+                case "boss":
+                    fileType = MapFileType.Boss;
+                    return true;
+                case "quest":
+                    fileType = MapFileType.Quest;
+                    return true;
+                case "named":
+                    fileType = MapFileType.Named;
+                    return true;
+                case "end":
+                    fileType = MapFileType.End;
+                    return true;
+                case "hidden":
+                    fileType = MapFileType.Hidden;
+                    return true;
+                case "default":
+                    fileType = MapFileType.Default;
+                    return true;
+                case "normal":
+                    fileType = MapFileType.Normal;
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         private static string GetTerminalMapTypeToken(string suffix)

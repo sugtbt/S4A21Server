@@ -7,6 +7,7 @@ namespace DfoServer.Game.Dungeon
         Standard,
         BloodAltar,
         Tournament,
+        LicensedDungeon,
     }
 
     public static class DungeonClearPresentationPolicy

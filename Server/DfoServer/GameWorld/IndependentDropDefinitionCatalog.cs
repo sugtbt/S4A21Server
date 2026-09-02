@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 
 namespace DfoServer.GameWorld
@@ -237,6 +238,15 @@ namespace DfoServer.GameWorld
                 && MonsterCodeIndex.Value.Contains(monsterCode);
         }
 
+        internal static IReadOnlyDictionary<int, IndependentDropEntryDefinition[]>
+            ParseMonsterEntriesFromText(string text)
+        {
+            return ParseMonsterEntries(
+                text ?? string.Empty,
+                new Dictionary<int, ExternalPoolDefinition>(),
+                reportMissingExternalPools: false);
+        }
+
         internal static bool TryResolveExternalPool(
             int poolIndex,
             int chronicleDropJobGroup,
@@ -444,86 +454,112 @@ namespace DfoServer.GameWorld
                 bool reportMissingExternalPools = true)
         {
             var text = PvfArchiveAccessor.ReadText(MainDefinitionPath);
-            var sectionStart = text.IndexOf(
+            return ParseMonsterEntries(
+                text,
+                externalPools,
+                reportMissingExternalPools);
+        }
+
+        private static Dictionary<int, IndependentDropEntryDefinition[]>
+            ParseMonsterEntries(
+                string text,
+                IReadOnlyDictionary<int, ExternalPoolDefinition> externalPools,
+                bool reportMissingExternalPools)
+        {
+            var normalized = NormalizeIndependentDropText(text);
+            var sectionStart = normalized.IndexOf(
                 "[independent drop]",
                 StringComparison.OrdinalIgnoreCase);
-            if (sectionStart < 0)
-                return new Dictionary<int, IndependentDropEntryDefinition[]>();
-
-            sectionStart += "[independent drop]".Length;
-            var queue = new Queue<string>(Tokenize(text.Substring(sectionStart)));
+            var body = sectionStart < 0
+                ? normalized
+                : normalized.Substring(
+                    sectionStart + "[independent drop]".Length);
+            var queue = new Queue<string>(Tokenize(body));
             var builders = new Dictionary<int, List<IndependentDropEntryDefinition>>();
 
-            while (queue.Count >= 17)
+            while (true)
             {
-                if (queue.Peek().StartsWith("[", StringComparison.Ordinal))
+                SkipIgnoredTokens(queue);
+                if (queue.Count == 0)
                     break;
 
-                var type = ReadInt(queue, "type");
-                var monsterCode = ReadInt(queue, "monsterCode");
-                var itemId = ReadInt(queue, "itemId");
-
-                var probabilities = new int[DifficultyTierCount];
-                for (var index = 0; index < probabilities.Length; index++)
-                    probabilities[index] = ReadInt(queue, "probability");
-
-                var counts = new int[CountColumnCount];
-                for (var index = 0; index < counts.Length; index++)
-                    counts[index] = ReadInt(queue, "count");
-
-                var levelMin = ReadInt(queue, "levelMin");
-                var levelMax = ReadInt(queue, "levelMax");
-                var difficulty = ReadInt(queue, "difficulty");
-                var listFlag = ReadInt(queue, "listFlag");
-
-                var poolKind = IndependentDropPoolKind.None;
-                var poolIndexes = Array.Empty<int>();
-                var poolsByJobGroup =
-                    new Dictionary<int, IndependentDropWeightedPoolDefinition>();
-
-                if (listFlag == 1)
+                try
                 {
-                    poolKind = IndependentDropPoolKind.Inline;
-                    var inlineItems = ReadInlinePool(queue);
-                    var pool = new IndependentDropWeightedPoolDefinition(
-                        inlineItems);
-                    if (pool.TotalWeight > 0)
+                    var type = ReadInt(queue, "type");
+                    var monsterCode = ReadInt(queue, "monsterCode");
+                    var itemId = ReadInt(queue, "itemId");
+
+                    var probabilities = new int[DifficultyTierCount];
+                    for (var index = 0; index < probabilities.Length; index++)
+                        probabilities[index] = ReadInt(queue, "probability");
+
+                    var counts = new int[CountColumnCount];
+                    for (var index = 0; index < counts.Length; index++)
+                        counts[index] = ReadInt(queue, "count");
+
+                    var levelMin = ReadInt(queue, "levelMin");
+                    var levelMax = ReadInt(queue, "levelMax");
+                    var difficulty = ReadInt(queue, "difficulty");
+                    var listFlag = ReadInt(queue, "listFlag");
+
+                    var poolKind = IndependentDropPoolKind.None;
+                    var poolIndexes = Array.Empty<int>();
+                    var poolsByJobGroup =
+                        new Dictionary<int, IndependentDropWeightedPoolDefinition>();
+
+                    if (listFlag == 1)
                     {
-                        poolsByJobGroup[
-                            IndependentDropEntryDefinition.UniversalJobGroup] = pool;
+                        poolKind = IndependentDropPoolKind.Inline;
+                        var inlineItems = ReadInlinePool(queue);
+                        var pool = new IndependentDropWeightedPoolDefinition(
+                            inlineItems);
+                        if (pool.TotalWeight > 0)
+                        {
+                            poolsByJobGroup[
+                                IndependentDropEntryDefinition.UniversalJobGroup] = pool;
+                        }
                     }
-                }
-                else if (listFlag == 2)
-                {
-                    poolKind = IndependentDropPoolKind.External;
-                    poolIndexes = ReadExternalPoolIndexes(queue).ToArray();
-                    poolsByJobGroup = BuildMergedExternalPools(
+                    else if (listFlag == 2)
+                    {
+                        poolKind = IndependentDropPoolKind.External;
+                        poolIndexes = ReadExternalPoolIndexes(queue).ToArray();
+                        poolsByJobGroup = BuildMergedExternalPools(
+                            poolIndexes,
+                            externalPools,
+                            reportMissingExternalPools);
+                    }
+
+                    if (type != 0)
+                        continue;
+
+                    var definition = new IndependentDropEntryDefinition(
+                        monsterCode,
+                        itemId,
+                        probabilities,
+                        counts,
+                        levelMin,
+                        levelMax,
+                        difficulty,
+                        poolKind,
                         poolIndexes,
-                        externalPools,
-                        reportMissingExternalPools);
+                        poolsByJobGroup);
+
+                    if (!builders.TryGetValue(monsterCode, out var entries))
+                    {
+                        entries = new List<IndependentDropEntryDefinition>();
+                        builders[monsterCode] = entries;
+                    }
+                    entries.Add(definition);
                 }
-
-                if (type != 0)
-                    continue;
-
-                var definition = new IndependentDropEntryDefinition(
-                    monsterCode,
-                    itemId,
-                    probabilities,
-                    counts,
-                    levelMin,
-                    levelMax,
-                    difficulty,
-                    poolKind,
-                    poolIndexes,
-                    poolsByJobGroup);
-
-                if (!builders.TryGetValue(monsterCode, out var entries))
+                catch (Exception ex)
                 {
-                    entries = new List<IndependentDropEntryDefinition>();
-                    builders[monsterCode] = entries;
+                    FileLogger.Log(
+                        $"[IndependentDropDefinition] skipped malformed row: {ex.Message}");
+                    var remaining = queue.Count;
+                    SkipIgnoredTokens(queue);
+                    if (queue.Count == remaining && queue.Count > 0)
+                        queue.Dequeue();
                 }
-                entries.Add(definition);
             }
 
             return builders.ToDictionary(
@@ -572,56 +608,158 @@ namespace DfoServer.GameWorld
         private static List<RawIndependentDropPoolItem> ReadInlinePool(
             Queue<string> queue)
         {
-            ExpectListStart(queue);
             var result = new List<RawIndependentDropPoolItem>();
-            while (queue.Count > 0 && queue.Peek() != "[/list]")
+            if (!TryExpectListStart(queue))
+                return result;
+
+            while (queue.Count > 0 && !IsListEnd(queue.Peek()))
             {
+                if (IsTag(queue.Peek()))
+                    break;
+
                 var itemId = ReadInt(queue, "inlineItemId");
-                if (queue.Count == 0 || queue.Peek() == "[/list]")
-                    throw new FormatException("Inline independent-drop pool has an odd token count.");
+                if (queue.Count == 0
+                    || IsListEnd(queue.Peek())
+                    || IsTag(queue.Peek()))
+                {
+                    break;
+                }
+
                 var weight = ReadInt(queue, "inlineWeight");
-                result.Add(new RawIndependentDropPoolItem(
-                    itemId,
-                    weight,
-                    IndependentDropEntryDefinition.UniversalJobGroup,
-                    poolIndex: 0));
+                if (itemId > 0 && weight > 0)
+                {
+                    result.Add(new RawIndependentDropPoolItem(
+                        itemId,
+                        weight,
+                        IndependentDropEntryDefinition.UniversalJobGroup,
+                        poolIndex: 0));
+                }
             }
-            ExpectListEnd(queue);
+
+            TryExpectListEnd(queue);
             return result;
         }
 
         private static List<int> ReadExternalPoolIndexes(Queue<string> queue)
         {
-            ExpectListStart(queue);
             var result = new List<int>();
-            while (queue.Count > 0 && queue.Peek() != "[/list]")
+            if (!TryExpectListStart(queue))
+                return result;
+
+            while (queue.Count > 0 && !IsListEnd(queue.Peek()))
+            {
+                if (IsTag(queue.Peek()))
+                    break;
                 result.Add(ReadInt(queue, "externalPoolIndex"));
-            ExpectListEnd(queue);
+            }
+
+            TryExpectListEnd(queue);
             return result;
         }
 
-        private static void ExpectListStart(Queue<string> queue)
+        private static bool TryExpectListStart(Queue<string> queue)
         {
-            if (queue.Count == 0 || queue.Dequeue() != "[list]")
-                throw new FormatException("Independent-drop list start tag is missing.");
+            while (queue.Count > 0)
+            {
+                var peek = queue.Peek();
+                if (IsListStart(peek))
+                {
+                    queue.Dequeue();
+                    return true;
+                }
+
+                if (IsTag(peek) || TryParseInt(peek, out _))
+                    return false;
+                queue.Dequeue();
+            }
+
+            return false;
         }
 
-        private static void ExpectListEnd(Queue<string> queue)
+        private static void TryExpectListEnd(Queue<string> queue)
         {
-            if (queue.Count == 0 || queue.Dequeue() != "[/list]")
-                throw new FormatException("Independent-drop list end tag is missing.");
+            if (queue.Count > 0 && IsListEnd(queue.Peek()))
+                queue.Dequeue();
         }
 
         private static int ReadInt(Queue<string> queue, string fieldName)
         {
-            if (queue.Count == 0
-                || !TryParseInt(queue.Dequeue(), out var value))
+            while (queue.Count > 0)
             {
-                throw new FormatException(
-                    $"Independent-drop field '{fieldName}' is not an integer.");
+                var token = queue.Peek();
+                if (IsTag(token))
+                    break;
+
+                queue.Dequeue();
+                if (TryParseInt(token, out var value))
+                    return value;
             }
-            return value;
+
+            throw new FormatException(
+                $"Independent-drop field '{fieldName}' is not an integer.");
         }
+
+        private static void SkipIgnoredTokens(Queue<string> queue)
+        {
+            while (queue.Count > 0)
+            {
+                var peek = queue.Peek();
+                if (IsListStart(peek))
+                {
+                    queue.Dequeue();
+                    while (queue.Count > 0 && !IsListEnd(queue.Peek()))
+                        queue.Dequeue();
+                    if (queue.Count > 0 && IsListEnd(queue.Peek()))
+                        queue.Dequeue();
+                    continue;
+                }
+
+                if (IsTag(peek))
+                {
+                    queue.Dequeue();
+                    continue;
+                }
+
+                break;
+            }
+        }
+
+        private static string NormalizeIndependentDropText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return string.Empty;
+
+            var withSpaces = text.Replace("→", " ").Replace("->", " ");
+            var builder = new StringBuilder(withSpaces.Length);
+            using (var reader = new StringReader(withSpaces))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    var cut = -1;
+                    var hash = line.IndexOf('#');
+                    var slash = line.IndexOf("//", StringComparison.Ordinal);
+                    if (hash >= 0)
+                        cut = hash;
+                    if (slash >= 0 && (cut < 0 || slash < cut))
+                        cut = slash;
+                    if (cut >= 0)
+                        line = line.Substring(0, cut);
+                    builder.Append(line).Append('\n');
+                }
+            }
+
+            return builder.ToString();
+        }
+
+        private static bool IsListStart(string token)
+            => string.Equals(token, "[list]", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsListEnd(string token)
+            => string.Equals(token, "[/list]", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsTag(string token)
+            => !string.IsNullOrEmpty(token) && token[0] == '[';
 
         private static string[] ReadSectionTokens(
             string text,

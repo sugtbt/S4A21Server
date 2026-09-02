@@ -1005,6 +1005,11 @@ namespace DfoServer.Network.Handlers.Dungeon
                 && roomState.Maze.X == run.BossMapPos[0]
                 && roomState.Maze.Y == run.BossMapPos[1];
             var currentMapId = roomState?.Maze.Index ?? 0;
+            run.AnotherAradQuest?.TryRecordRoomClear(
+                run.RoomKey.X,
+                run.RoomKey.Y,
+                currentMapId,
+                out _);
             var explicitMapClear = run.ClearCondition != null
                 && run.ClearCondition.Check(1, currentMapId);
             var shouldClearDungeon = DungeonCombatHandler.ShouldClearDungeon(

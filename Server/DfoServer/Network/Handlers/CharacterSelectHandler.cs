@@ -9,6 +9,7 @@ using DfoServer.Game.Mercenary;
 using DfoServer.Game.Mailbox;
 using DfoServer.Game.Names;
 using DfoServer.Game.Premium;
+using DfoServer.Game.Quests;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.GameWorld;
 using DfoServer.Infrastructure;
@@ -475,6 +476,28 @@ namespace DfoServer.Network.Handlers
                         $"error={giftDelivery.Error}");
                 }
             }
+
+            try
+            {
+                var repairs = new QuestActiveTriggerRepairService(
+                    _database.ConnectionString)
+                    .RepairWorldMapHuntMonsterTriggers(ownerCharId);
+                foreach (var repair in repairs)
+                {
+                    FileLogger.Log(
+                        $"[{ProtocolName}] repaired regional hunt trigger: " +
+                        $"cid={ownerCharId} quest={repair.QuestId} " +
+                        $"trigger={repair.PreviousTriggerValue}->" +
+                        $"{repair.TriggerValue}");
+                }
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[{ProtocolName}] regional hunt trigger repair failed: " +
+                    $"cid={ownerCharId} {ex.Message}");
+            }
+
             var characterList = BuildCharacterList(ownerAcctId);
 
             // Character selection rebuilds the current character's complete skill state.

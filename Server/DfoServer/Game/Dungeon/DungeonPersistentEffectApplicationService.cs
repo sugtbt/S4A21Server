@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using DfoServer.Game.Currency;
 using DfoServer.Game.Dungeon.BloodAltar;
@@ -8,6 +9,7 @@ using DfoServer.Game.Premium;
 using DfoServer.Game.Progression;
 using DfoServer.Infrastructure;
 using Microsoft.Data.Sqlite;
+using DfoServer.GameWorld;
 using DungeonData = DfoServer.GameWorld.Dungeon;
 
 namespace DfoServer.Game.Dungeon
@@ -34,6 +36,8 @@ namespace DfoServer.Game.Dungeon
             "card-reward-paid";
         internal const string BloodAltarRewardCommit =
             "blood-altar-reward";
+        internal const string LicensedDungeonRewardCommit =
+            "licensed-dungeon-reward-commit";
     }
 
     internal sealed class SuitableDungeonLuckyStarResult
@@ -230,6 +234,41 @@ namespace DfoServer.Game.Dungeon
         public int MailedRewardCount { get; set; }
         public List<BloodAltarRewardEffectMutation> Changes { get; set; }
             = new List<BloodAltarRewardEffectMutation>();
+    }
+
+    internal sealed class LicensedDungeonRewardEffectItem
+    {
+        public int ItemId { get; set; }
+        public int StackCount { get; set; }
+    }
+
+    internal sealed class LicensedDungeonRewardEffectPayload
+    {
+        public int CharacterId { get; set; }
+        public int AccountId { get; set; }
+        public int DungeonId { get; set; }
+        public int LicenseLevel { get; set; }
+        public bool GroupBossPresent { get; set; }
+        public List<LicensedDungeonRewardEffectItem> Rewards { get; set; }
+            = new List<LicensedDungeonRewardEffectItem>();
+    }
+
+    internal sealed class LicensedDungeonRewardEffectMutation
+    {
+        public int ListType { get; set; }
+        public short Slot { get; set; }
+    }
+
+    internal sealed class LicensedDungeonRewardEffectResult
+    {
+        public List<LicensedDungeonRewardEffectMutation> Changes { get; set; }
+            = new List<LicensedDungeonRewardEffectMutation>();
+    }
+
+    internal sealed class LicensedDungeonRewardCommitResult
+    {
+        internal IReadOnlyList<InventorySlotMutation> Changes { get; set; }
+            = Array.Empty<InventorySlotMutation>();
     }
 
     // Typed persistent effect dispatcher. Only registered payload kinds can
@@ -647,6 +686,67 @@ namespace DfoServer.Game.Dungeon
             }
         }
 
+        internal bool TryApplyLicensedDungeonReward(
+            DungeonEffectId effectId,
+            InventoryLease lease,
+            Guid ownerSessionId,
+            int dungeonId,
+            int licenseLevel,
+            bool groupBossPresent,
+            IReadOnlyList<LicensedDungeonRewardEffectItem> rewards,
+            out LicensedDungeonRewardCommitResult result,
+            out string error)
+        {
+            result = null;
+            error = null;
+            var characterId = lease?.CharacterId ?? 0;
+            var accountId = lease?.AccountId ?? 0;
+            try
+            {
+                ValidateEffectIdentity(
+                    effectId,
+                    DungeonPersistentEffectKinds.LicensedDungeonRewardCommit,
+                    characterId);
+                if (!InventoryContext.IsCurrentLease(
+                        lease,
+                        ownerSessionId,
+                        characterId))
+                {
+                    throw new InvalidOperationException(
+                        "Licensed dungeon reward requires the current " +
+                        "owned inventory lease.");
+                }
+
+                var payload = new LicensedDungeonRewardEffectPayload
+                {
+                    CharacterId = characterId,
+                    AccountId = accountId,
+                    DungeonId = dungeonId,
+                    LicenseLevel = licenseLevel,
+                    GroupBossPresent = groupBossPresent,
+                    Rewards = NormalizeLicensedDungeonRewards(rewards),
+                };
+                _outbox.Enqueue(CreateDefinition(
+                    effectId,
+                    characterId,
+                    accountId,
+                    payload));
+                var record = _outbox.Get(effectId);
+                return TryExecuteLicensedDungeonReward(
+                    record,
+                    lease,
+                    ownerSessionId,
+                    requireOwnedLease: true,
+                    out result,
+                    out error);
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
         internal DungeonPersistentEffectRecoveryResult RecoverCharacter(
             int characterId)
         {
@@ -793,6 +893,23 @@ namespace DfoServer.Game.Dungeon
                         {
                             result.FailedCount++;
                             LogRecoveryFailure(record, bloodAltarError);
+                        }
+                        break;
+                    case DungeonPersistentEffectKinds.LicensedDungeonRewardCommit:
+                        if (TryExecuteLicensedDungeonReward(
+                                record,
+                                lease: null,
+                                ownerSessionId: Guid.Empty,
+                                requireOwnedLease: false,
+                                out _,
+                                out var licensedRewardError))
+                        {
+                            result.CommittedCount++;
+                        }
+                        else
+                        {
+                            result.FailedCount++;
+                            LogRecoveryFailure(record, licensedRewardError);
                         }
                         break;
                     default:
@@ -1433,6 +1550,212 @@ namespace DfoServer.Game.Dungeon
                         lease,
                         inventory,
                         inventoryPlan,
+                        rollback,
+                        inventoryMutated);
+                }
+                _outbox.TryFail(reservation, ex.Message);
+                error = ex.Message;
+                result = null;
+                return false;
+            }
+        }
+
+        private bool TryExecuteLicensedDungeonReward(
+            DungeonPersistentEffectRecord initialRecord,
+            InventoryLease lease,
+            Guid ownerSessionId,
+            bool requireOwnedLease,
+            out LicensedDungeonRewardCommitResult result,
+            out string error)
+        {
+            result = null;
+            error = null;
+            var claim = _outbox.TryClaim(
+                initialRecord.EffectId,
+                LeaseDuration,
+                out var reservation,
+                out var record);
+            if (claim == DungeonPersistentEffectClaimResult.Committed)
+                return TryReadLicensedDungeonRewardResult(
+                    record,
+                    out result,
+                    out error);
+            if (claim != DungeonPersistentEffectClaimResult.Claimed)
+            {
+                error = $"Persistent effect claim returned {claim}.";
+                return false;
+            }
+
+            InventoryService inventory = null;
+            InventoryRewardGrantBatchPlan inventoryPlan = null;
+            DungeonItemGrantBatchPlan snapshotPlan = null;
+            DungeonItemGrantMutationSnapshot rollback = null;
+            var inventoryMutated = false;
+            var committed = false;
+            try
+            {
+                var payload = DeserializePayload<LicensedDungeonRewardEffectPayload>(
+                    record,
+                    DungeonPersistentEffectKinds.LicensedDungeonRewardCommit);
+                ValidateLicensedDungeonRewardPayload(payload, record);
+
+                var effectiveLease = lease;
+                if (effectiveLease == null)
+                {
+                    using (var connection = _database.OpenConnection())
+                    {
+                        inventory = InventoryService.LoadFromDb(
+                            connection,
+                            payload.CharacterId,
+                            payload.AccountId,
+                            _database);
+                    }
+                    effectiveLease = new InventoryLease(
+                        Guid.NewGuid(),
+                        payload.CharacterId,
+                        inventory,
+                        version: 1);
+                }
+                else
+                {
+                    inventory = effectiveLease.Inventory;
+                }
+
+                lock (effectiveLease.SyncRoot)
+                {
+                    if (effectiveLease.CharacterId != payload.CharacterId
+                        || effectiveLease.AccountId != payload.AccountId
+                        || (requireOwnedLease
+                            && !InventoryContext.IsCurrentLease(
+                                effectiveLease,
+                                ownerSessionId,
+                                payload.CharacterId)))
+                    {
+                        throw new InvalidOperationException(
+                            "Licensed dungeon reward inventory lease changed " +
+                            "before commit.");
+                    }
+
+                    if (!TryBuildLicensedDungeonRewardPlan(
+                            inventory,
+                            payload.Rewards,
+                            out inventoryPlan,
+                            out var planError))
+                    {
+                        throw new InvalidOperationException(
+                            "Licensed dungeon reward planning failed: " +
+                            planError);
+                    }
+                    snapshotPlan = new DungeonItemGrantBatchPlan
+                    {
+                        Success = true,
+                        InventoryPlan = inventoryPlan,
+                    };
+                    if (!DungeonItemGrantMutationSnapshot.TryCapture(
+                            inventory,
+                            snapshotPlan,
+                            out rollback))
+                    {
+                        throw new InvalidOperationException(
+                            "Licensed dungeon reward snapshot failed.");
+                    }
+                    inventoryMutated = inventoryPlan.Entries.Count > 0;
+
+                    if (!InventoryRewardGrantService.TryApplyPreparedBatch(
+                            inventory,
+                            inventoryPlan,
+                            out var grantBatch)
+                        || !grantBatch.Success
+                        || grantBatch.Results.Count != payload.Rewards.Count)
+                    {
+                        throw new InvalidOperationException(
+                            "Licensed dungeon reward application failed: " +
+                            (grantBatch?.Error.ToString() ?? "unknown"));
+                    }
+                    inventoryMutated = inventoryMutated
+                        || grantBatch.Changes.HasChanges;
+
+                    using (var connection = _database.OpenConnection())
+                    using (var transaction = connection.BeginTransaction(
+                               deferred: false))
+                    {
+                        if (!InventoryPersistenceService.SaveDirtyInTransaction(
+                                connection,
+                                transaction,
+                                effectiveLease))
+                        {
+                            throw new InvalidOperationException(
+                                "Licensed dungeon reward inventory persistence " +
+                                "returned false.");
+                        }
+                        if (requireOwnedLease
+                            && !InventoryContext.IsCurrentLease(
+                                effectiveLease,
+                                ownerSessionId,
+                                payload.CharacterId))
+                        {
+                            throw new InvalidOperationException(
+                                "Licensed dungeon reward inventory lease changed " +
+                                "before transaction commit.");
+                        }
+
+                        var persistedResult =
+                            BuildLicensedDungeonRewardEffectResult(
+                                grantBatch.Results);
+                        if (!_outbox.TryCommitInTransaction(
+                                connection,
+                                transaction,
+                                reservation,
+                                ResultVersion,
+                                Serialize(persistedResult),
+                                _outbox.UtcNowMilliseconds))
+                        {
+                            throw new InvalidOperationException(
+                                "Licensed dungeon reward effect lease was lost " +
+                                "before commit.");
+                        }
+
+                        transaction.Commit();
+                        committed = true;
+                        inventory.ClearDirtyState();
+                        result = ToLicensedDungeonRewardCommitResult(
+                            persistedResult);
+                    }
+                }
+
+                return true;
+            }
+            catch (PermanentPersistentEffectException ex)
+            {
+                if (!committed)
+                {
+                    RecoverLicensedDungeonInventoryAfterFailure(
+                        lease,
+                        inventory,
+                        snapshotPlan,
+                        rollback,
+                        inventoryMutated);
+                }
+                _outbox.TryDeadLetter(reservation, ex.Message);
+                error = ex.Message;
+                result = null;
+                return false;
+            }
+            catch (Exception ex)
+            {
+                if (TryReadCommittedLicensedDungeonRewardAfterError(
+                        initialRecord.EffectId,
+                        out result))
+                {
+                    inventory?.ClearDirtyState();
+                    return true;
+                }
+                if (!committed)
+                {
+                    RecoverLicensedDungeonInventoryAfterFailure(
+                        lease,
+                        inventory,
+                        snapshotPlan,
                         rollback,
                         inventoryMutated);
                 }
@@ -2454,6 +2777,314 @@ namespace DfoServer.Game.Dungeon
                 }
             }
             target.Add(new InventorySlotMutation(listType, slot));
+        }
+
+        private static List<LicensedDungeonRewardEffectItem>
+            NormalizeLicensedDungeonRewards(
+                IReadOnlyList<LicensedDungeonRewardEffectItem> rewards)
+        {
+            var normalized = new List<LicensedDungeonRewardEffectItem>();
+            if (rewards == null)
+                return normalized;
+
+            foreach (var reward in rewards)
+            {
+                if (reward == null
+                    || reward.ItemId <= 0
+                    || reward.StackCount <= 0)
+                {
+                    throw new ArgumentException(
+                        "Licensed dungeon reward contains an invalid item.",
+                        nameof(rewards));
+                }
+
+                normalized.Add(new LicensedDungeonRewardEffectItem
+                {
+                    ItemId = reward.ItemId,
+                    StackCount = reward.StackCount,
+                });
+            }
+            return normalized;
+        }
+
+        private static void ValidateLicensedDungeonRewardPayload(
+            LicensedDungeonRewardEffectPayload payload,
+            DungeonPersistentEffectRecord record)
+        {
+            if (payload == null
+                || record == null
+                || payload.CharacterId != record.CharacterId
+                || payload.AccountId != record.AccountId
+                || payload.CharacterId <= 0
+                || payload.AccountId < 0
+                || payload.DungeonId <= 0
+                || payload.LicenseLevel <= 0
+                || payload.Rewards == null
+                || payload.Rewards.Count == 0
+                || !LicensedDungeonCatalog.TryGetDefinition(
+                    payload.DungeonId,
+                    out var definition)
+                || definition.LicenseLevel != payload.LicenseLevel)
+            {
+                throw new PermanentPersistentEffectException(
+                    "Licensed dungeon reward payload is invalid.");
+            }
+
+            if (payload.Rewards.Any(reward => reward == null))
+            {
+                throw new PermanentPersistentEffectException(
+                    "Licensed dungeon reward payload contains a null item.");
+            }
+
+            foreach (var reward in payload.Rewards)
+            {
+                if (reward == null
+                    || reward.ItemId <= 0
+                    || reward.StackCount <= 0)
+                {
+                    throw new PermanentPersistentEffectException(
+                        "Licensed dungeon reward item is invalid.");
+                }
+            }
+        }
+
+        private static bool TryBuildLicensedDungeonRewardPlan(
+            InventoryService inventory,
+            IReadOnlyList<LicensedDungeonRewardEffectItem> rewards,
+            out InventoryRewardGrantBatchPlan plan,
+            out string error)
+        {
+            plan = null;
+            error = null;
+            if (inventory == null || rewards == null || rewards.Count == 0)
+            {
+                error = "inventory or rewards are missing";
+                return false;
+            }
+
+            var requests = rewards
+                .Select(reward => InventoryRewardGrantRequest.Create(
+                    reward.ItemId,
+                    reward.StackCount,
+                    ItemCreateReason.DungeonDrop))
+                .ToList();
+            if (!InventoryRewardGrantService.TryPlanBatch(
+                    inventory,
+                    requests,
+                    out plan)
+                || plan == null
+                || !plan.Success)
+            {
+                error = plan?.Error.ToString() ?? "unknown";
+                return false;
+            }
+
+            foreach (var entry in plan.Entries)
+            {
+                if (!IsSupportedLicensedDungeonRewardEntry(entry))
+                {
+                    error = $"unsupported reward kind {entry.Kind}/" +
+                        entry.ListType;
+                    plan = null;
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static LicensedDungeonRewardEffectResult
+            BuildLicensedDungeonRewardEffectResult(
+                IReadOnlyList<InventoryRewardGrantResult> grants)
+        {
+            var result = new LicensedDungeonRewardEffectResult();
+            if (grants == null)
+                return result;
+
+            foreach (var grant in grants)
+            {
+                if (grant == null
+                    || !grant.Success
+                    || !IsSupportedLicensedDungeonRewardEntry(grant)
+                    || grant.ItemTemplateId <= 0
+                    || grant.GrantedCount <= 0)
+                {
+                    throw new InvalidOperationException(
+                        "Licensed dungeon reward result is invalid.");
+                }
+
+                result.Changes.Add(
+                    new LicensedDungeonRewardEffectMutation
+                    {
+                        ListType = (int)grant.ListType,
+                        Slot = grant.SlotIndex,
+                    });
+            }
+            return result;
+        }
+
+        private static LicensedDungeonRewardCommitResult
+            ToLicensedDungeonRewardCommitResult(
+                LicensedDungeonRewardEffectResult persisted)
+        {
+            if (persisted?.Changes == null)
+                return null;
+
+            var changes = new List<InventorySlotMutation>(
+                persisted.Changes.Count);
+            foreach (var mutation in persisted.Changes)
+            {
+                if (mutation == null
+                    || !IsSupportedLicensedDungeonRewardMutation(mutation))
+                {
+                    return null;
+                }
+                AddCardRewardChange(
+                    changes,
+                    (InventoryListType)mutation.ListType,
+                    mutation.Slot);
+            }
+            return new LicensedDungeonRewardCommitResult
+            {
+                Changes = changes,
+            };
+        }
+
+        private static bool IsSupportedLicensedDungeonRewardEntry(
+            InventoryRewardGrantPlanEntry entry)
+        {
+            if (entry == null
+                || entry.Kind != InventoryRewardGrantKind.InventoryItem)
+            {
+                return false;
+            }
+
+            if (entry.ListType == InventoryListType.Main)
+            {
+                return entry.SlotIndex >= InventoryService.MainSlotStart
+                    && entry.SlotIndex <= InventoryService.MainSlotEnd;
+            }
+
+            return entry.ListType == InventoryListType.Equipment
+                && entry.SlotIndex >= InventoryService.BodySlotStart
+                && entry.SlotIndex <= InventoryService.BodySlotEnd;
+        }
+
+        private static bool IsSupportedLicensedDungeonRewardEntry(
+            InventoryRewardGrantResult grant)
+        {
+            if (grant == null
+                || grant.Kind != InventoryRewardGrantKind.InventoryItem)
+            {
+                return false;
+            }
+
+            if (grant.ListType == InventoryListType.Main)
+            {
+                return grant.SlotIndex >= InventoryService.MainSlotStart
+                    && grant.SlotIndex <= InventoryService.MainSlotEnd;
+            }
+
+            return grant.ListType == InventoryListType.Equipment
+                && grant.SlotIndex >= InventoryService.BodySlotStart
+                && grant.SlotIndex <= InventoryService.BodySlotEnd;
+        }
+
+        private static bool IsSupportedLicensedDungeonRewardMutation(
+            LicensedDungeonRewardEffectMutation mutation)
+        {
+            if (mutation == null)
+                return false;
+            if (mutation.ListType == (int)InventoryListType.Main)
+            {
+                return mutation.Slot >= InventoryService.MainSlotStart
+                    && mutation.Slot <= InventoryService.MainSlotEnd;
+            }
+            return mutation.ListType == (int)InventoryListType.Equipment
+                && mutation.Slot >= InventoryService.BodySlotStart
+                && mutation.Slot <= InventoryService.BodySlotEnd;
+        }
+
+        private static bool TryReadLicensedDungeonRewardResult(
+            DungeonPersistentEffectRecord record,
+            out LicensedDungeonRewardCommitResult result,
+            out string error)
+        {
+            result = null;
+            error = null;
+            if (!TryDeserializeResult(
+                    record,
+                    out LicensedDungeonRewardEffectResult persisted,
+                    out error))
+            {
+                return false;
+            }
+
+            result = ToLicensedDungeonRewardCommitResult(persisted);
+            if (result != null)
+                return true;
+            error = "Committed licensed dungeon reward result is invalid.";
+            return false;
+        }
+
+        private bool TryReadCommittedLicensedDungeonRewardAfterError(
+            DungeonEffectId effectId,
+            out LicensedDungeonRewardCommitResult result)
+        {
+            result = null;
+            try
+            {
+                var record = _outbox.Get(effectId);
+                return record?.State == DungeonPersistentEffectState.Committed
+                    && TryReadLicensedDungeonRewardResult(
+                        record,
+                        out result,
+                        out _);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void RecoverLicensedDungeonInventoryAfterFailure(
+            InventoryLease lease,
+            InventoryService inventory,
+            DungeonItemGrantBatchPlan snapshotPlan,
+            DungeonItemGrantMutationSnapshot rollback,
+            bool inventoryMutated)
+        {
+            if (!inventoryMutated || inventory == null)
+                return;
+            if (lease == null
+                || !InventoryContext.IsCurrentLease(
+                    lease,
+                    lease.SessionId,
+                    lease.CharacterId))
+            {
+                rollback?.Restore(inventory, snapshotPlan);
+                inventory.ClearDirtyState();
+                return;
+            }
+
+            try
+            {
+                InventoryRollbackRecoveryService.ReloadOnlineInventory(
+                    _connectionString,
+                    lease);
+                if (ReferenceEquals(lease.Inventory, inventory))
+                {
+                    throw new InvalidOperationException(
+                        "current inventory lease was not replaced");
+                }
+            }
+            catch (Exception ex)
+            {
+                rollback?.Restore(inventory, snapshotPlan);
+                inventory.ClearDirtyState();
+                FileLogger.Log(
+                    $"[LicensedDungeon] inventory reload failed after " +
+                    $"rollback: cid={lease.CharacterId} error={ex.Message}");
+            }
         }
 
         private static void ValidateTowerOfDespairPayload(
