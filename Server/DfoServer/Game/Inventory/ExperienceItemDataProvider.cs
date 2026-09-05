@@ -180,7 +180,10 @@ namespace DfoServer.Game.Inventory
             ExperienceItemDefinition result)
         {
             var normalizedEffect = NormalizeEffect(effect?.EffectType);
-            if (normalizedEffect == "expup")
+            // 异次元裂缝经验与普通固定经验共用同一套角色经验数学核:
+            // 道具文案“经验值增加 %s”即固定经验, 数值来自 stk 文件该标签的值。
+            if (normalizedEffect == "expup"
+                || normalizedEffect == "expupbycrackofdimension")
             {
                 if (effect?.Values == null
                     || effect.Values.Count != 1
