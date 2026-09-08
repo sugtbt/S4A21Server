@@ -84,8 +84,9 @@ namespace DfoServer.Network.Builders
         }
 
         /// <summary>
-        /// USER_LEAVE(0x0006) NOTI: 某玩家离开区域(断线/切区域)时广播给同区域其它人以移除其分身。
-        /// ⚠️ 字节布局为推测(userId), 需真机抓包校验。
+        /// USER_LEAVE(0x0006) NOTI: 会话真正离开时广播给同区域其它人。
+        /// A21 body 已由当前客户端消费者确认是 uint16 userId；消费者还会清同 UID 的队伍槽，
+        /// 所以普通区域切换不能复用该通知。
         /// </summary>
         public static byte[] BuildUserLeave(ushort userId)
         {

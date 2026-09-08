@@ -125,6 +125,12 @@ namespace DfoServer.Game.Dungeon
         internal int MazeStartY { get; set; } = -1;
         internal int TotalRoomCount { get; set; } = 1;
         internal int EntryPartyMemberCount { get; set; } = 1;
+        internal byte EntryPartySlotIndex { get; set; }
+        internal DungeonPartySelectionCohort EntryPartySelectionCohort
+        {
+            get;
+            set;
+        }
         internal int ChronicleDropJobGroup { get; set; } = -1;
         internal int DimensionDropJob { get; set; } = -1;
         internal int DimensionDropGrowType { get; set; } = -1;
@@ -162,6 +168,7 @@ namespace DfoServer.Game.Dungeon
             = new Dictionary<RoomKey, RoomState>();
         internal uint Seed { get; set; }
         internal DnfLcg RoomLcg { get; set; }
+        internal DnfLcg ParticipantDropLcg { get; set; }
         internal List<RidableObjectSpawnEntry> RidableObjects { get; set; }
             = new List<RidableObjectSpawnEntry>();
 

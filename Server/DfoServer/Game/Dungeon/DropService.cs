@@ -20,6 +20,29 @@ namespace DfoServer.Game.Dungeon
             HellMonsterDropConfig.WarmUp();
         }
 
+        internal static uint DeriveParticipantDropSeed(
+            uint roomSeed,
+            long partyDungeonInstanceId,
+            long roomInstanceId,
+            int characterId)
+        {
+            unchecked
+            {
+                var value = roomSeed ^ 0x44524F50u;
+                value ^= (uint)partyDungeonInstanceId;
+                value ^= (uint)(partyDungeonInstanceId >> 32) * 0x9E3779B9u;
+                value ^= (uint)roomInstanceId * 0x85EBCA6Bu;
+                value ^= (uint)(roomInstanceId >> 32) * 0xC2B2AE35u;
+                value ^= (uint)characterId * 0x27D4EB2Fu;
+                value ^= value >> 16;
+                value *= 0x85EBCA6Bu;
+                value ^= value >> 13;
+                value *= 0xC2B2AE35u;
+                value ^= value >> 16;
+                return value != 0 ? value : 0x6D2B79F5u;
+            }
+        }
+
         internal bool TryRegisterTemplateDrop(
             DungeonRun run,
             int itemTemplateId,
@@ -71,6 +94,8 @@ namespace DfoServer.Game.Dungeon
             if (run == null || !run.RewardPolicy.AllowsMonsterDrops)
                 return default;
 
+            lock (run.SyncRoot)
+            {
             var slotCounter = run.SceneSlotCounter;
 
             IReadOnlyList<MonsterDropTable.DropPoolEntry> dropPool = null;
@@ -98,7 +123,8 @@ namespace DfoServer.Game.Dungeon
                 }
             }
 
-            var generator = new DropGenerator(run.RoomLcg);
+            var generator = new DropGenerator(
+                run.ParticipantDropLcg ?? run.RoomLcg);
             var result = generator.GenerateMonsterDrops(
                 request.DropRateLevel, request.MonsterType, request.MonsterCode,
                 run.Difficulty, request.DungeonBasisLevel,
@@ -127,6 +153,7 @@ namespace DfoServer.Game.Dungeon
                 GoldAmount = result.goldAmount,
                 Drops = result.drops
             };
+            }
         }
 
         internal List<DropInfo> GenerateAbyssPartyAndRegister(DungeonRun run, AbyssPartyDropRequest request)
@@ -134,6 +161,8 @@ namespace DfoServer.Game.Dungeon
             if (run == null || !run.RewardPolicy.AllowsMonsterDrops)
                 return new List<DropInfo>();
 
+            lock (run.SyncRoot)
+            {
             var slotCounter = run.SceneSlotCounter;
 
             var drops = run.DropPolicy.Allows(DungeonMonsterDropSource.Independent)
@@ -143,14 +172,14 @@ namespace DfoServer.Game.Dungeon
                     request.DungeonBasisLevel,
                     run.EntryPartyMemberCount,
                     run.ChronicleDropJobGroup,
-                    run.RoomLcg,
+                    run.ParticipantDropLcg ?? run.RoomLcg,
                     ref slotCounter)
                 : new List<DropInfo>();
 
             if (request.IsLastGroupMonster && !request.IsAbyssMonsterScript)
             {
                 var rewardDrops = HellMonsterDropConfig.GenerateSpecificEquipmentDrops(
-                    run.RoomLcg,
+                    run.ParticipantDropLcg ?? run.RoomLcg,
                     request.DungeonMinimumLevel,
                     request.DungeonBasisLevel,
                     run.Difficulty,
@@ -172,6 +201,7 @@ namespace DfoServer.Game.Dungeon
             run.SceneSlotCounter = slotCounter;
             RegisterDrops(run, drops);
             return drops;
+            }
         }
 
         private static List<DropInfo> GenerateAbyssEpicPieceDrops(
@@ -188,7 +218,7 @@ namespace DfoServer.Game.Dungeon
                     HellDifficulty = request.AbyssPartyDifficulty,
                     DungeonMinimumLevel = request.DungeonMinimumLevel,
                     DungeonBasisLevel = request.DungeonBasisLevel,
-                    Random = run.RoomLcg,
+                    Random = run.ParticipantDropLcg ?? run.RoomLcg,
                 });
             if (results.Count == 0)
                 return new List<DropInfo>();

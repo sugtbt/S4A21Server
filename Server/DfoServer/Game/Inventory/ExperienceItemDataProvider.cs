@@ -22,6 +22,7 @@ namespace DfoServer.Game.Inventory
             "swordman", "fighter", "gunner", "mage", "priest",
             "at gunner", "thief", "at fighter", "at mage",
             "demonic swordman", "creator mage", "at swordman", "knight",
+            "demonic lancer",
         };
 
         internal ExperienceItemDefinition(int itemTemplateId)

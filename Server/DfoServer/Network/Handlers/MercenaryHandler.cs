@@ -138,8 +138,11 @@ namespace DfoServer.Network.Handlers
             if (!StrikerSupportRoster.IsEligibleSupport(candidate, activeCharacterId))
             {
                 FileLogger.Log(
-                    $"[{ProtocolName}] MERCENARY/STRIKER select rejected: wire={command.WireSlot} " +
-                    $"cid={candidate?.CharacterId ?? 0} skill={command.SkillId} is not an eligible support");
+                    $"[{ProtocolName}] MERCENARY/STRIKER select rejected: owner={activeCharacterId} " +
+                    $"wire={command.WireSlot} cid={candidate?.CharacterId ?? 0} " +
+                    $"lv={candidate?.Level ?? 0} grow=0x{candidate?.GrowType ?? 0:X2} " +
+                    $"min={StrikerSkillDataProvider.GetMinimumSupportLevel()} " +
+                    $"skill={command.SkillId} is not an eligible support");
                 await SendCommandAck(session, SelectSkillCommand, StrikerSupportSkillListWriter.BuildFailureAck());
                 return;
             }

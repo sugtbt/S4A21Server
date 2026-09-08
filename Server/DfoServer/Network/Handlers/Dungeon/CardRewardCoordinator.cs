@@ -1,25 +1,45 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using DfoServer.Game.Dungeon;
 using DfoServer.Game.Inventory;
+using DfoServer.Game.Session;
 using DfoServer.Game.Premium;
 using DfoServer.Infrastructure;
 
 namespace DfoServer.Network.Handlers.Dungeon
 {
+    internal readonly struct CardRewardEplpDecision
+    {
+        internal CardRewardEplpDecision(byte state, byte option)
+        {
+            State = state;
+            Option = option;
+            Ready = true;
+        }
+
+        internal bool Ready { get; }
+        internal byte State { get; }
+        internal byte Option { get; }
+        internal bool IsCommitted => Ready && State == 1;
+    }
+
     internal sealed class CardRewardCoordinator
     {
         private readonly CardRewardService _application;
         private readonly ICardRewardNotificationSender _sender;
+        private readonly ISessionDirectory _sessions;
         private readonly IGameDatabase _database;
 
         internal CardRewardCoordinator(
             CardRewardService application = null,
             ICardRewardNotificationSender sender = null,
+            ISessionDirectory sessions = null,
             IGameDatabase database = null)
         {
             _application = application ?? new CardRewardService();
             _sender = sender ?? new CardRewardNotificationSender();
+            _sessions = sessions;
             _database = database;
         }
 
@@ -161,7 +181,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                         != DungeonSettlementState.ResultShown)
                         return;
                     DungeonRunLifecycle.CancelAutoFlip(session);
-                    await _sender.SendLayoutAsync(session);
+                    await SendPartyLayoutAsync(session, run);
                     if (!session.Player.IsCurrentDungeonRun(runIdentity)
                         || !run.TryMarkCardsRevealed())
                     {
@@ -178,36 +198,39 @@ namespace DfoServer.Network.Handlers.Dungeon
                 {
                     return;
                 }
-                if (cardType == 0)
-                    DungeonRunLifecycle.CancelAutoFlip(session);
-
                 if (cardType == 1
-                    && cardIndex == 0
                     && (!TryGetOwnedInventory(session, out var paymentLease)
                         || !_application.CanPayPaidCard(paymentLease, run)))
                 {
-                    await _sender.SendCardInfoAsync(session, run);
+                    await SendPartyCardInfoAsync(session, run);
                     return;
                 }
-
-                if (!CardRewardRules.TrySelectCardSlot(run, cardType, cardIndex))
-                    return;
 
                 var side = cardType == 0
                     ? CardRewardSide.Free
                     : CardRewardSide.Paid;
                 try
                 {
-                    await _sender.SendCardInfoAsync(session, run);
+                    var selectedCardIndex =
+                        await TrySelectAvailableCardAndProjectAsync(
+                            session,
+                            run,
+                            side,
+                            requestedCardIndex: cardIndex);
+                    if (selectedCardIndex == 0xFF)
+                    {
+                        return;
+                    }
+                    if (side == CardRewardSide.Free)
+                        DungeonRunLifecycle.CancelAutoFlip(session);
                 }
                 catch (Exception ex)
                 {
-                    RestoreSelectionAfterNotificationFailure(
-                        session,
-                        run,
-                        runIdentity,
-                        side,
-                        cardIndex);
+                    if (side == CardRewardSide.Free
+                        && session.Player.IsCurrentDungeonRun(runIdentity))
+                    {
+                        StartDelayedAutoFlip(session, delayMs: 4000);
+                    }
                     FileLogger.Log(
                         $"[CardRewardCoordinator] card-info projection failed: " +
                         $"cid={session.Player.CharacterId} side={side} " +
@@ -216,19 +239,13 @@ namespace DfoServer.Network.Handlers.Dungeon
                 }
                 if (!session.Player.IsCurrentDungeonRun(runIdentity))
                 {
-                    CardRewardRules.ClearSelectedSlot(
+                    await ClearSelectedCardAsync(
                         run,
                         side,
                         cardIndex);
                     return;
                 }
-                if (cardIndex == 0)
-                {
-                    await DeliverCardRewards(
-                        session,
-                        run,
-                        side);
-                }
+                await DeliverCardRewards(session, run, side);
             }
             finally
             {
@@ -255,7 +272,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                     return;
                 }
                 DungeonRunLifecycle.CancelAutoFlip(session);
-                await _sender.SendLayoutAsync(session);
+                await SendPartyLayoutAsync(session, run);
                 if (!session.Player.IsCurrentDungeonRun(identity)
                     || !run.TryMarkCardsRevealed())
                 {
@@ -269,12 +286,12 @@ namespace DfoServer.Network.Handlers.Dungeon
             }
         }
 
-        internal async Task<bool> HandleEplpCommand(
+        internal async Task<CardRewardEplpDecision> PrepareEplpCommand(
             EnhancedClientSession session,
             byte[] body)
         {
             if (body == null || body.Length < 2)
-                return false;
+                return default;
             var state = body[0];
             var option = body[1];
             var run = session.Player.CurrentRun;
@@ -282,33 +299,31 @@ namespace DfoServer.Network.Handlers.Dungeon
             if (run == null)
             {
                 DungeonRunLifecycle.CancelAutoFlip(session);
-                await _sender.SendExitAsync(session, state, option);
-                return state == 1;
+                return new CardRewardEplpDecision(state, option);
             }
 
             await run.Settlement.CardProjectionGate.WaitAsync();
             try
             {
                 if (!session.Player.IsCurrentDungeonRun(identity))
-                    return false;
+                    return default;
                 if (run.SettlementState
                         == DungeonSettlementState.ResultShown
                     && run.CardRewards != null)
                 {
                     DungeonRunLifecycle.CancelAutoFlip(session);
-                    await _sender.SendLayoutAsync(session);
+                    await SendPartyLayoutAsync(session, run);
                     if (!session.Player.IsCurrentDungeonRun(identity)
                         || !run.TryMarkCardsRevealed())
                     {
-                        return false;
+                        return default;
                     }
                     StartDelayedAutoFlip(session, 4000);
-                    return false;
+                    return default;
                 }
 
                 DungeonRunLifecycle.CancelAutoFlip(session);
-                await _sender.SendExitAsync(session, state, option);
-                return state == 1;
+                return new CardRewardEplpDecision(state, option);
             }
             finally
             {
@@ -321,44 +336,38 @@ namespace DfoServer.Network.Handlers.Dungeon
             DungeonRun run)
         {
             var identity = run?.CaptureIdentity() ?? default;
-            if (!session.Player.IsCurrentDungeonRun(identity)
-                || !CardRewardRules.TrySelectCardSlot(run, 0, 0))
-            {
-                return;
-            }
             if (!session.Player.IsCurrentDungeonRun(identity))
             {
-                CardRewardRules.ClearSelectedSlot(
-                    run,
-                    CardRewardSide.Free,
-                    cardIndex: 0);
                 return;
             }
+            byte autoCardIndex;
             try
             {
-                await _sender.SendCardInfoAsync(session, run);
+                autoCardIndex = await TrySelectAvailableCardAndProjectAsync(
+                    session,
+                    run,
+                    CardRewardSide.Free,
+                    requestedCardIndex: null);
             }
             catch (Exception ex)
             {
-                RestoreSelectionAfterNotificationFailure(
-                    session,
-                    run,
-                    identity,
-                    CardRewardSide.Free,
-                    cardIndex: 0);
+                if (session.Player.IsCurrentDungeonRun(identity))
+                    StartDelayedAutoFlip(session, delayMs: 4000);
                 FileLogger.Log(
                     $"[CardRewardCoordinator] auto card-info projection failed: " +
                     $"cid={session.Player.CharacterId} error={ex.Message}");
                 return;
             }
+            if (autoCardIndex == 0xFF)
+                return;
             if (session.Player.IsCurrentDungeonRun(identity))
                 await DeliverCardRewards(session, run, CardRewardSide.Free);
             else
             {
-                CardRewardRules.ClearSelectedSlot(
+                await ClearSelectedCardAsync(
                     run,
                     CardRewardSide.Free,
-                    cardIndex: 0);
+                    autoCardIndex);
             }
         }
 
@@ -370,7 +379,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             var identity = run.CaptureIdentity();
             if (!TryGetOwnedInventory(session, out var lease))
             {
-                RestoreDeliveryAfterFailure(
+                await RestoreDeliveryAfterFailureAsync(
                     session,
                     run,
                     identity,
@@ -413,42 +422,22 @@ namespace DfoServer.Network.Handlers.Dungeon
             else if (!result.Committed
                 && session.Player.IsCurrentDungeonRun(identity))
             {
-                RestoreDeliveryAfterFailure(
+                await RestoreDeliveryAfterFailureAsync(
                     session,
                     run,
                     identity,
                     side);
-                await _sender.SendCardInfoAsync(session, run);
+                await SendPartyCardInfoAsync(session, run);
             }
         }
 
-        private void RestoreDeliveryAfterFailure(
+        private async Task RestoreDeliveryAfterFailureAsync(
             EnhancedClientSession session,
             DungeonRun run,
             DungeonRunIdentity identity,
             CardRewardSide side)
         {
-            CardRewardRules.ClearSelectedSlot(run, side);
-            if (side == CardRewardSide.Free
-                && session.Player.IsCurrentDungeonRun(identity)
-                && run.SettlementState
-                    == DungeonSettlementState.CardsRevealed)
-            {
-                StartDelayedAutoFlip(session, delayMs: 4000);
-            }
-        }
-
-        private void RestoreSelectionAfterNotificationFailure(
-            EnhancedClientSession session,
-            DungeonRun run,
-            DungeonRunIdentity identity,
-            CardRewardSide side,
-            int cardIndex)
-        {
-            CardRewardRules.ClearSelectedSlot(
-                run,
-                side,
-                cardIndex);
+            await ClearSelectedCardAsync(run, side);
             if (side == CardRewardSide.Free
                 && session.Player.IsCurrentDungeonRun(identity)
                 && run.SettlementState
@@ -527,7 +516,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                 }
                 FileLogger.Log(
                     $"[CardRewardCoordinator] {source} auto-layout timer fired");
-                await _sender.SendLayoutAsync(session);
+                await SendPartyLayoutAsync(session, run);
                 if (!IsAutoFlipTimerCurrent(session, run, identity, ticket)
                     || !run.TryMarkCardsRevealed())
                 {
@@ -593,6 +582,379 @@ namespace DfoServer.Network.Handlers.Dungeon
                && session.Player.IsCurrentDungeonRun(identity)
                && run.Matches(identity)
                && run.Timers.IsCurrent(ticket);
+
+        internal Task SendExitAsync(
+            EnhancedClientSession session,
+            byte state,
+            byte option)
+            => _sender.SendExitAsync(session, state, option);
+
+        private Task SendPartyLayoutAsync(
+            EnhancedClientSession session,
+            DungeonRun run)
+            => SendPartyProjectionAsync(session, run, layout: true);
+
+        private Task SendPartyCardInfoAsync(
+            EnhancedClientSession session,
+            DungeonRun run)
+            => SendPartyProjectionAsync(session, run, layout: false);
+
+        private async Task<byte> TrySelectAvailableCardAndProjectAsync(
+            EnhancedClientSession owner,
+            DungeonRun run,
+            CardRewardSide side,
+            byte? requestedCardIndex)
+        {
+            await run.Instance.CardRewardProjectionGate.WaitAsync();
+            try
+            {
+                var roster = CaptureCardRewardRoster(run);
+                var first = requestedCardIndex ?? (byte)0;
+                var last = requestedCardIndex ?? (byte)3;
+                for (var cardIndex = first;
+                     cardIndex <= last;
+                     cardIndex++)
+                {
+                    if (IsCardPositionOccupied(
+                            run,
+                            roster,
+                            side,
+                            cardIndex))
+                    {
+                        continue;
+                    }
+                    if (!CardRewardRules.TrySelectCardSlot(
+                            run,
+                            side == CardRewardSide.Free
+                                ? (byte)0
+                                : (byte)1,
+                            cardIndex))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        var projection = BuildPartyProjection(run, roster);
+                        await SendCardInfoProjectionLockedAsync(
+                            owner,
+                            roster,
+                            projection);
+                        return cardIndex;
+                    }
+                    catch
+                    {
+                        CardRewardRules.ClearSelectedSlot(
+                            run,
+                            side,
+                            cardIndex);
+                        throw;
+                    }
+                }
+                return 0xFF;
+            }
+            finally
+            {
+                run.Instance.CardRewardProjectionGate.Release();
+            }
+        }
+
+        private async Task ClearSelectedCardAsync(
+            DungeonRun run,
+            CardRewardSide side,
+            int cardIndex)
+        {
+            if (run?.Instance == null)
+                return;
+            await run.Instance.CardRewardProjectionGate.WaitAsync();
+            try
+            {
+                CardRewardRules.ClearSelectedSlot(run, side, cardIndex);
+            }
+            finally
+            {
+                run.Instance.CardRewardProjectionGate.Release();
+            }
+        }
+
+        private async Task ClearSelectedCardAsync(
+            DungeonRun run,
+            CardRewardSide side)
+        {
+            if (run?.Instance == null)
+                return;
+            await run.Instance.CardRewardProjectionGate.WaitAsync();
+            try
+            {
+                CardRewardRules.ClearSelectedSlot(run, side);
+            }
+            finally
+            {
+                run.Instance.CardRewardProjectionGate.Release();
+            }
+        }
+
+        private static IReadOnlyList<DungeonParticipantRosterEntry>
+            CaptureCardRewardRoster(DungeonRun run)
+            => run.Instance.ParticipantEffects.GetRoster(
+                run.GetSettlementSourceEventId(),
+                DungeonParticipantEffectAudience.Instance);
+
+        internal static bool IsCardPositionOccupied(
+            DungeonRun sourceRun,
+            IReadOnlyList<DungeonParticipantRosterEntry> roster,
+            CardRewardSide side,
+            int cardIndex)
+        {
+            if (cardIndex < 0
+                || cardIndex >= Game.Party.PartyConstants.MaxMembers)
+            {
+                return true;
+            }
+
+            if (roster == null || roster.Count == 0)
+                return IsRunCardPositionOccupied(sourceRun, side, cardIndex);
+            foreach (var participant in roster)
+            {
+                if (IsRunCardPositionOccupied(
+                        participant?.Run,
+                        side,
+                        cardIndex))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsRunCardPositionOccupied(
+            DungeonRun run,
+            CardRewardSide side,
+            int cardIndex)
+        {
+            if (run == null)
+                return false;
+            lock (run.SyncRoot)
+            {
+                var slots = side == CardRewardSide.Free
+                    ? run.FreeCardSlots
+                    : run.PaidCardSlots;
+                return slots == null
+                    || cardIndex >= slots.Length
+                    || slots[cardIndex] != 0xFF;
+            }
+        }
+
+        private async Task SendPartyProjectionAsync(
+            EnhancedClientSession owner,
+            DungeonRun run,
+            bool layout)
+        {
+            if (owner?.Player == null || run?.Instance == null)
+                return;
+
+            await run.Instance.CardRewardProjectionGate.WaitAsync();
+            try
+            {
+                var roster = CaptureCardRewardRoster(run);
+                var projection = BuildPartyProjection(run, roster);
+                if (layout)
+                    await _sender.SendLayoutAsync(owner, projection);
+                else
+                    await SendCardInfoProjectionLockedAsync(
+                        owner,
+                        roster,
+                        projection);
+            }
+            finally
+            {
+                run.Instance.CardRewardProjectionGate.Release();
+            }
+        }
+
+        private async Task SendCardInfoProjectionLockedAsync(
+            EnhancedClientSession owner,
+            IReadOnlyList<DungeonParticipantRosterEntry> roster,
+            CardRewardPartyProjection projection)
+        {
+            await _sender.SendCardInfoAsync(owner, projection);
+            if (_sessions == null || roster == null)
+                return;
+            foreach (var participant in roster)
+            {
+                if (participant.CharacterId == owner.Player.CharacterId
+                    || !_sessions.TryGet(
+                        participant.CharacterId,
+                        out var peer)
+                    || peer?.Player == null
+                    || peer.ListenerPort != owner.ListenerPort
+                    || peer.TcpClient == null
+                    || !peer.TcpClient.Connected
+                    || !peer.Player.IsCurrentDungeonRun(
+                        participant.RunIdentity))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await _sender.SendCardInfoAsync(peer, projection);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[CardRewardCoordinator] peer projection failed: " +
+                        $"owner={owner.Player.CharacterId} " +
+                        $"peer={participant.CharacterId} " +
+                        $"error={ex.Message}");
+                }
+            }
+        }
+
+        internal static CardRewardPartyProjection BuildPartyProjection(
+            DungeonRun sourceRun,
+            IReadOnlyList<DungeonParticipantRosterEntry> roster)
+        {
+            if (sourceRun == null)
+                throw new ArgumentNullException(nameof(sourceRun));
+
+            var eligibility = new short[
+                CardRewardPartyProjection.WireSlotCount];
+            var freeSelectors = new byte[eligibility.Length];
+            var paidSelectors = new byte[eligibility.Length];
+            var paidGold = new int[eligibility.Length];
+            var paidItemIds = new int[eligibility.Length];
+            var paidItemCounts = new int[eligibility.Length];
+            Array.Fill(eligibility, (short)-1);
+            Array.Fill(freeSelectors, (byte)0xFF);
+            Array.Fill(paidSelectors, (byte)0xFF);
+
+            var assignedPartySlots = new bool[
+                Game.Party.PartyConstants.MaxMembers];
+            if (roster == null || roster.Count == 0)
+            {
+                ProjectParticipant(
+                    sourceRun,
+                    eligibility,
+                    freeSelectors,
+                    paidSelectors,
+                    paidGold,
+                    paidItemIds,
+                    paidItemCounts,
+                    assignedPartySlots);
+            }
+            else
+            {
+                foreach (var participant in roster)
+                {
+                    ProjectParticipant(
+                        participant?.Run,
+                        eligibility,
+                        freeSelectors,
+                        paidSelectors,
+                        paidGold,
+                        paidItemIds,
+                        paidItemCounts,
+                        assignedPartySlots);
+                }
+            }
+
+            var slots = new CardRewardPartySlotProjection[eligibility.Length];
+            for (var index = 0; index < slots.Length; index++)
+            {
+                slots[index] = new CardRewardPartySlotProjection(
+                    eligibility[index],
+                    freeSelectors[index],
+                    paidSelectors[index],
+                    paidGold[index],
+                    paidItemIds[index],
+                    paidItemCounts[index]);
+            }
+            return new CardRewardPartyProjection(slots);
+        }
+
+        private static void ProjectParticipant(
+            DungeonRun run,
+            short[] eligibility,
+            byte[] freeSelectors,
+            byte[] paidSelectors,
+            int[] paidGoldByCard,
+            int[] paidItemIdsByCard,
+            int[] paidItemCountsByCard,
+            bool[] assignedPartySlots)
+        {
+            if (run == null)
+                return;
+            var partySlot = run.EntryPartySlotIndex;
+            if (partySlot >= assignedPartySlots.Length)
+                throw new InvalidOperationException(
+                    $"Invalid frozen card party slot {partySlot}.");
+            if (assignedPartySlots[partySlot])
+                throw new InvalidOperationException(
+                    $"Duplicate frozen card party slot {partySlot}.");
+
+            byte selectedFree;
+            byte selectedPaid;
+            DungeonSettlementRuntime runtime;
+            List<ClearRewardGenerator.CardReward> cards;
+            lock (run.SyncRoot)
+            {
+                selectedFree = FindSelectedCardIndex(run.FreeCardSlots);
+                selectedPaid = FindSelectedCardIndex(run.PaidCardSlots);
+                runtime = run.SettlementRuntime;
+                cards = run.CardRewards;
+            }
+
+            var paidGold = runtime?.PaidGold.GoldAmount
+                ?? (cards != null
+                    && cards.Count > 4
+                    && cards[4].IsGold
+                    ? cards[4].GoldAmount
+                    : 0);
+            var paidItemId = runtime?.PaidItem.ItemId
+                ?? (cards != null
+                    && cards.Count > 5
+                    && !cards[5].IsGold
+                    ? cards[5].ItemId
+                    : 0);
+            var paidItemCount = runtime?.PaidItem.StackCount
+                ?? (cards != null
+                    && cards.Count > 5
+                    && !cards[5].IsGold
+                    ? cards[5].StackCount
+                    : 0);
+            eligibility[partySlot] = 1;
+            assignedPartySlots[partySlot] = true;
+            if (selectedFree != 0xFF)
+            {
+                if (freeSelectors[selectedFree] != 0xFF)
+                    throw new InvalidOperationException(
+                        $"Duplicate free card selection {selectedFree}.");
+                freeSelectors[selectedFree] = partySlot;
+            }
+            if (selectedPaid != 0xFF)
+            {
+                if (paidSelectors[selectedPaid] != 0xFF)
+                    throw new InvalidOperationException(
+                        $"Duplicate paid card selection {selectedPaid}.");
+                paidSelectors[selectedPaid] = partySlot;
+                paidGoldByCard[selectedPaid] = paidGold;
+                paidItemIdsByCard[selectedPaid] = paidItemId;
+                paidItemCountsByCard[selectedPaid] = paidItemCount;
+            }
+        }
+
+        private static byte FindSelectedCardIndex(byte[] slots)
+        {
+            if (slots == null)
+                return 0xFF;
+            for (byte index = 0; index < slots.Length; index++)
+            {
+                if (slots[index] != 0xFF)
+                    return index;
+            }
+            return 0xFF;
+        }
 
         private static bool TryGetOwnedInventory(
             EnhancedClientSession session,

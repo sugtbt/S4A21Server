@@ -3,6 +3,7 @@ using DfoServer.Game.Quests;
 using DfoServer.Infrastructure;
 using DfoServer.Network.Parsers.Dungeon;
 using PvfLib;
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using DungeonData = DfoServer.GameWorld.Dungeon;
@@ -221,21 +222,35 @@ namespace DfoServer.Network.Handlers.Dungeon
 
         internal static async Task OnStartMapSentAsync(
             EnhancedClientSession session,
-            DungeonParticipantRoomIdentity roomIdentity)
+            DungeonParticipantRoomIdentity roomIdentity,
+            Func<byte[], Func<bool>, Action, Task<bool>>
+                trySendPacketAsync,
+            Func<bool> canProject)
         {
             var run = session?.Player?.CurrentRun;
-            if (run == null || !run.Matches(roomIdentity))
+            if (run == null
+                || !run.Matches(roomIdentity)
+                || (canProject != null && !canProject()))
                 return;
 
             // Preserve the established order: gauge state first, then the
             // scene condition that depends on client START_MAP actors.
-            await SpecialDungeonNotifier.SendStartMapStateAsync(session, run);
-            if (!session.Player.IsCurrentDungeonParticipantRoom(roomIdentity))
+            await SpecialDungeonNotifier.SendStartMapStateAsync(
+                session,
+                run,
+                packet => trySendPacketAsync(
+                    packet,
+                    null,
+                    null));
+            if (!session.Player.IsCurrentDungeonParticipantRoom(roomIdentity)
+                || (canProject != null && !canProject()))
                 return;
             await EventMonsterConditionCoordinator.AdvanceAfterStartMapAsync(
                 session,
                 run,
-                roomIdentity);
+                roomIdentity,
+                trySendPacketAsync,
+                canProject);
         }
 
         internal static async Task<ClearRequest> OnMonsterKilledAsync(

@@ -116,9 +116,16 @@ namespace DfoServer.Game.Mercenary
             var maxActiveSupportCount = ParseFirstPositiveInt(
                 ExtractSection(strikerText, "striker combo"));
 
+            // 两个 link 段语义不同: [1st link character info] 末字段(本 PVF 为 70)是“佣兵/出战
+            // 派遣”候选的最低等级; [2nd link character info] 末字段(本 PVF 为 50)才是“支援兵”
+            // 的最低等级(游戏内提示: 支援兵 = Lv50+ 且完成第一次觉醒)。
             var linkText = PvfArchiveAccessor.ReadText("etc/characlinksystem.etc");
             var minimumSupportLevel = ParseLinkCharacterMinimumLevel(
-                ExtractSection(linkText, "1st link character info"));
+                ExtractSection(linkText, "2nd link character info"));
+            // 兼容只有 1st 段的旧 PVF: 回退到 1st 段, 避免启动失败。
+            if (minimumSupportLevel <= 0)
+                minimumSupportLevel = ParseLinkCharacterMinimumLevel(
+                    ExtractSection(linkText, "1st link character info"));
             if (minimumSupportLevel <= 0 || maxActiveSupportCount <= 0)
                 throw new InvalidOperationException(
                     $"invalid linksystem rules: minimumLevel={minimumSupportLevel} maxActive={maxActiveSupportCount}");
@@ -144,7 +151,8 @@ namespace DfoServer.Game.Mercenary
                 if (int.TryParse(match.Value, out var value))
                     values.Add(value);
             }
-            // [1st link character info] 为七元组，末字段是支援候选最低等级。
+            // link character info 为七元组，末字段是该段对应系统的候选最低等级
+            // (1st=佣兵 70, 2nd=支援兵 50)。
             return values.Count == 7 && values[6] > 0 ? values[6] : 0;
         }
 

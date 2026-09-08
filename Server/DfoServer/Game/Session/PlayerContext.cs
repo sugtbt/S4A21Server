@@ -165,6 +165,7 @@ namespace DfoServer.Game.Session
             if (spawn == null) throw new ArgumentNullException(nameof(spawn));
 
             HydrateIdentityFrom(record);
+            ResetTownMovementSequence();
             {
                 CurTownId = spawn.TownId;
                 CurAreaId = spawn.AreaId;

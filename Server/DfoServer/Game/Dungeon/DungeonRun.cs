@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using DfoServer.Game.Quests;
 using DfoServer.Infrastructure;
 
@@ -56,6 +57,10 @@ namespace DfoServer.Game.Dungeon
         private DungeonClearedFact _clearedFact;
         private Guid _settlementSourceEventId;
         private Guid _endSourceEventId;
+        private long _loadingProjectionId;
+        private bool _loadingProjectionStarted;
+        private bool _loadingProjectionCanceled;
+        private CancellationTokenSource _loadingProjectionCancellation;
 
         public DungeonInstance Instance { get; }
         public DungeonRewardPolicy RewardPolicy =>
@@ -195,6 +200,8 @@ namespace DfoServer.Game.Dungeon
         public int MazeStartY { get => Selection.MazeStartY; set => Selection.MazeStartY = value; }
         public int TotalRoomCount { get => Selection.TotalRoomCount; set => Selection.TotalRoomCount = value; }
         public int EntryPartyMemberCount { get => Selection.EntryPartyMemberCount; set => Selection.EntryPartyMemberCount = value; }
+        internal byte EntryPartySlotIndex { get => Selection.EntryPartySlotIndex; set => Selection.EntryPartySlotIndex = value; }
+        internal DungeonPartySelectionCohort EntryPartySelectionCohort { get => Selection.EntryPartySelectionCohort; set => Selection.EntryPartySelectionCohort = value; }
         internal int ChronicleDropJobGroup { get => Selection.ChronicleDropJobGroup; set => Selection.ChronicleDropJobGroup = value; }
         internal int DimensionDropJob { get => Selection.DimensionDropJob; set => Selection.DimensionDropJob = value; }
         internal int DimensionDropGrowType { get => Selection.DimensionDropGrowType; set => Selection.DimensionDropGrowType = value; }
@@ -285,6 +292,7 @@ namespace DfoServer.Game.Dungeon
         public Dictionary<RoomKey, RoomState> RoomStates { get => Combat.RoomStates; set => Combat.RoomStates = value; }
         public uint Seed { get => Combat.Seed; set => Combat.Seed = value; }
         public DnfLcg RoomLcg { get => Combat.RoomLcg; set => Combat.RoomLcg = value; }
+        internal DnfLcg ParticipantDropLcg { get => Combat.ParticipantDropLcg; set => Combat.ParticipantDropLcg = value; }
         public List<RidableObjectSpawnEntry> RidableObjects { get => Combat.RidableObjects; set => Combat.RidableObjects = value; }
         public ClearConditionState ClearCondition { get => Combat.ClearCondition; set => Combat.ClearCondition = value; }
         public int BossCode { get => Combat.BossCode; set => Combat.BossCode = value; }
@@ -370,6 +378,117 @@ namespace DfoServer.Game.Dungeon
             new DungeonParticipantRoomIdentity(
                 CaptureIdentity(),
                 CaptureRoomIdentity());
+
+        internal bool TryClaimLoadingProjection(long projectionId)
+        {
+            lock (SyncRoot)
+                return TryClaimLoadingProjectionLocked(projectionId);
+        }
+
+        internal bool TryClaimLoadingProjection(
+            long projectionId,
+            long expectedCurrentRoomInstanceId)
+        {
+            lock (SyncRoot)
+            {
+                if (CurrentRoomInstanceId != expectedCurrentRoomInstanceId)
+                    return false;
+                return TryClaimLoadingProjectionLocked(projectionId);
+            }
+        }
+
+        private bool TryClaimLoadingProjectionLocked(long projectionId)
+        {
+            if (projectionId <= 0
+                || _runState != DungeonRunState.Active
+                || projectionId < _loadingProjectionId
+                || _loadingProjectionCanceled)
+            {
+                return false;
+            }
+
+            if (projectionId > _loadingProjectionId)
+            {
+                _loadingProjectionCancellation?.Cancel();
+                _loadingProjectionId = projectionId;
+                _loadingProjectionStarted = false;
+                _loadingProjectionCancellation =
+                    new CancellationTokenSource();
+            }
+            return true;
+        }
+
+        internal bool TryBeginLoadingProjection(long projectionId)
+        {
+            lock (SyncRoot)
+            {
+                if (!IsCurrentLoadingProjectionLocked(projectionId)
+                    || _loadingProjectionStarted)
+                {
+                    return false;
+                }
+
+                _loadingProjectionStarted = true;
+                return true;
+            }
+        }
+
+        internal bool TryCancelLoadingProjection(long projectionId)
+        {
+            lock (SyncRoot)
+            {
+                if (projectionId <= 0
+                    || projectionId != _loadingProjectionId
+                    || _loadingProjectionCanceled)
+                {
+                    return false;
+                }
+
+                _loadingProjectionCanceled = true;
+                _loadingProjectionCancellation?.Cancel();
+                return true;
+            }
+        }
+
+        internal bool TryCaptureLoadingProjectionCancellation(
+            long projectionId,
+            out CancellationToken cancellationToken)
+        {
+            lock (SyncRoot)
+            {
+                if (!IsCurrentLoadingProjectionLocked(projectionId)
+                    || _loadingProjectionCancellation == null)
+                {
+                    cancellationToken = default;
+                    return false;
+                }
+
+                cancellationToken = _loadingProjectionCancellation.Token;
+                return true;
+            }
+        }
+
+        internal bool IsLoadingProjectionCanceled(long projectionId)
+        {
+            lock (SyncRoot)
+            {
+                return projectionId > 0
+                    && projectionId == _loadingProjectionId
+                    && _loadingProjectionCanceled;
+            }
+        }
+
+        internal bool IsCurrentLoadingProjection(long projectionId)
+        {
+            lock (SyncRoot)
+                return IsCurrentLoadingProjectionLocked(projectionId);
+        }
+
+        internal bool IsCurrentLoadingProjectionLocked(long projectionId) =>
+            projectionId > 0
+            && projectionId == _loadingProjectionId
+            && !_loadingProjectionCanceled
+            && _runState == DungeonRunState.Active;
 
         public Guid GetSettlementSourceEventId()
         {

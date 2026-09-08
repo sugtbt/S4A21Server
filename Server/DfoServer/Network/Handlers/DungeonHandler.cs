@@ -129,6 +129,23 @@ namespace DfoServer.Network.Handlers
                 session,
                 Game.Dungeon.DungeonRunEndReason.ReturnToTown);
 
+        internal void ConfigureLoadingProjectionStarted(
+            Action<DungeonRoomIdentity, DungeonInstanceRoom, long> callback,
+            Func<EnhancedClientSession, DungeonRunIdentity,
+                DungeonRoomIdentity, Task> rejected)
+            => _map.ConfigureLoadingProjectionStarted(callback, rejected);
+
+        internal void ConfigureTownPresenceProjection(
+            Func<EnhancedClientSession, DungeonRunIdentity, Task> projection)
+            => _services.TownReturn.ConfigureTownPresenceProjection(projection);
+
+        internal void ConfigureRejectedPartySelectionReturn(
+            Func<EnhancedClientSession, DungeonSelectionContext, Task> callback)
+            => _entry.ConfigureRejectedPartySelectionReturn(callback);
+
+        internal void ConfigureTownPartyListPublisher(Func<Task> publisher)
+            => _entry.ConfigureTownPartyListPublisher(publisher);
+
         public Task Handle_ENUM_CMDPACKET_ENTER_SELECT_DUNGEON(EnhancedClientSession session, GamePacketHeader header, byte[] body)
             => _entry.HandleEnterSelectDungeon(session, header, body);
 

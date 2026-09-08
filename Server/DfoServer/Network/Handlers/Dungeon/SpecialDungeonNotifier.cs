@@ -53,7 +53,8 @@ namespace DfoServer.Network.Handlers.Dungeon
 
         internal static async Task SendStartMapStateAsync(
             EnhancedClientSession session,
-            DungeonRun run)
+            DungeonRun run,
+            Func<byte[], Task<bool>> trySendPacketAsync)
         {
             if (!IsCurrent(session, run))
                 return;
@@ -61,7 +62,8 @@ namespace DfoServer.Network.Handlers.Dungeon
             await Effects.RouteAsync(
                 session,
                 run,
-                Application.BuildStartMapState(run));
+                Application.BuildStartMapState(run),
+                trySendPacketAsync: trySendPacketAsync);
         }
 
         internal static async Task SendBossEntranceMinimapIconInfoAsync(

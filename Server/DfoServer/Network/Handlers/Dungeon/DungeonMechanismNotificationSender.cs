@@ -45,20 +45,31 @@ namespace DfoServer.Network.Handlers.Dungeon
                 $"pos=({packetX},{packetY}) action={actionPath ?? string.Empty}");
         }
 
-        internal static async Task SendCompleteConditionPassGateAsync(
+        internal static async Task<bool> SendCompleteConditionPassGateAsync(
             EnhancedClientSession session,
             string mechanism,
-            string reason)
+            string reason,
+            Func<byte[], Func<bool>, Action, Task<bool>>
+                trySendPacketAsync = null)
         {
             if (session?.Player == null)
-                return;
+                return false;
 
             var body = SpecialDungeonNotificationBuilder
                 .BuildCompleteConditionPassGateTrigger();
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+            var packet = GamePacketEnvelopeBuilder.Build(
                 0x00,
                 (ushort)NotiPacketType.COMPLETE_CONDITION_PASS_GATE,
-                body));
+                body);
+            if (trySendPacketAsync != null)
+            {
+                if (!await trySendPacketAsync(packet, null, null))
+                    return false;
+            }
+            else
+            {
+                await session.SendPacketAsync(packet);
+            }
 
             FileLogger.Log(
                 $"[DungeonMechanism] COMPLETE_CONDITION_PASS_GATE sent: " +
@@ -67,6 +78,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                 $"cid={session.Player.CharacterId} " +
                 $"dungeon={session.Player.CurrentRun?.DungeonId ?? 0} " +
                 $"body={BitConverter.ToString(body)}");
+            return true;
         }
     }
 }

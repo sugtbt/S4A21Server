@@ -69,6 +69,7 @@ namespace DfoServer.Game.Dungeon
         public HashSet<ushort> KilledSeqIds;
         public uint Seed;
         public DnfLcg Lcg;
+        internal DnfLcg ParticipantDropLcg;
         internal IReadOnlyList<PassiveObjectDropEntry> PassiveObjectDropEntries;
         public bool IsHellPartyRoom;
         public bool HellPartyVeryDifficult;

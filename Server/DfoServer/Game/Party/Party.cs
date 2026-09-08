@@ -7,6 +7,9 @@ namespace DfoServer.Game.Party
     public static class PartyConstants
     {
         public const int MaxMembers = 4;
+
+        public static bool IsSupportedCapacity(int capacity)
+            => capacity >= 1 && capacity <= MaxMembers;
     }
 
     /// <summary>
@@ -53,12 +56,19 @@ namespace DfoServer.Game.Party
         public ushort SettingB { get; set; }
         public byte SettingC { get; set; }
 
-        // SET_PARTY_INFO 字段(df_game_r §1.1 语义已确认): 预设标题索引/自定义队名原始字节/人数上限/目标副本/难度。
+        // A21 规范化 SET_PARTY_INFO 的 raw[2] 是人数上限；2/3/4 已由
+        // 当前精确客户端的创建/修改请求实机确认。其余字段仍保持 opaque。
         public byte TitleIndex { get; set; }
         public byte[] TitleBytes { get; set; } = System.Array.Empty<byte>();
         public byte UserMax { get; set; } = 4;
         public ushort DungIndex { get; set; }
         public byte DungDiffi { get; set; }
+
+        // A21 SET_PARTY_INFO supplies these 12 direct fields. PARTY_INFO(type
+        // 0/1) writes info0, a conditional empty dstr when info0 is zero, then
+        // info1..info11. Most individual field meanings remain unknown.
+        public byte[] PartyInfoBlock { get; set; } =
+            new byte[] { 0, 0, 4, 0, 0, 0, 0, 5, 0, 0, 0xFF, 0xFF };
 
         /// <summary>单人游戏(自建 1 人队); 进副本单刷时用。</summary>
         public bool IsSinglePlay { get; set; }
@@ -71,7 +81,10 @@ namespace DfoServer.Game.Party
         }
 
         public int Count => _members.Count;
-        public bool IsFull => _members.Count >= PartyConstants.MaxMembers;
+        public int Capacity => PartyConstants.IsSupportedCapacity(UserMax)
+            ? UserMax
+            : PartyConstants.MaxMembers;
+        public bool IsFull => _members.Count >= Capacity;
         public bool IsEmpty => _members.Count == 0;
 
         public bool IsLeader(ushort userId) => LeaderUserId == userId && Contains(userId);
@@ -167,6 +180,9 @@ namespace DfoServer.Game.Party
                 UserMax = UserMax,
                 DungIndex = DungIndex,
                 DungDiffi = DungDiffi,
+                PartyInfoBlock = PartyInfoBlock == null
+                    ? System.Array.Empty<byte>()
+                    : (byte[])PartyInfoBlock.Clone(),
                 IsSinglePlay = IsSinglePlay,
             };
 

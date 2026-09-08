@@ -63,12 +63,13 @@ namespace DfoServer.Network
         private readonly EnchanterHandler _enchanterHandler;
         // 组队与城镇/副本共享同一个 PartyManager 实例: 副本 fan-out 与跟随退出都要看到同一份队伍状态。
         private readonly Game.Party.PartyManager _partyManager;
-        private readonly DungeonInstanceRegistry _dungeonInstances;
         private readonly PartyHandler _partyHandler;
         private readonly RaidHandler _raidHandler;
         private readonly ChatHandler _chatHandler;
         private readonly Handlers.Dungeon.DungeonRejoinCoordinator
             _dungeonRejoin;
+        private readonly Handlers.Dungeon.DungeonLoadingCoordinator
+            _dungeonLoading;
         private readonly CharacterTransitionCoordinator _characterTransitions;
         private readonly PvpChannelInfoHandler _pvpChannelInfoHandler;
         private readonly PvpRoomHandler _pvpRoomHandler;
@@ -171,7 +172,6 @@ namespace DfoServer.Network
             var sqliteSelectCharacterDataSource = core.SelectCharacterDataSource;
 
             _characterTransitions = world.CharacterTransitions;
-            _dungeonInstances = world.DungeonInstances;
             _loginHandler = characterInventoryHandlers.Login;
             _characterSelectHandler = characterInventoryHandlers.CharacterSelect;
             _inventoryRefreshSender = inventory.InventoryRefreshSender;
@@ -207,6 +207,7 @@ namespace DfoServer.Network
             _raidHandler = socialHandlers.Raid;
             _chatHandler = socialHandlers.Chat;
             _dungeonRejoin = socialHandlers.DungeonRejoin;
+            _dungeonLoading = socialHandlers.DungeonLoading;
             _growthCapsuleHandler = featureHandlers.GrowthCapsule;
             _goldLimitHandler = featureHandlers.GoldLimit;
             _craneMiniGameHandler = featureHandlers.CraneMiniGame;
@@ -352,7 +353,7 @@ namespace DfoServer.Network
             };                                                      // 13 leave party
             d[0x000E] = _partyHandler.Handle_WALKOUT_PARTY_MEMBER;  // 14 踢人
             d[0x000A] = _partyHandler.Handle_REQUEST_PEER;          // 10 右键同屏玩家→组队/交易邀请(按uid)→给目标发 SC 0x0007 弹框
-            d[0x000B] = _partyHandler.Handle_RES_PEER;              // 11 被邀请者应答(body=邀请者uid+reqType)→组队并广播 PARTY_INFO
+            d[0x000B] = _partyHandler.Handle_RES_PEER;              // 11 被邀请者应答: type0 7B接受/9B拒绝；仅接受才组队
             // 419 creates a chat/1:1 conversation; party invites use 0x000A/0x000B.
             d[0x01A3] = _chatHandler.Handle_CREATE_GROUP;
             d[(ushort)CmdPacketType.ONE_TO_ONE_CHAT_STATE] =
@@ -607,18 +608,6 @@ namespace DfoServer.Network
                     reason);
         }
 
-        private async Task HandleRaidAwareFinishLoading(
-            EnhancedClientSession session,
-            GamePacketHeader header,
-            byte[] body)
-        {
-            await _townHandler.Handle_ENUM_CMDPACKET_FINISH_LOADING(
-                session,
-                header,
-                body);
-            await _raidHandler.HandleDungeonLoadedAsync(session);
-        }
-
         private async Task HandleRaidAwareCharacterDeath(
             EnhancedClientSession session,
             GamePacketHeader header,
@@ -738,8 +727,9 @@ namespace DfoServer.Network
                 await _townHandler.Handle_ENUM_CMDPACKET_SET_USER_AREA(s, h, b);
                 await _expertJobStoreHandler.SendAreaStoresToAsync(s);
             };
-            d[(ushort)CmdPacketTypeA21.FINISH_LOADING] = HandleRaidAwareFinishLoading;
-            d[0x002A] = (s, h, b) => HandleRaidAwareDungeonExit(s, h, b, _townHandler.Handle_ENUM_CMDPACKET_GIVEUP_GAME, "giveup");
+            d[(ushort)CmdPacketTypeA21.FINISH_LOADING] =
+                _dungeonLoading.HandleFinishLoadingAsync;
+            d[0x002A] = _dungeonLoading.HandleGiveupGameAsync;
             d[0x0084] = (s, h, b) => HandleRaidAwareDungeonExit(s, h, b, _townHandler.Handle_ENUM_CMDPACKET_GIVEUP_GAME, "back-to-village");
             d[0x00ED] = _townHandler.Handle_ENUM_CMDPACKET_TELEPORT;
             d[(ushort)CmdPacketTypeA21.GET_PCROOM_TIME_POINT_ITEM] =

@@ -140,6 +140,26 @@ namespace DfoServer.Game.Dungeon
             return _costs.TryCommitPlan(lease, preparation.CostPlan);
         }
 
+        internal bool TryCommitGroup(
+            IReadOnlyList<DungeonEntryAdmissionCommitRequest> source,
+            out IReadOnlyList<EntryCostResult> results)
+        {
+            results = Array.Empty<EntryCostResult>();
+            if (source == null || source.Count == 0)
+                return false;
+            var requests = new DungeonEntryCostCommitRequest[source.Count];
+            for (var index = 0; index < source.Count; index++)
+            {
+                var entry = source[index];
+                if (entry.Lease == null || entry.Preparation?.CostPlan == null)
+                    return false;
+                requests[index] = new DungeonEntryCostCommitRequest(
+                    entry.Lease,
+                    entry.Preparation.CostPlan);
+            }
+            return _costs.TryCommitPlans(requests, out results);
+        }
+
         private static bool TryAddDungeonRequiredItems(
             DungeonEntryCostPlan plan,
             int dungeonId,
@@ -410,6 +430,20 @@ namespace DfoServer.Game.Dungeon
             run.HellMapY = (byte)HellParty.Room.Y;
             run.HellRoomInfo = HellParty.Room;
         }
+    }
+
+    internal readonly struct DungeonEntryAdmissionCommitRequest
+    {
+        internal DungeonEntryAdmissionCommitRequest(
+            InventoryLease lease,
+            DungeonEntryAdmissionPreparation preparation)
+        {
+            Lease = lease;
+            Preparation = preparation;
+        }
+
+        internal InventoryLease Lease { get; }
+        internal DungeonEntryAdmissionPreparation Preparation { get; }
     }
 
     internal sealed class HellPartyEntryPreparation

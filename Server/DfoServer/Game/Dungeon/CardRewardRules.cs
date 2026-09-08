@@ -31,7 +31,8 @@ namespace DfoServer.Game.Dungeon
                     : run.PaidCardSlots;
                 if (slots == null
                     || cardIndex >= slots.Length
-                    || slots[cardIndex] != 0xFF)
+                    || slots[cardIndex] != 0xFF
+                    || Array.Exists(slots, value => value != 0xFF))
                 {
                     return false;
                 }
@@ -98,7 +99,27 @@ namespace DfoServer.Game.Dungeon
         internal static void ClearSelectedSlot(
             DungeonRun run,
             CardRewardSide side)
-            => ClearSelectedSlot(run, side, cardIndex: 0);
+        {
+            if (run == null)
+                return;
+            lock (run.SyncRoot)
+            {
+                var slots = side == CardRewardSide.Free
+                    ? run.FreeCardSlots
+                    : run.PaidCardSlots;
+                if (slots == null)
+                    return;
+                for (var index = 0; index < slots.Length; index++)
+                {
+                    if (slots[index] == 0xFF)
+                        continue;
+                    slots[index] = 0xFF;
+                    if (run.CardFlipCount > 0)
+                        run.CardFlipCount--;
+                    return;
+                }
+            }
+        }
 
         internal static void ClearSelectedSlot(
             DungeonRun run,

@@ -6,6 +6,7 @@ using DfoServer.Game.Dungeon.BloodAltar;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.Premium;
 using DfoServer.Game.Progression;
+using DfoServer.Game.Quests;
 using DfoServer.Game.SecretShop;
 using DfoServer.Game.SelectCharacter;
 using DfoServer.Game.Skills;
@@ -1467,6 +1468,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                 PaidCardUsesDevilContract = paidCardUsesDevilContract,
                 FreeGold = freeGold,
                 FreeItem = freeItem,
+                PaidGold = paidGold,
+                PaidItem = paidItem,
                 TowerRewardCandidates = towerRewardCandidates,
                 MonsterTotalExp = monsterExperience.MonsterTotalExperience,
                 BossTotalExp = Math.Min(
@@ -2208,11 +2211,19 @@ namespace DfoServer.Network.Handlers.Dungeon
             var runIdentity = run.CaptureIdentity();
             var linkedNextId = run?.LinkedDungeonNextId ?? 0;
             var difficulty = run?.Difficulty ?? 0;
-            var shouldReturnToTown = await _svc.CardRewards.HandleEplpCommand(session, body);
+            var decision = await _svc.CardRewards.PrepareEplpCommand(
+                session,
+                body);
+            if (!decision.Ready)
+                return;
             if (!session.Player.IsCurrentDungeonRun(runIdentity))
                 return;
             if (IsLinkedChallengeCommand(body) && linkedNextId > 0)
             {
+                await _svc.CardRewards.SendExitAsync(
+                    session,
+                    decision.State,
+                    decision.Option);
                 FileLogger.Log(
                     $"[DungeonHandler] LINKED_DUNGEON continue selected: " +
                     $"current={run.DungeonId} next={linkedNextId} " +
@@ -2224,8 +2235,19 @@ namespace DfoServer.Network.Handlers.Dungeon
                     difficulty);
                 return;
             }
-            if (shouldReturnToTown)
-                await ReturnToVillage(session, runIdentity);
+            if (decision.Option <= 2)
+            {
+                await HandleStandardEplpCommandAsync(
+                    session,
+                    run,
+                    decision);
+                return;
+            }
+
+            await _svc.CardRewards.SendExitAsync(
+                session,
+                decision.State,
+                decision.Option);
         }
 
         internal async Task HandleCardStartRequest(EnhancedClientSession session, GamePacketHeader header, byte[] body)
@@ -3256,13 +3278,427 @@ namespace DfoServer.Network.Handlers.Dungeon
                 $"body={BitConverter.ToString(body)}");
         }
 
-        // Synchronous return-to-town: mirrors DungeonTutorialHandler.ReturnToVillage packet sequence.
-        // Key points: UserState=0x00 (not 0x01), sync await (not fire-and-forget), includes NOTI 0x00CA.
-        private async Task ReturnToVillage(
-            EnhancedClientSession session,
-            DungeonRunIdentity runIdentity)
+        private sealed class SettlementTransitionParticipant
         {
-            await _svc.TownReturn.ReturnAsync(session, runIdentity);
+            internal EnhancedClientSession Session;
+            internal DungeonRun Run;
+            internal DungeonRunIdentity RunIdentity;
+            internal DungeonTownReturnAnchor ReturnAnchor;
+            internal byte PartySlot;
+        }
+
+        private async Task HandleStandardEplpCommandAsync(
+            EnhancedClientSession requester,
+            DungeonRun sourceRun,
+            CardRewardEplpDecision decision)
+        {
+            var cohortGate =
+                sourceRun?.EntryPartySelectionCohort?.TransitionGate;
+            if (cohortGate != null)
+                await cohortGate.WaitAsync();
+            try
+            {
+                if (requester?.Player?.IsCurrentDungeonRun(
+                        sourceRun?.CaptureIdentity() ?? default) != true)
+                {
+                    return;
+                }
+                await HandleStandardEplpCommandWithinCohortAsync(
+                    requester,
+                    sourceRun,
+                    decision);
+            }
+            finally
+            {
+                cohortGate?.Release();
+            }
+        }
+
+        private async Task HandleStandardEplpCommandWithinCohortAsync(
+            EnhancedClientSession requester,
+            DungeonRun sourceRun,
+            CardRewardEplpDecision decision)
+        {
+            if (requester?.Player == null || sourceRun?.Instance == null)
+                return;
+
+            await sourceRun.Instance.SettlementTransitionGate.WaitAsync();
+            try
+            {
+                if (!requester.Player.IsCurrentDungeonRun(
+                        sourceRun.CaptureIdentity())
+                    || !TryCaptureSettlementTransitionParticipants(
+                        requester,
+                        sourceRun,
+                        out var participants,
+                        out var partyId,
+                        out var completePartyRoster))
+                {
+                    return;
+                }
+
+                if (!decision.IsCommitted)
+                {
+                    await SendEplpDecisionAsync(
+                        requester,
+                        participants,
+                        decision);
+                    return;
+                }
+
+                var effectiveDecision = decision;
+                var retryEntryAllowed = completePartyRoster;
+                byte failedSlot = 0;
+                var failureReason = completePartyRoster
+                    ? string.Empty
+                    : "incomplete_frozen_roster";
+                if (decision.Option == 0 && retryEntryAllowed)
+                {
+                    retryEntryAllowed = TryValidatePartyRetryEntry(
+                        participants,
+                        sourceRun,
+                        out failedSlot,
+                        out failureReason);
+                }
+                var resolvedOption = ResolveStandardEplpOption(
+                    decision.Option,
+                    completePartyRoster,
+                    retryEntryAllowed,
+                    allParticipantsEnded: true);
+                if (resolvedOption != decision.Option)
+                {
+                    effectiveDecision = new CardRewardEplpDecision(
+                        decision.State,
+                        resolvedOption);
+                    FileLogger.Log(
+                        $"[DungeonHandler] PARTY_EPLP retry rejected; " +
+                        $"returning whole party: party={partyId} " +
+                        $"instance={sourceRun.PartyDungeonInstanceId} " +
+                        $"slot={failedSlot} reason={failureReason}");
+                }
+
+                var ended = new List<SettlementTransitionParticipant>(
+                    participants.Count);
+                foreach (var participant in participants
+                             .OrderBy(value => ReferenceEquals(
+                                 value.Session,
+                                 requester) ? 0 : 1)
+                             .ThenBy(value => value.PartySlot))
+                {
+                    try
+                    {
+                        var detached = await DungeonRunLifecycle.EndRunAsync(
+                                participant.Session,
+                                DungeonRunEndReason.ReturnToTown,
+                                participant.RunIdentity,
+                                _svc.InstanceRegistry);
+                        if (detached
+                            || DungeonRunLifecycle.CanProjectTownState(
+                                participant.Session,
+                                participant.RunIdentity))
+                        {
+                            ended.Add(participant);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLogger.Log(
+                            $"[DungeonHandler] PARTY_EPLP end failed: " +
+                            $"party={partyId} option={effectiveDecision.Option} " +
+                            $"cid={participant.Session.Player.CharacterId} " +
+                            $"error={ex.Message}");
+                        if (DungeonRunLifecycle.CanProjectTownState(
+                                participant.Session,
+                                participant.RunIdentity))
+                        {
+                            ended.Add(participant);
+                        }
+                    }
+                    if (ReferenceEquals(participant.Session, requester)
+                        && !ended.Any(value => ReferenceEquals(
+                            value.Session,
+                            requester)))
+                    {
+                        break;
+                    }
+                }
+
+                if (!ended.Any(value =>
+                        ReferenceEquals(value.Session, requester)))
+                {
+                    return;
+                }
+                if (ended.Count != participants.Count)
+                {
+                    effectiveDecision = new CardRewardEplpDecision(
+                        decision.State,
+                        ResolveStandardEplpOption(
+                            effectiveDecision.Option,
+                            completePartyRoster: true,
+                            retryEntryAllowed: true,
+                            allParticipantsEnded: false));
+                    FileLogger.Log(
+                        $"[DungeonHandler] PARTY_EPLP partial end forced town: " +
+                        $"party={partyId} ended={ended.Count}/" +
+                        $"{participants.Count}");
+                }
+
+                foreach (var participant in ended)
+                {
+                    DungeonRunLifecycle.ApplyTownReturnAnchor(
+                        participant.Session.Player,
+                        participant.ReturnAnchor,
+                        participant.Session.ListenerPort);
+                    participant.Session.Player.UserState = 0x00;
+                    if (ReferenceEquals(participant.Session, requester))
+                    {
+                        if (effectiveDecision.Option == 0)
+                        {
+                            participant.Session.Player.MarkPendingPartyRetryEntry(
+                                sourceRun.DungeonId);
+                        }
+                        else
+                        {
+                            participant.Session.Player.ClearPendingPartyRetryEntry();
+                        }
+                    }
+                }
+
+                await SendEplpDecisionAsync(
+                    requester,
+                    ended,
+                    effectiveDecision);
+                foreach (var participant in ended)
+                {
+                    try
+                    {
+                        await _svc.TownReturn.ProjectEndedRunAsync(
+                            participant.Session,
+                            participant.RunIdentity,
+                            participant.ReturnAnchor);
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLogger.Log(
+                            $"[DungeonHandler] PARTY_EPLP town projection failed: " +
+                            $"party={partyId} option={effectiveDecision.Option} " +
+                            $"cid={participant.Session.Player.CharacterId} " +
+                            $"error={ex.Message}");
+                    }
+                }
+
+                FileLogger.Log(
+                    $"[DungeonHandler] PARTY_EPLP committed: " +
+                    $"leader={requester.Player.CharacterId} party={partyId} " +
+                    $"instance={sourceRun.PartyDungeonInstanceId} " +
+                    $"option={effectiveDecision.Option} ended={ended.Count}/" +
+                    $"{participants.Count}");
+            }
+            finally
+            {
+                sourceRun.Instance.SettlementTransitionGate.Release();
+            }
+        }
+
+        private bool TryCaptureSettlementTransitionParticipants(
+            EnhancedClientSession requester,
+            DungeonRun sourceRun,
+            out List<SettlementTransitionParticipant> participants,
+            out int partyId,
+            out bool completePartyRoster)
+        {
+            participants = new List<SettlementTransitionParticipant>();
+            partyId = 0;
+            completePartyRoster = true;
+            var party = _svc.PartyManager?.GetPartyByUser(
+                requester.Player.UserId);
+            var roster = sourceRun.Instance.ParticipantEffects.GetRoster(
+                sourceRun.GetSettlementSourceEventId(),
+                DungeonParticipantEffectAudience.Instance);
+            if (roster == null || roster.Count == 0)
+            {
+                roster = _svc.InstanceRegistry.CaptureInstanceParticipantRoster(
+                    sourceRun.CaptureInstanceIdentity());
+            }
+            if (party == null || party.Count <= 1)
+            {
+                partyId = party?.PartyId ?? 0;
+                participants.Add(CreateSettlementTransitionParticipant(
+                    requester,
+                    sourceRun));
+                completePartyRoster = roster == null || roster.Count <= 1;
+                return true;
+            }
+            if (!party.IsLeader(requester.Player.UserId)
+                || _svc.Sessions == null)
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] PARTY_EPLP rejected non-leader: " +
+                    $"cid={requester.Player.CharacterId} party={party.PartyId}");
+                return false;
+            }
+
+            partyId = party.PartyId;
+            if (roster == null || roster.Count == 0)
+            {
+                roster = _svc.InstanceRegistry.CaptureInstanceParticipantRoster(
+                    sourceRun.CaptureInstanceIdentity(),
+                    partyId);
+            }
+
+            var frozenParticipantCount = roster?.Count ?? 0;
+
+            foreach (var entry in roster)
+            {
+                EnhancedClientSession candidate;
+                if (entry.CharacterId == requester.Player.CharacterId)
+                    candidate = requester;
+                else if (!_svc.Sessions.TryGet(entry.CharacterId, out candidate))
+                    continue;
+                if (candidate?.Player == null
+                    || candidate.ListenerPort != requester.ListenerPort
+                    || candidate.TcpClient == null
+                    || !candidate.TcpClient.Connected
+                    || !candidate.Player.IsCurrentDungeonRun(entry.RunIdentity))
+                {
+                    continue;
+                }
+                var currentParty = _svc.PartyManager.GetPartyByUser(
+                    entry.ParticipantUserId);
+                if (currentParty == null || currentParty.PartyId != partyId)
+                    continue;
+
+                participants.Add(CreateSettlementTransitionParticipant(
+                    candidate,
+                    entry.Run));
+            }
+
+            if (!participants.Any(value =>
+                    ReferenceEquals(value.Session, requester)))
+            {
+                participants.Add(CreateSettlementTransitionParticipant(
+                    requester,
+                    sourceRun));
+            }
+            completePartyRoster = frozenParticipantCount == party.Count
+                && participants.Count == frozenParticipantCount;
+            return participants.Count > 0;
+        }
+
+        private static SettlementTransitionParticipant
+            CreateSettlementTransitionParticipant(
+                EnhancedClientSession session,
+                DungeonRun run)
+            => new SettlementTransitionParticipant
+            {
+                Session = session,
+                Run = run,
+                RunIdentity = run.CaptureIdentity(),
+                ReturnAnchor = run.TownReturnAnchor,
+                PartySlot = run.EntryPartySlotIndex,
+            };
+
+        private bool TryValidatePartyRetryEntry(
+            IReadOnlyList<SettlementTransitionParticipant> participants,
+            DungeonRun sourceRun,
+            out byte failedSlot,
+            out string failureReason)
+        {
+            failedSlot = 0;
+            failureReason = string.Empty;
+            if (participants == null || participants.Count == 0)
+            {
+                failureReason = "empty_participant_set";
+                return false;
+            }
+
+            foreach (var participant in participants)
+            {
+                failedSlot = participant.PartySlot;
+                if (!_entry.TryValidateExistingRunEntry(
+                        participant.Session,
+                        participant.Run,
+                        out _,
+                        out _,
+                        out var validation))
+                {
+                    failureReason = validation?.FailReason
+                        ?? "owned_inventory_missing";
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private async Task SendEplpDecisionAsync(
+            EnhancedClientSession requester,
+            IReadOnlyList<SettlementTransitionParticipant> participants,
+            CardRewardEplpDecision decision)
+        {
+            foreach (var participant in participants)
+            {
+                if (ReferenceEquals(participant.Session, requester))
+                    continue;
+                try
+                {
+                    await _svc.CardRewards.SendExitAsync(
+                        participant.Session,
+                        decision.State,
+                        decision.Option);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[DungeonHandler] PARTY_EPLP peer ack failed: " +
+                        $"leader={requester.Player.CharacterId} " +
+                        $"cid={participant.Session.Player.CharacterId} " +
+                        $"state={decision.State} option={decision.Option} " +
+                        $"error={ex.Message}");
+                }
+            }
+            // Followers do not originate ENTER_SELECT. Give every follower the
+            // shared UI decision before the leader receives the ACK that can
+            // immediately trigger the next selection request.
+            try
+            {
+                await _svc.CardRewards.SendExitAsync(
+                    requester,
+                    decision.State,
+                    decision.Option);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] PARTY_EPLP leader ack failed: " +
+                    $"leader={requester.Player.CharacterId} " +
+                    $"state={decision.State} option={decision.Option} " +
+                    $"error={ex.Message}");
+            }
+        }
+
+        internal static bool ShouldFanOutPartySettlementReturn(
+            Game.Party.Party party,
+            ushort requesterUserId,
+            int participantCount)
+            => party != null
+               && party.Count > 1
+               && party.IsLeader(requesterUserId)
+               && participantCount > 1;
+
+        internal static byte ResolveStandardEplpOption(
+            byte requestedOption,
+            bool completePartyRoster,
+            bool retryEntryAllowed,
+            bool allParticipantsEnded)
+        {
+            if (requestedOption > 1)
+                return requestedOption;
+            if (!completePartyRoster || !allParticipantsEnded)
+                return 2;
+            return requestedOption == 0 && !retryEntryAllowed
+                ? (byte)2
+                : requestedOption;
         }
 
         private bool EnsureDungeonPermissionPlan(

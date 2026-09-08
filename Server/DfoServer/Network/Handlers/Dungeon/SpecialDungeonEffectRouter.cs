@@ -19,7 +19,8 @@ namespace DfoServer.Network.Handlers.Dungeon
             EnhancedClientSession session,
             DungeonRun run,
             IReadOnlyList<SpecialDungeonEffectIntent> effects,
-            bool allowEndingRun = false)
+            bool allowEndingRun = false,
+            Func<byte[], Task<bool>> trySendPacketAsync = null)
         {
             if (session == null
                 || run == null
@@ -41,7 +42,10 @@ namespace DfoServer.Network.Handlers.Dungeon
                 if (ApplyStateEffect(run, effect))
                     continue;
 
-                await _sender.SendAsync(session, effect);
+                await _sender.SendAsync(
+                    session,
+                    effect,
+                    trySendPacketAsync);
             }
         }
 
@@ -83,7 +87,10 @@ namespace DfoServer.Network.Handlers.Dungeon
                 try
                 {
                     if (!ApplyStateEffect(run, item.Intent))
-                        await _sender.SendAsync(session, item.Intent);
+                        await _sender.SendAsync(
+                            session,
+                            item.Intent,
+                            trySendPacketAsync: null);
 
                     if (!run.Effects.TryCommit(reservation))
                     {

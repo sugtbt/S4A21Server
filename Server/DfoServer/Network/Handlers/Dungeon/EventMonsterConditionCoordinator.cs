@@ -43,7 +43,10 @@ namespace DfoServer.Network.Handlers.Dungeon
         internal static async Task AdvanceAfterStartMapAsync(
             EnhancedClientSession session,
             DungeonRun run,
-            DungeonParticipantRoomIdentity roomIdentity)
+            DungeonParticipantRoomIdentity roomIdentity,
+            Func<byte[], Func<bool>, Action, Task<bool>>
+                trySendPacketAsync,
+            Func<bool> canProject)
         {
             if (run == null
                 || session?.Player == null
@@ -53,17 +56,20 @@ namespace DfoServer.Network.Handlers.Dungeon
 
             RoomKey roomKey;
             DungeonData.MazeSumInfo room;
+            RoomState capturedRoomState;
             lock (run.SyncRoot)
             {
                 roomKey = run.RoomKey;
-                if (!run.RoomStates.TryGetValue(roomKey, out var roomState)
-                    || roomState == null
-                    || roomState.EventMonsterConditionAdvanced)
+                if (!run.RoomStates.TryGetValue(
+                        roomKey,
+                        out capturedRoomState)
+                    || capturedRoomState == null
+                    || capturedRoomState.EventMonsterConditionAdvanced)
                 {
                     return;
                 }
 
-                room = roomState.Maze;
+                room = capturedRoomState.Maze;
             }
 
             if (!TryDescribeCandidateRoom(run, room, out var descriptor))
@@ -72,24 +78,61 @@ namespace DfoServer.Network.Handlers.Dungeon
             lock (run.SyncRoot)
             {
                 if (!run.RoomKey.Equals(roomKey)
-                    || !run.RoomStates.TryGetValue(roomKey, out var roomState)
-                    || roomState == null
-                    || roomState.EventMonsterConditionAdvanced)
+                    || !run.RoomStates.TryGetValue(
+                        roomKey,
+                        out var currentRoomState)
+                    || !ReferenceEquals(
+                        currentRoomState,
+                        capturedRoomState)
+                    || capturedRoomState.EventMonsterConditionAdvanced
+                    || (canProject != null && !canProject()))
                 {
                     return;
                 }
-
-                roomState.EventMonsterConditionAdvanced = true;
             }
 
             if (!session.Player.IsCurrentDungeonParticipantRoom(roomIdentity))
                 return;
 
-            await DungeonMechanismNotificationSender
+            var sent = await DungeonMechanismNotificationSender
                 .SendCompleteConditionPassGateAsync(
                     session,
                     "event-monster-condition",
-                    "start-map-ready");
+                    "start-map-ready",
+                    (packet, packetCanSend, onSent) =>
+                        trySendPacketAsync(
+                            packet,
+                            () =>
+                            {
+                                if (packetCanSend != null
+                                    && !packetCanSend())
+                                {
+                                    return false;
+                                }
+
+                                lock (run.SyncRoot)
+                                {
+                                    return run.RoomStates.TryGetValue(
+                                            roomKey,
+                                            out var currentRoomState)
+                                        && ReferenceEquals(
+                                            currentRoomState,
+                                            capturedRoomState)
+                                        && !capturedRoomState
+                                            .EventMonsterConditionAdvanced;
+                                }
+                            },
+                            () =>
+                            {
+                                onSent?.Invoke();
+                                lock (run.SyncRoot)
+                                {
+                                    capturedRoomState
+                                        .EventMonsterConditionAdvanced = true;
+                                }
+                            }));
+            if (!sent)
+                return;
 
             FileLogger.Log(
                 $"[EventMonsterCondition] scene condition advanced: " +

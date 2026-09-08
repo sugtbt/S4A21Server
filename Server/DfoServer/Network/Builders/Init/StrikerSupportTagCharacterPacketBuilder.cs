@@ -352,6 +352,12 @@ namespace DfoServer.Network.Builders
                 reason = $"support level {support.Level} is below PVF minimum {StrikerSkillDataProvider.GetMinimumSupportLevel()}";
                 return false;
             }
+            // 与选择时资格一致: 支援兵需完成一次觉醒 (grow_type 高四位 0x10=一觉, 0x20=二觉)。
+            if ((support.GrowType & 0xF0) < 0x10)
+            {
+                reason = $"support has no first awakening grow=0x{support.GrowType:X2}";
+                return false;
+            }
             var skill = StrikerSkillDataProvider.FindBySkill(
                 support.Job,
                 support.GrowType,

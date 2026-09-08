@@ -10,6 +10,8 @@ using DfoServer.Network.Builders;
 using DfoServer.Network.Handlers.Dungeon;
 using DfoServer.Network.Handlers.Pets;
 using System;
+using System.Collections.Concurrent;
+using System.Net;
 using System.Threading.Tasks;
 
 namespace DfoServer.Network.Handlers
@@ -21,6 +23,11 @@ namespace DfoServer.Network.Handlers
     internal sealed class CharacterSessionLifecycleCoordinator
     {
         private const string ProtocolName = "GameProtocol";
+        internal static readonly TimeSpan ChannelAdmissionReturnDelay =
+            TimeSpan.FromSeconds(3);
+        private static readonly ConcurrentDictionary<int, int>
+            LastAcceptedListenerByCharacter =
+                new ConcurrentDictionary<int, int>();
 
         private readonly LoginHandler _loginHandler;
         private readonly CharacterSelectHandler _characterSelectHandler;
@@ -190,18 +197,10 @@ namespace DfoServer.Network.Handlers
 
                             try
                             {
-                                var detachedForRejoin =
-                                    DungeonRunLifecycle
-                                        .DetachRunOnNetworkDisconnect(
-                                            session,
-                                            _dungeonInstances);
-                                if (!detachedForRejoin)
-                                {
-                                    DungeonRunLifecycle.EndRunOnTeardown(
-                                        session,
-                                        "disconnect",
-                                        _dungeonInstances);
-                                }
+                                DungeonRunLifecycle.EndRunOnTeardown(
+                                    session,
+                                    "disconnect",
+                                    _dungeonInstances);
                             }
                             catch (Exception ex)
                             {
@@ -355,12 +354,19 @@ namespace DfoServer.Network.Handlers
                     selectedCharacter.Level,
                     out var admissionRejection))
             {
+                var rejectedListenerPort = session.ListenerPort;
+                var fallbackListenerPort = ResolveChannelAdmissionFallback(
+                    _sessionDirectory,
+                    session,
+                    selectedCharacter);
                 FileLogger.Log(
                     $"[{ProtocolName}] SELECT_CHARACTER rejected by channel " +
                     $"admission: cid={selectedCharacter.CharacterId} " +
                     $"level={selectedCharacter.Level} " +
-                    $"listener={session.ListenerPort} " +
-                    $"minimum={GameChannelAdmissionPolicy.Channel100MinimumCharacterLevel}");
+                    $"requestedListener={rejectedListenerPort} " +
+                    $"fallbackListener={fallbackListenerPort} " +
+                    $"reason={admissionRejection.CommandErrorCode} " +
+                    $"delayMs={ChannelAdmissionReturnDelay.TotalMilliseconds:0}");
                 await session.SendPacketAsync(
                     GamePacketEnvelopeBuilder.Build(
                         0x01,
@@ -373,6 +379,24 @@ namespace DfoServer.Network.Handlers
                         (ushort)NotiPacketType.SERVER_NOTICE_MESSAGE,
                         ServerNoticeMessageBuilder.Build(
                             admissionRejection.Message)));
+                await Task.Delay(ChannelAdmissionReturnDelay);
+                try
+                {
+                    await session.SendPacketAsync(
+                        BuildChannelAdmissionMovePacket(
+                            fallbackListenerPort));
+                    FileLogger.Log(
+                        $"[{ProtocolName}] SELECT_CHARACTER channel return sent: " +
+                        $"cid={selectedCharacter.CharacterId} " +
+                        $"targetListener={fallbackListenerPort}");
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[{ProtocolName}] SELECT_CHARACTER channel return " +
+                        $"send failed: cid={selectedCharacter.CharacterId} " +
+                        $"targetListener={fallbackListenerPort}: {ex.Message}");
+                }
                 return;
             }
 
@@ -449,6 +473,10 @@ namespace DfoServer.Network.Handlers
                             "the registered generation");
                     }
 
+                    RecordAcceptedChannel(
+                        selectedCharacterId,
+                        session.ListenerPort);
+
                     session.GameSession = new Game.Session.GameSession(
                         session,
                         _database,
@@ -496,6 +524,88 @@ namespace DfoServer.Network.Handlers
                     session.Close();
                 }
             }
+        }
+
+        internal static int ResolveChannelAdmissionFallback(
+            ISessionDirectory sessions,
+            EnhancedClientSession currentSession,
+            CharacterRecord selectedCharacter)
+        {
+            if (sessions != null
+                && currentSession != null
+                && selectedCharacter != null
+                && sessions.TryGet(
+                    selectedCharacter.CharacterId,
+                    out var previousSession)
+                && previousSession != null
+                && !ReferenceEquals(previousSession, currentSession)
+                && !GameChannelAdmissionPolicy.TryGetCharacterEntryRejection(
+                    previousSession.ListenerPort,
+                    selectedCharacter.Level,
+                    out _))
+            {
+                return previousSession.ListenerPort;
+            }
+
+            if (selectedCharacter != null
+                && LastAcceptedListenerByCharacter.TryGetValue(
+                    selectedCharacter.CharacterId,
+                    out var lastAcceptedListener)
+                && !GameChannelAdmissionPolicy.TryGetCharacterEntryRejection(
+                    lastAcceptedListener,
+                    selectedCharacter.Level,
+                    out _))
+            {
+                return lastAcceptedListener;
+            }
+
+            return GameNetworkConfig.NormalGamePort;
+        }
+
+        internal static void RecordAcceptedChannel(
+            int characterId,
+            int listenerPort)
+        {
+            if (characterId <= 0
+                || !GameNetworkConfig.TryResolveGameChannel(
+                    listenerPort,
+                    out _))
+            {
+                return;
+            }
+
+            LastAcceptedListenerByCharacter[characterId] = listenerPort;
+        }
+
+        internal static void ResetAcceptedChannelsForSelfTest()
+            => LastAcceptedListenerByCharacter.Clear();
+
+        internal static byte[] BuildChannelAdmissionMovePacket(
+            int listenerPort)
+        {
+            var channel = GameNetworkConfig.ResolveGameChannel(listenerPort);
+            if (channel.ChannelId <= byte.MinValue
+                || channel.ChannelId > byte.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(listenerPort));
+            }
+
+            var address = IPAddress.Parse(
+                GameNetworkConfig.AdvertisedGameIp).GetAddressBytes();
+            if (address.Length != 4)
+                throw new InvalidOperationException(
+                    "A21 channel move requires an IPv4 address");
+
+            var writer = new GamePacketWriter();
+            writer.WriteByte((byte)channel.ChannelId);
+            writer.WriteInt32(0);
+            writer.WriteBytes(address);
+            writer.WriteInt32(listenerPort);
+            writer.WriteInt32(0);
+            return GamePacketEnvelopeBuilder.Build(
+                0x00,
+                (ushort)NotiPacketTypeA21.CHANNEL_MOVE_FOR_MATCHING,
+                writer.ToArray());
         }
 
         internal async Task HandleReturnSelectCharacterAsync(
@@ -907,17 +1017,10 @@ namespace DfoServer.Network.Handlers
                 source: "select-displaced");
             try
             {
-                var detachedForRejoin =
-                    DungeonRunLifecycle.DetachRunOnNetworkDisconnect(
-                        displaced,
-                        _dungeonInstances);
-                if (!detachedForRejoin)
-                {
-                    DungeonRunLifecycle.EndRunOnTeardown(
-                        displaced,
-                        "select-displaced",
-                        _dungeonInstances);
-                }
+                DungeonRunLifecycle.EndRunOnTeardown(
+                    displaced,
+                    "select-displaced",
+                    _dungeonInstances);
             }
             catch (Exception ex)
             {

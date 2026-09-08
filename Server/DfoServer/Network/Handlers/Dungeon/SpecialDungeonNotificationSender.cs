@@ -9,7 +9,8 @@ namespace DfoServer.Network.Handlers.Dungeon
     {
         Task SendAsync(
             EnhancedClientSession session,
-            SpecialDungeonEffectIntent effect);
+            SpecialDungeonEffectIntent effect,
+            Func<byte[], Task<bool>> trySendPacketAsync);
     }
 
     internal sealed class SpecialDungeonNotificationSender
@@ -21,12 +22,14 @@ namespace DfoServer.Network.Handlers.Dungeon
 
         Task ISpecialDungeonNotificationSender.SendAsync(
             EnhancedClientSession session,
-            SpecialDungeonEffectIntent effect)
-            => SendAsync(session, effect);
+            SpecialDungeonEffectIntent effect,
+            Func<byte[], Task<bool>> trySendPacketAsync)
+            => SendAsync(session, effect, trySendPacketAsync);
 
         internal async Task SendAsync(
             EnhancedClientSession session,
-            SpecialDungeonEffectIntent effect)
+            SpecialDungeonEffectIntent effect,
+            Func<byte[], Task<bool>> trySendPacketAsync = null)
         {
             if (session == null || effect == null)
                 return;
@@ -34,7 +37,10 @@ namespace DfoServer.Network.Handlers.Dungeon
             switch (effect.Kind)
             {
                 case SpecialDungeonEffectKind.GaugeChanged:
-                    await SendGaugeAsync(session, effect.Value);
+                    await SendGaugeAsync(
+                        session,
+                        effect.Value,
+                        trySendPacketAsync);
                     return;
 
                 case SpecialDungeonEffectKind.BuffAddedAndActivated:
@@ -42,17 +48,22 @@ namespace DfoServer.Network.Handlers.Dungeon
                         .SendAddedAndActivateAsync(
                             session,
                             effect.BuffIds,
-                            effect.ActiveBuffIds);
+                            effect.ActiveBuffIds,
+                            trySendPacketAsync);
                     return;
 
                 case SpecialDungeonEffectKind.BuffsCleared:
                     await DungeonBuffNotificationSender.ClearAsync(
                         session,
-                        effect.BuffIds);
+                        effect.BuffIds,
+                        trySendPacketAsync);
                     return;
 
                 case SpecialDungeonEffectKind.BossEntranceMinimap:
-                    await SendMinimapAsync(session, effect);
+                    await SendMinimapAsync(
+                        session,
+                        effect,
+                        trySendPacketAsync);
                     return;
 
                 case SpecialDungeonEffectKind.PassGate:
@@ -60,58 +71,78 @@ namespace DfoServer.Network.Handlers.Dungeon
                         .SendCompleteConditionPassGateAsync(
                             session,
                             "ordinary-special-dungeon",
-                            effect.Reason);
+                            effect.Reason,
+                            trySendPacketAsync == null
+                                ? null
+                                : (packet, _, _) =>
+                                    trySendPacketAsync(packet));
                     return;
 
                 case SpecialDungeonEffectKind.StrongWarlordSelected:
-                    await session.SendPacketAsync(
+                    await SendPacketAsync(
+                        session,
                         GamePacketEnvelopeBuilder.Build(
                             0x01,
                             (ushort)CmdPacketType.TIMER_MODIFY_INFO,
-                            new[] { StrongWarlordResult }));
+                            new[] { StrongWarlordResult }),
+                        trySendPacketAsync);
                     return;
 
                 case SpecialDungeonEffectKind.SummonMonsterResponse:
-                    await SendSummonMonsterAsync(session, effect);
+                    await SendSummonMonsterAsync(
+                        session,
+                        effect,
+                        trySendPacketAsync);
                     return;
 
                 case SpecialDungeonEffectKind.CommandSuccessAck:
-                    await session.SendPacketAsync(
+                    await SendPacketAsync(
+                        session,
                         GamePacketEnvelopeBuilder.Build(
                             0x01,
                             effect.WireType,
-                            CommonPacketBodyBuilder.BuildSuccessAck()));
+                            CommonPacketBodyBuilder.BuildSuccessAck()),
+                        trySendPacketAsync);
                     return;
             }
         }
 
         private static Task SendGaugeAsync(
             EnhancedClientSession session,
-            int value)
+            int value,
+            Func<byte[], Task<bool>> trySendPacketAsync)
         {
             var body = SpecialDungeonNotificationBuilder
                 .BuildGaugeObjectBarData(value);
-            return session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                0x00,
-                (ushort)NotiPacketType.GAUGE_OBJECT_BAR_DATA,
-                body));
+            return SendPacketAsync(
+                session,
+                GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketType.GAUGE_OBJECT_BAR_DATA,
+                    body),
+                trySendPacketAsync);
         }
 
         private static Task SendMinimapAsync(
             EnhancedClientSession session,
-            SpecialDungeonEffectIntent effect)
+            SpecialDungeonEffectIntent effect,
+            Func<byte[], Task<bool>> trySendPacketAsync)
         {
             var body = SpecialDungeonNotificationBuilder.BuildMinimapIconInfo(
                 effect.MinimapEntries);
-            return session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                0x00,
-                (ushort)NotiPacketType.MINIMAP_ICON_INFO,
-                body));
+            return SendPacketAsync(
+                session,
+                GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketType.MINIMAP_ICON_INFO,
+                    body),
+                trySendPacketAsync);
         }
 
         private static Task SendSummonMonsterAsync(
             EnhancedClientSession session,
-            SpecialDungeonEffectIntent effect)
+            SpecialDungeonEffectIntent effect,
+            Func<byte[], Task<bool>> trySendPacketAsync)
         {
             var body = SpecialDungeonNotificationBuilder
                 .BuildSummonMonsterCommandCreateResponse(
@@ -123,10 +154,27 @@ namespace DfoServer.Network.Handlers.Dungeon
                     effect.MonsterCode,
                     SummonMonsterMode,
                     effect.MonsterLevel);
-            return session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                0x01,
-                (ushort)CmdPacketType.SUMMON_MONSTER,
-                body));
+            return SendPacketAsync(
+                session,
+                GamePacketEnvelopeBuilder.Build(
+                    0x01,
+                    (ushort)CmdPacketType.SUMMON_MONSTER,
+                    body),
+                trySendPacketAsync);
+        }
+
+        private static async Task SendPacketAsync(
+            EnhancedClientSession session,
+            byte[] packet,
+            Func<byte[], Task<bool>> trySendPacketAsync)
+        {
+            if (trySendPacketAsync != null)
+            {
+                await trySendPacketAsync(packet);
+                return;
+            }
+
+            await session.SendPacketAsync(packet);
         }
     }
 }

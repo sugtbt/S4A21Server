@@ -621,6 +621,19 @@ namespace DfoServer.Infrastructure
             var chat = new ChatHandler(
                 world.Sessions,
                 world.PartyManager);
+            townDungeon.Town.ConfigureDungeonGiveupPartyDeparture(
+                party.HandleDungeonGiveupWithinTransitionAsync);
+            townDungeon.Town.ConfigureTownPartyListPublisher(
+                party.PublishTownPartyListsAsync);
+            townDungeon.Dungeon.ConfigureTownPartyListPublisher(
+                party.PublishTownPartyListsAsync);
+            var dungeonLoading =
+                new Network.Handlers.Dungeon.DungeonLoadingCoordinator(
+                    townDungeon.Town,
+                    townDungeon.Dungeon,
+                    world.DungeonInstances,
+                    world.Sessions,
+                    raid);
             var dungeonRejoin =
                 new Network.Handlers.Dungeon.DungeonRejoinCoordinator(
                     world.DungeonInstances,
@@ -642,6 +655,7 @@ namespace DfoServer.Infrastructure
                 party,
                 raid,
                 chat,
+                dungeonLoading,
                 dungeonRejoin,
                 new PvpChannelInfoHandler(),
                 pvpRoom);

@@ -13,6 +13,8 @@ namespace DfoServer.Network.Handlers.Dungeon
         private readonly DungeonProgressNotificationProjector
             _progressNotifications;
         private readonly ISessionDirectory _sessions;
+        private Func<EnhancedClientSession, DungeonRunIdentity, Task>
+            _projectTownPresence;
 
         internal DungeonTownReturnCoordinator(
             DungeonInstanceRegistry instanceRegistry,
@@ -26,10 +28,18 @@ namespace DfoServer.Network.Handlers.Dungeon
             _sessions = sessions;
         }
 
+        internal void ConfigureTownPresenceProjection(
+            Func<EnhancedClientSession, DungeonRunIdentity, Task> projection)
+        {
+            _projectTownPresence = projection
+                ?? throw new ArgumentNullException(nameof(projection));
+        }
+
         internal async Task<bool> ReturnAsync(
             EnhancedClientSession session,
             DungeonRunIdentity runIdentity,
-            DungeonRunEndReason reason = DungeonRunEndReason.ReturnToTown)
+            DungeonRunEndReason reason = DungeonRunEndReason.ReturnToTown,
+            ushort? successAckPacketType = null)
         {
             var sourceRun = session?.Player?.CurrentRun;
             if (sourceRun == null || !sourceRun.Matches(runIdentity))
@@ -43,8 +53,22 @@ namespace DfoServer.Network.Handlers.Dungeon
             {
                 return false;
             }
-            if (!DungeonRunLifecycle.CanProjectTownState(session, runIdentity))
-                return false;
+
+            return await ProjectEndedRunAsync(
+                session,
+                runIdentity,
+                returnAnchor,
+                successAckPacketType);
+        }
+
+        internal async Task<bool> ProjectEndedRunAsync(
+            EnhancedClientSession session,
+            DungeonRunIdentity runIdentity,
+            DungeonTownReturnAnchor returnAnchor,
+            ushort? successAckPacketType = null)
+        {
+            if (!CanProjectEndedTownState(session, runIdentity))
+                return true;
 
             DungeonRunLifecycle.ApplyTownReturnAnchor(
                 session.Player,
@@ -61,25 +85,60 @@ namespace DfoServer.Network.Handlers.Dungeon
                 0x00,
                 0x0003,
                 EnterSelectDungeonStateBuilder.BuildUserState(session.Player)));
-            if (!DungeonRunLifecycle.CanProjectTownState(session, runIdentity))
+            if (!CanProjectEndedTownState(session, runIdentity))
                 return true;
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                0x00,
-                0x0017,
-                TownAreaNotificationBuilder.BuildUserArea(snapshot)));
-            if (!DungeonRunLifecycle.CanProjectTownState(session, runIdentity))
+            var projectTownPresence = _projectTownPresence;
+            var projectedTownPresence = false;
+            if (projectTownPresence != null)
+            {
+                try
+                {
+                    await projectTownPresence(session, runIdentity);
+                    projectedTownPresence = true;
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"town presence projection failed; using self-only fallback " +
+                        $"cid={session.Player.CharacterId} " +
+                        $"run={runIdentity.RunId}/{runIdentity.RunGeneration}: " +
+                        ex.Message);
+                }
+            }
+            if (!projectedTownPresence)
+            {
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    0x0017,
+                    TownAreaNotificationBuilder.BuildUserArea(snapshot)));
+                if (!CanProjectEndedTownState(
+                        session,
+                        runIdentity))
+                {
+                    return true;
+                }
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    0x0018,
+                    TownAreaNotificationBuilder.BuildAreaUsers(snapshot)));
+            }
+            if (!CanProjectEndedTownState(session, runIdentity))
                 return true;
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                0x00,
-                0x0018,
-                TownAreaNotificationBuilder.BuildAreaUsers(snapshot)));
-            if (!DungeonRunLifecycle.CanProjectTownState(session, runIdentity))
-                return true;
+            if (successAckPacketType.HasValue)
+            {
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x01,
+                    successAckPacketType.Value,
+                    CommonPacketBodyBuilder.BuildSuccessAck()));
+                if (!CanProjectEndedTownState(session, runIdentity))
+                    return true;
+            }
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
                 0x00,
                 0x00CA,
                 new byte[] { 0x00 }));
-            if (!DungeonRunLifecycle.CanProjectTownState(session, runIdentity))
+            if (!CanProjectEndedTownState(session, runIdentity))
                 return true;
             await _progressNotifications.SendUserInfoSubtype0Broadcast(session);
             // 回城过图后客户端重置结婚属性 UI：subtype0 广播之后补发婚礼回放三包（与选角序列同包体）。
@@ -90,5 +149,11 @@ namespace DfoServer.Network.Handlers.Dungeon
                 $"run={runIdentity.RunId}/{runIdentity.RunGeneration}");
             return true;
         }
+
+        private static bool CanProjectEndedTownState(
+            EnhancedClientSession session,
+            DungeonRunIdentity runIdentity)
+            => DungeonRunLifecycle.CanProjectTownState(session, runIdentity)
+               && session.Player.CurrentDungeonSelection == null;
     }
 }

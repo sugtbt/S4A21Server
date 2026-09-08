@@ -44,6 +44,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                 settlement,
                 tournament,
                 bloodAltar);
+            svc.InstanceRegistry.ConfigurePartyWipeStarted(
+                SchedulePartyWipeTimer);
         }
 
         internal Task ProcessMechanismKillAsync(KillContext context)
@@ -271,15 +273,19 @@ namespace DfoServer.Network.Handlers.Dungeon
                 : null;
             if (scriptedDeath.SuppressRespawn)
                 DungeonRunLifecycle.CancelDeathRespawn(session);
-            else
+            else if (deathRun != null
+                     && _svc.Tournaments.IsTournamentRun(deathRun))
                 ScheduleDeathRespawn(session);
+            else
+                await SchedulePartyWipeIfNeededAsync(deathRun);
 
             // NOTI 32 (wire 0x0020) DIE_STATE: u16 actorId + u8 dieType(0=death) + u8 flag
-            var w = new GamePacketWriter();
-            w.WriteUInt16(session.Player.UserId);
-            w.WriteByte(0x00);  // dieType=0 death confirmed
-            w.WriteByte(0x00);
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0020, w.ToArray()));
+            await BroadcastParticipantLifeStateAsync(
+                session,
+                deathRun,
+                BuildParticipantLifeStateBody(
+                    session.Player.UserId,
+                    state: 0x00));
 
             if (deathEvent != null
                 && session.Player.IsCurrentDungeonRun(deathEvent.RunIdentity))
@@ -320,6 +326,233 @@ namespace DfoServer.Network.Handlers.Dungeon
                 force: false,
                 source: "client");
         }
+
+        private async Task SchedulePartyWipeIfNeededAsync(DungeonRun run)
+        {
+            if (run == null)
+                return;
+
+            await run.Instance.ParticipantLifeGate.WaitAsync();
+            try
+            {
+                var runIdentity = run.CaptureIdentity();
+                var roster = _svc.InstanceRegistry
+                    .CaptureInstanceParticipantRoster(
+                        run.CaptureInstanceIdentity());
+                var activeRuns = new List<DungeonRunIdentity>();
+                foreach (var participant in roster)
+                {
+                    if (!participant.RunIdentity.IsValid
+                        || activeRuns.Contains(participant.RunIdentity))
+                    {
+                        continue;
+                    }
+                    run.Instance.RegisterParticipantLife(
+                        participant.RunIdentity);
+                    activeRuns.Add(participant.RunIdentity);
+                }
+                if (!activeRuns.Contains(runIdentity))
+                {
+                    run.Instance.RegisterParticipantLife(runIdentity);
+                    activeRuns.Add(runIdentity);
+                }
+
+                var transition = run.Instance.MarkParticipantDead(
+                    runIdentity,
+                    activeRuns,
+                    DateTime.UtcNow,
+                    DungeonInstance.PartyWipeDelay);
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] PARTY_DEATH: " +
+                    $"instance={run.PartyDungeonInstanceId} " +
+                    $"run={run.RunId}/{run.RunGeneration} " +
+                    $"changed={transition.Changed} " +
+                    $"wipeStarted={transition.WipeStarted} " +
+                    $"participants={activeRuns.Count}");
+                if (!transition.WipeStarted)
+                    return;
+
+                SchedulePartyWipeTimer(
+                    run.Instance,
+                    transition.Generation,
+                    transition.DeadlineUtc,
+                    "last-participant-death");
+            }
+            finally
+            {
+                run.Instance.ParticipantLifeGate.Release();
+            }
+        }
+
+        private void SchedulePartyWipeTimer(
+            DungeonInstance instance,
+            long generation,
+            DateTime deadlineUtc,
+            string source)
+        {
+            if (instance == null || generation <= 0)
+                return;
+
+            ClockService.Instance.ScheduleOneShotAsync(
+                BuildPartyWipeTimerName(instance),
+                deadlineUtc,
+                utcNow => ResolvePartyWipeDeadlineAsync(
+                    instance,
+                    generation,
+                    utcNow));
+            FileLogger.Log(
+                $"[{DungeonSharedServices.ProtocolLogName}] PARTY_WIPE_TIMER: " +
+                $"scheduled instance={instance.PartyDungeonInstanceId} " +
+                $"generation={generation} source={source} " +
+                $"deadline={deadlineUtc:O}");
+        }
+
+        private async Task ResolvePartyWipeDeadlineAsync(
+            DungeonInstance instance,
+            long generation,
+            DateTime utcNow)
+        {
+            if (instance == null)
+                return;
+
+            IReadOnlyList<DungeonParticipantRosterEntry> roster;
+            var activeRuns = new List<DungeonRunIdentity>();
+            var committed = false;
+            await instance.ParticipantLifeGate.WaitAsync();
+            try
+            {
+                roster = _svc.InstanceRegistry
+                    .CaptureInstanceParticipantRoster(instance.Identity);
+                foreach (var participant in roster)
+                {
+                    if (participant.RunIdentity.IsValid
+                        && !activeRuns.Contains(participant.RunIdentity))
+                    {
+                        activeRuns.Add(participant.RunIdentity);
+                    }
+                }
+                committed = instance.TryCommitPartyWipe(
+                    generation,
+                    activeRuns,
+                    utcNow);
+            }
+            finally
+            {
+                instance.ParticipantLifeGate.Release();
+            }
+            if (!committed)
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] PARTY_WIPE_TIMER: " +
+                    $"stale instance={instance.PartyDungeonInstanceId} " +
+                    $"generation={generation} participants={activeRuns.Count}");
+                return;
+            }
+
+            var returned = 0;
+            foreach (var participant in roster)
+            {
+                if (_svc.Sessions == null
+                    || !_svc.Sessions.TryGet(
+                        participant.CharacterId,
+                        out var candidate)
+                    || candidate?.Player == null
+                    || candidate.TcpClient == null
+                    || !candidate.TcpClient.Connected
+                    || !candidate.Player.IsCurrentDungeonRun(
+                        participant.RunIdentity))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (await _svc.TownReturn.ReturnAsync(
+                            candidate,
+                            participant.RunIdentity,
+                            DungeonRunEndReason.DeathRespawn,
+                            successAckPacketType: 0x007B))
+                    {
+                        returned++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"PARTY_WIPE_TIMER: return failed " +
+                        $"instance={instance.PartyDungeonInstanceId} " +
+                        $"generation={generation} " +
+                        $"cid={participant.CharacterId} " +
+                        $"run={participant.RunIdentity.RunId}/" +
+                        $"{participant.RunIdentity.RunGeneration}: " +
+                        ex.Message);
+                }
+            }
+            FileLogger.Log(
+                $"[{DungeonSharedServices.ProtocolLogName}] PARTY_WIPE_TIMER: " +
+                $"complete instance={instance.PartyDungeonInstanceId} " +
+                $"generation={generation} returned={returned}/{roster.Count}");
+        }
+
+        private async Task BroadcastParticipantLifeStateAsync(
+            EnhancedClientSession sourceSession,
+            DungeonRun sourceRun,
+            byte[] body)
+        {
+            if (sourceSession?.Player == null || body == null)
+                return;
+
+            var sourceSent = false;
+            var roster = sourceRun != null
+                ? _svc.InstanceRegistry.CaptureInstanceParticipantRoster(
+                    sourceRun.CaptureInstanceIdentity())
+                : Array.Empty<DungeonParticipantRosterEntry>();
+            foreach (var participant in roster)
+            {
+                if (_svc.Sessions == null
+                    || !_svc.Sessions.TryGet(
+                        participant.CharacterId,
+                        out var candidate)
+                    || candidate?.Player == null
+                    || candidate.TcpClient == null
+                    || !candidate.TcpClient.Connected
+                    || !candidate.Player.IsCurrentDungeonRun(
+                        participant.RunIdentity))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await candidate.SendPacketAsync(
+                        GamePacketEnvelopeBuilder.Build(
+                            0x00,
+                            0x0020,
+                            body));
+                    sourceSent |= ReferenceEquals(candidate, sourceSession);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"DIE_STATE projection failed cid={participant.CharacterId}: " +
+                        ex.Message);
+                }
+            }
+
+            if (!sourceSent)
+            {
+                await sourceSession.SendPacketAsync(
+                    GamePacketEnvelopeBuilder.Build(
+                        0x00,
+                        0x0020,
+                        body));
+            }
+        }
+
+        private static string BuildPartyWipeTimerName(DungeonInstance instance)
+            => "dungeon-party-wipe:" + instance.PartyDungeonInstanceId;
 
         private void ScheduleDeathRespawn(EnhancedClientSession session)
         {
@@ -489,55 +722,11 @@ namespace DfoServer.Network.Handlers.Dungeon
             }
 
             DungeonRunLifecycle.CancelDeathRespawn(session);
-            if (!await DungeonRunLifecycle.EndRunAsync(
+            if (!await _svc.TownReturn.ReturnAsync(
                     session,
-                    DungeonRunEndReason.DeathRespawn,
                     runIdentity,
-                    _svc.InstanceRegistry))
-            {
-                return;
-            }
-            if (!DungeonRunLifecycle.CanProjectTownState(
-                    session,
-                    runIdentity))
-            {
-                FileLogger.Log(
-                    $"[{DungeonSharedServices.ProtocolLogName}] " +
-                    $"DEATH_RESPAWN town projection skipped: stale source={source}");
-                return;
-            }
-            session.Player.UserState = 0x00;
-            // 死亡复活回城 → 状态回空闲：同频道在线好友推 USERINFO(0x0002) 更新场景实体状态。
-            if (_svc.Sessions != null)
-                await UnitedFriendSystem.NotifyUserStateChanged(
-                    session, _svc.Sessions);
-
-            var snapshot = TownAreaNotificationBuilder.CreateCurrentSnapshot(session.Player);
-
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0003,
-                EnterSelectDungeonStateBuilder.BuildUserState(session.Player)));
-            if (!DungeonRunLifecycle.CanProjectTownState(session, runIdentity))
-                return;
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0017,
-                TownAreaNotificationBuilder.BuildUserArea(snapshot)));
-            if (!DungeonRunLifecycle.CanProjectTownState(session, runIdentity))
-                return;
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0018,
-                TownAreaNotificationBuilder.BuildAreaUsers(snapshot)));
-            if (!DungeonRunLifecycle.CanProjectTownState(session, runIdentity))
-                return;
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x01, 0x007B,
-                CommonPacketBodyBuilder.BuildSuccessAck()));
-            if (!DungeonRunLifecycle.CanProjectTownState(session, runIdentity))
-                return;
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x00CA,
-                new byte[] { 0x00 }));
-            if (!DungeonRunLifecycle.CanProjectTownState(session, runIdentity))
-                return;
-
-            // Future failure weakness state should be applied here before subtype0.
-            await _svc.ProgressNotifications.SendUserInfoSubtype0Broadcast(session);
-            if (!DungeonRunLifecycle.CanProjectTownState(session, runIdentity))
+                    DungeonRunEndReason.DeathRespawn,
+                    successAckPacketType: 0x007B))
                 return;
 
             FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] DEATH_RESPAWN: complete source={source}");
@@ -584,27 +773,81 @@ namespace DfoServer.Network.Handlers.Dungeon
             if (run == null || !session.Player.IsCurrentDungeonRun(runIdentity))
                 return false;
 
-            run.AnotherAradQuest?.MarkReviveUsed();
-
-            // 先扣复活币, 成功才发复活通知(旧实现不扣币白送复活)
+            DungeonParticipantRosterEntry reviveTarget = null;
+            var isTournament = _svc.Tournaments.IsTournamentRun(run);
             short coinSlot;
             int coinRemaining;
-            if (characterId <= 0
-                || !InventoryContext.TryGetLease(characterId, out var lease)
-                || !lease.IsOwnedBy(session.SessionId)
-                || !_svc.ReviveCoin.TryConsume(
-                    lease,
+            var reviveCommitted = false;
+            if (isTournament)
+            {
+                reviveCommitted = TryConsumeReviveCoin(
+                    session,
+                    characterId,
                     out coinSlot,
-                    out coinRemaining))
+                    out coinRemaining);
+                if (reviveCommitted)
+                    DungeonRunLifecycle.CancelDeathRespawn(run);
+            }
+            else
+            {
+                await run.Instance.ParticipantLifeGate.WaitAsync();
+                try
+                {
+                    if (session.Player.IsCurrentDungeonRun(runIdentity))
+                    {
+                        foreach (var participant in _svc.InstanceRegistry
+                                     .CaptureInstanceParticipantRoster(
+                                         run.CaptureInstanceIdentity()))
+                        {
+                            if (participant.ParticipantUserId == targetId)
+                            {
+                                reviveTarget = participant;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (reviveTarget != null
+                        && run.Instance.CanReviveParticipant(
+                            reviveTarget.RunIdentity)
+                        && TryConsumeReviveCoin(
+                            session,
+                            characterId,
+                            out coinSlot,
+                            out coinRemaining))
+                    {
+                        reviveCommitted = run.Instance.MarkParticipantAlive(
+                            reviveTarget.RunIdentity).Changed;
+                    }
+                    else
+                    {
+                        coinSlot = -1;
+                        coinRemaining = 0;
+                    }
+                }
+                finally
+                {
+                    run.Instance.ParticipantLifeGate.Release();
+                }
+            }
+
+            if (!reviveCommitted)
             {
                 var err = new GamePacketWriter();
                 err.WriteByte(0x00);
                 err.WriteUInt16(targetId);
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x01, 0x0029, err.ToArray()));
-                FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] USE_COIN: no coin cid={characterId}");
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x01,
+                    0x0029,
+                    err.ToArray()));
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"USE_COIN rejected target={targetId} cid={characterId}");
                 return false;
             }
 
+            // 复活已提交: 镜像阿拉德/暗精灵遗迹在此刻才标记复活使用(失败不误标)
+            run.AnotherAradQuest?.MarkReviveUsed();
             if (GameWorld.LicensedDungeonCatalog.TryGetDefinition(
                     run.DungeonId,
                     out _))
@@ -618,13 +861,12 @@ namespace DfoServer.Network.Handlers.Dungeon
 
             // 1. NOTI 0x0020 DIE_STATE: set_charac_live(user, 1=revive)
             //    df_game_r body = u16 actorId + u8 state; 86JP has extra u8 flag
-            var noti = new GamePacketWriter();
-            noti.WriteUInt16(targetId);
-            noti.WriteByte(0x01);  // state=1 revive
-            noti.WriteByte(0x00);  // 86JP flag
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0020, noti.ToArray()));
-            if (!session.Player.IsCurrentDungeonRun(runIdentity))
-                return false;
+            await BroadcastParticipantLifeStateAsync(
+                session,
+                run,
+                BuildParticipantLifeStateBody(
+                    targetId,
+                    state: 0x01));
 
             // 2. CMD ACK 0x0029: resultCode=1 + u16 targetActorId
             //    不补发 0x000E: 客户端使用复活币时本地已预扣显示(PR#338 实测说明), 全量列表随下次进城刷新
@@ -636,11 +878,48 @@ namespace DfoServer.Network.Handlers.Dungeon
             return true;
         }
 
+        private bool TryConsumeReviveCoin(
+            EnhancedClientSession session,
+            int characterId,
+            out short coinSlot,
+            out int coinRemaining)
+        {
+            coinSlot = -1;
+            coinRemaining = 0;
+            return characterId > 0
+                && InventoryContext.TryGetLease(characterId, out var lease)
+                && lease.IsOwnedBy(session.SessionId)
+                && _svc.ReviveCoin.TryConsume(
+                    lease,
+                    out coinSlot,
+                    out coinRemaining);
+        }
+
+        internal static byte[] BuildParticipantLifeStateBody(
+            ushort actorId,
+            byte state)
+        {
+            var writer = new GamePacketWriter();
+            writer.WriteUInt16(actorId);
+            writer.WriteByte(state);
+            writer.WriteByte(0x00);
+            return writer.ToArray();
+        }
+
         internal async Task HandleGetItem(EnhancedClientSession session, GamePacketHeader header, byte[] body)
         {
             var run = session.Player.CurrentRun;
             if (run == null) return;
             var runIdentity = run.CaptureIdentity();
+            if (run.Instance.IsParticipantDead(runIdentity))
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"GET_ITEM ignored for dead participant " +
+                    $"cid={session.Player.CharacterId} " +
+                    $"instance={run.PartyDungeonInstanceId}");
+                return;
+            }
 
             var req = GetItemRequest.Parse(body);
             FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] GET_ITEM: cid={session.Player.CharacterId} srcSlot={req.SrcSlot}");

@@ -6,6 +6,7 @@ using PvfLib;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using DungeonData = DfoServer.GameWorld.Dungeon;
 
@@ -15,6 +16,7 @@ namespace DfoServer.Network.Handlers.Dungeon
     {
         private const byte HellPartyHiddenTemplateFlag = 1;
         private const byte HellPartyAttachAllWavesSelector = 0xFF;
+        private static long _nextLoadingProjectionId;
 
         // A21 START_MAP +2 is consumed as the room's layered-map state, not as
         // a generic "map override exists" flag. Hell-party and mechanism maps
@@ -23,15 +25,83 @@ namespace DfoServer.Network.Handlers.Dungeon
         internal static byte ResolveStartMapLayeredFlag(int layeredMapIndex)
             => layeredMapIndex >= 0 ? (byte)1 : (byte)0;
 
+        internal static byte ResolveStartMapPartyMemberIndex(
+            Game.Party.Party party,
+            int characterId)
+        {
+            if (party == null || party.Count <= 1)
+                return 0xFF;
+
+            var member = party.GetMember(unchecked((ushort)characterId));
+            return member != null && member.SlotIndex < Game.Party.PartyConstants.MaxMembers
+                ? member.SlotIndex
+                : (byte)0xFF;
+        }
+
         private readonly DungeonSharedServices _svc;
+        private Action<DungeonRoomIdentity, DungeonInstanceRoom, long>
+            _loadingProjectionStarted;
+        private Func<EnhancedClientSession, DungeonRunIdentity,
+            DungeonRoomIdentity, Task> _loadingProjectionRejected;
 
         internal DungeonMapHandler(DungeonSharedServices svc) => _svc = svc;
+
+        internal void ConfigureLoadingProjectionStarted(
+            Action<DungeonRoomIdentity, DungeonInstanceRoom, long> callback,
+            Func<EnhancedClientSession, DungeonRunIdentity,
+                DungeonRoomIdentity, Task> rejected)
+        {
+            _loadingProjectionStarted = callback;
+            _loadingProjectionRejected = rejected;
+        }
+
+        internal static long CreateLoadingProjectionId()
+        {
+            var projectionId = Interlocked.Increment(
+                ref _nextLoadingProjectionId);
+            if (projectionId <= 0)
+            {
+                throw new InvalidOperationException(
+                    "Dungeon loading projection id space is exhausted.");
+            }
+            return projectionId;
+        }
+
+        private static async Task<bool> TrySendLoadingProjectionPacketAsync(
+            EnhancedClientSession session,
+            byte[] packet,
+            CancellationToken cancellationToken,
+            Func<bool> canSend,
+            Action onSent = null)
+        {
+            if (await session.TrySendPacketAsync(
+                    packet,
+                    cancellationToken,
+                    canSend,
+                    onSent))
+            {
+                return true;
+            }
+
+            FileLogger.Log(
+                $"[DungeonHandler] canceled loading projection packet dropped: " +
+                $"cid={session?.Player?.CharacterId ?? 0}");
+            return false;
+        }
 
         internal async Task HandleMoveMap(EnhancedClientSession session, GamePacketHeader header, byte[] body)
         {
             var run = session.Player.CurrentRun;
             if (run == null) return;
             var leaderRunIdentity = run.CaptureIdentity();
+            if (run.Instance.IsParticipantDead(leaderRunIdentity))
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] MOVE_MAP ignored for dead participant: " +
+                    $"cid={session.Player.CharacterId} " +
+                    $"instance={run.PartyDungeonInstanceId}");
+                return;
+            }
 
             // 塔内分流: 在塔中时 MOVE_MAP = 推进下一层(不走普通地图切换)
             if (run.Tower != null)
@@ -101,6 +171,21 @@ namespace DfoServer.Network.Handlers.Dungeon
                     req.NextY,
                     ref moveTarget);
 
+            var loadingProjectionId = CreateLoadingProjectionId();
+            if (!run.TryClaimLoadingProjection(loadingProjectionId))
+                return;
+            var preparedFollowers = CapturePartyMoveFollowers(
+                session,
+                leaderRunIdentity,
+                leaderPreviousRoomInstanceId,
+                loadingProjectionId);
+            var loadingParticipants = new List<DungeonRunIdentity>
+            {
+                leaderRunIdentity,
+            };
+            for (var i = 0; i < preparedFollowers.Count; i++)
+                loadingParticipants.Add(preparedFollowers[i].RunIdentity);
+
             int overrideMapId = -1;
 
             if (req.MoveMode == 1)
@@ -131,7 +216,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                 run,
                 moveTarget.X,
                 moveTarget.Y,
-                overrideMapId);
+                overrideMapId,
+                expectedLoadingParticipants: loadingParticipants,
+                loadingProjectionId: loadingProjectionId);
             if (!leaderRoomIdentity.HasValue
                 || !session.Player.IsCurrentDungeonParticipantRoom(
                     leaderRoomIdentity.Value))
@@ -150,7 +237,10 @@ namespace DfoServer.Network.Handlers.Dungeon
                 mechanismMove,
                 leaderRunIdentity,
                 leaderRoomIdentity.Value,
-                leaderPreviousRoomInstanceId);
+                leaderPreviousRoomInstanceId,
+                loadingProjectionId,
+                preparedFollowers,
+                loadingParticipants);
         }
 
         // 队长换图时把同队【在副本里】的成员也移到同一房间(服务端驱动, 队员副本=队长迷宫拷贝)。⚠️待真机验证。
@@ -162,21 +252,23 @@ namespace DfoServer.Network.Handlers.Dungeon
             DungeonMechanismCoordinator.MoveMapContext mechanismMove,
             DungeonRunIdentity leaderRunIdentity,
             DungeonParticipantRoomIdentity leaderRoomIdentity,
-            long leaderPreviousRoomInstanceId)
+            long leaderPreviousRoomInstanceId,
+            long loadingProjectionId,
+            IReadOnlyList<(
+                EnhancedClientSession Session,
+                DungeonRun Run,
+                DungeonRunIdentity RunIdentity)> preparedFollowers,
+            IReadOnlyList<DungeonRunIdentity> loadingParticipants)
         {
-            var pm = _svc.PartyManager;
-            var sessions = _svc.Sessions;
-            if (pm == null || sessions == null || leader?.Player == null) return;
-            var leaderUid = (ushort)leader.Player.CharacterId;
-            var party = pm.GetPartyByUser(leaderUid);
-            if (party == null || party.Count <= 1 || !party.IsLeader(leaderUid)) return;   // 只有队长换图带全队
+            if (leader?.Player == null || preparedFollowers == null)
+                return;
 
-            foreach (var m in party.MembersBySlot())
+            foreach (var follower in preparedFollowers)
             {
-                if (m.UserId == leaderUid) continue;
-                sessions.TryGet(m.CharacterId, out var bs);
-                var memberRun = bs?.Player?.CurrentRun;
-                if (memberRun == null
+                var bs = follower.Session;
+                var memberRun = follower.Run;
+                if (bs?.Player == null
+                    || !bs.Player.IsCurrentDungeonRun(follower.RunIdentity)
                     || bs.TcpClient == null
                     || !bs.TcpClient.Connected
                     || memberRun.PartyDungeonInstanceId != leaderRunIdentity.PartyDungeonInstanceId
@@ -202,7 +294,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                         memberRun,
                         nextX,
                         nextY,
-                        overrideMapId);
+                        overrideMapId,
+                        expectedLoadingParticipants: loadingParticipants,
+                        loadingProjectionId: loadingProjectionId);
                     if (!leader.Player.IsCurrentDungeonParticipantRoom(
                             leaderRoomIdentity))
                         return;
@@ -218,9 +312,66 @@ namespace DfoServer.Network.Handlers.Dungeon
                 }
                 catch (System.Exception ex)
                 {
-                    FileLogger.Log($"[DungeonHandler] PARTY_MOVE_MAP ERROR: member uid={m.UserId}: {ex.Message}");
+                    FileLogger.Log(
+                        $"[DungeonHandler] PARTY_MOVE_MAP ERROR: " +
+                        $"member cid={bs?.Player?.CharacterId ?? 0}: {ex.Message}");
                 }
             }
+        }
+
+        private List<(
+            EnhancedClientSession Session,
+            DungeonRun Run,
+            DungeonRunIdentity RunIdentity)> CapturePartyMoveFollowers(
+                EnhancedClientSession leader,
+                DungeonRunIdentity leaderRunIdentity,
+                long leaderPreviousRoomInstanceId,
+                long loadingProjectionId)
+        {
+            var result = new List<(
+                EnhancedClientSession Session,
+                DungeonRun Run,
+                DungeonRunIdentity RunIdentity)>();
+            var sessions = _svc.Sessions;
+            if (sessions == null
+                || leader?.Player == null)
+            {
+                return result;
+            }
+
+            var sourceRoom = new DungeonRoomIdentity(
+                leaderRunIdentity.InstanceIdentity,
+                leaderPreviousRoomInstanceId);
+            foreach (var participant in _svc.InstanceRegistry
+                         .CaptureParticipantRoster(sourceRoom))
+            {
+                if (participant.CharacterId == leader.Player.CharacterId
+                    || !sessions.TryGet(
+                        participant.CharacterId,
+                        out var session))
+                {
+                    continue;
+                }
+
+                var memberRun = session?.Player?.CurrentRun;
+                if (memberRun == null
+                    || !session.Player.IsCurrentDungeonRun(
+                        participant.RunIdentity)
+                    || session.TcpClient == null
+                    || !session.TcpClient.Connected
+                    || memberRun.PartyDungeonInstanceId
+                        != leaderRunIdentity.PartyDungeonInstanceId
+                    || !memberRun.TryClaimLoadingProjection(
+                        loadingProjectionId,
+                        leaderPreviousRoomInstanceId))
+                {
+                    continue;
+                }
+
+                result.Add((session, memberRun, participant.RunIdentity));
+            }
+
+            return result;
         }
 
         internal Task<DungeonParticipantRoomIdentity?> SendStartMapAsync(
@@ -240,7 +391,9 @@ namespace DfoServer.Network.Handlers.Dungeon
             DungeonRun run,
             int nextX,
             int nextY,
-            int overrideMapId)
+            int overrideMapId,
+            IReadOnlyList<DungeonRunIdentity> expectedLoadingParticipants = null,
+            long loadingProjectionId = 0)
         {
             if (session?.Player == null
                 || run == null
@@ -251,6 +404,15 @@ namespace DfoServer.Network.Handlers.Dungeon
                 return null;
             }
             var runIdentity = run.CaptureIdentity();
+            if (loadingProjectionId <= 0)
+                loadingProjectionId = CreateLoadingProjectionId();
+            if (!run.TryClaimLoadingProjection(loadingProjectionId)
+                || !run.TryBeginLoadingProjection(loadingProjectionId))
+                return null;
+            var loadingParticipants = CaptureLoadingParticipants(
+                run,
+                runIdentity,
+                expectedLoadingParticipants);
 
             var effectiveOverrideMapId =
                 DungeonMechanismCoordinator.ResolveStartMapOverride(
@@ -312,12 +474,19 @@ namespace DfoServer.Network.Handlers.Dungeon
             byte pendingHellPartyMode = 0;
             byte pendingHellPartyFogFlag = 0;
             IReadOnlyList<RidableObjectSpawnEntry> pendingRidableEntries = null;
+            DungeonInstanceRoom loadingRoom = null;
+            var startMapPartyMemberIndex = ResolveStartMapPartyMemberIndex(
+                _svc.PartyManager?.GetPartyByUser(
+                    unchecked((ushort)session.Player.CharacterId)),
+                session.Player.CharacterId);
 
             // 锁内绝不 await: 把 START_MAP 对 run 房间态(RoomKey/RoomStates/RoomKilledSeqIds/RoomMonsters/
             // MonsterCount)的整段读改写与队友击杀 relay(PropagateKillForClearAsync 在别的线程读这些结构)互斥,
             // 防 Dict/HashSet 跨线程并发改崩。此块 138-241 全为同步逻辑, 所有 await 发包都在 lock 之外。
             lock (run.SyncRoot)
             {
+            if (!run.IsCurrentLoadingProjectionLocked(loadingProjectionId))
+                return null;
             isFirstRunStartMap = run.RoomStates.Count == 0;
             run.RoomKey = roomKey;
             if (run.RoomStates.TryGetValue(roomKey, out var cached))
@@ -333,6 +502,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                 run.RoomStartSequence = cached.FirstSeqId;
                 run.RoomKilledSeqIds = cached.KilledSeqIds;
                 run.RoomLcg = cached.Lcg;
+                run.ParticipantDropLcg = cached.ParticipantDropLcg;
                 run.Seed = cached.Seed;
                 run.RoomKey = roomKey;
                 if (isTournamentMap
@@ -344,14 +514,18 @@ namespace DfoServer.Network.Handlers.Dungeon
                         "Tournament actor sequence changed on room revisit.");
                 }
                 if (cached.InstanceRoom != null)
+                {
                     run.SetCurrentRoom(cached.InstanceRoom);
+                    loadingRoom = cached.InstanceRoom;
+                }
                 DungeonMechanismCoordinator.RestoreRoomState(run, cached);
 
                 startMapBody = isBloodAltarMap
                     ? Array.Empty<byte>()
                     : DungeonNotificationBuilder.BuildStartMapRevisit(
                         cached.Maze,
-                        cached.Seed);
+                        cached.Seed,
+                        startMapPartyMemberIndex);
                 sentMapId = cached.Maze.Index;
                 sentMapX = cached.Maze.X;
                 sentMapY = cached.Maze.Y;
@@ -440,6 +614,13 @@ namespace DfoServer.Network.Handlers.Dungeon
                 run.Seed = seed;
                 var lcg = new DnfLcg(seed);
                 run.RoomLcg = lcg;
+                var participantDropLcg = new DnfLcg(
+                    DropService.DeriveParticipantDropSeed(
+                        seed,
+                        run.PartyDungeonInstanceId,
+                        instanceRoom.RoomInstanceId,
+                        session.Player.CharacterId));
+                run.ParticipantDropLcg = participantDropLcg;
 
                 run.RoomMonsters = startMapMaze.Monsters;
 
@@ -452,12 +633,14 @@ namespace DfoServer.Network.Handlers.Dungeon
                     KilledSeqIds = killedSet,
                     Seed = seed,
                     Lcg = lcg,
+                    ParticipantDropLcg = participantDropLcg,
                 };
                 roomState.TryActivate();
                 if (instanceRoom.State == DungeonRoomState.Cleared)
                     roomState.TryClear();
                 run.RoomStates[roomKey] = roomState;
                 run.SetCurrentRoom(instanceRoom);
+                loadingRoom = instanceRoom;
                 DungeonEncounterApplicationService.Apply(
                     run,
                     new DungeonEncounterDirective(
@@ -530,6 +713,12 @@ namespace DfoServer.Network.Handlers.Dungeon
             }
             } // end lock(run.SyncRoot)
 
+            if (!run.IsCurrentLoadingProjection(loadingProjectionId)
+                || loadingRoom == null)
+            {
+                return null;
+            }
+
             if (pendingStandardRoom != null)
             {
                 var passiveObjectDrops = ProjectPassiveObjectDrops(
@@ -545,13 +734,92 @@ namespace DfoServer.Network.Handlers.Dungeon
                     layeredRoomFlag: pendingLayeredFlag,
                     hellPartyMode: pendingHellPartyMode,
                     hellPartyFogFlag: pendingHellPartyFogFlag,
+                    partyMemberIndex: startMapPartyMemberIndex,
                     extraEntries: passiveObjectDrops.Entries,
                     ridableEntries: pendingRidableEntries);
             }
 
-            CacheResolvedStartMapId(run, sentMapX, sentMapY, sentMapId);
+            if (!run.IsCurrentLoadingProjection(loadingProjectionId))
+                return null;
 
-            var roomIdentity = run.CaptureParticipantRoomIdentity();
+            lock (run.SyncRoot)
+            {
+                if (!run.IsCurrentLoadingProjectionLocked(loadingProjectionId))
+                    return null;
+                CacheResolvedStartMapId(run, sentMapX, sentMapY, sentMapId);
+            }
+
+            var roomIdentity = new DungeonParticipantRoomIdentity(
+                runIdentity,
+                loadingRoom.Identity);
+            if (!session.Player.IsCurrentDungeonParticipantRoom(roomIdentity)
+                || !run.IsCurrentLoadingProjection(loadingProjectionId))
+            {
+                return null;
+            }
+            var loadingGeneration = loadingRoom.RegisterLoadingProjection(
+                runIdentity,
+                loadingProjectionId,
+                loadingParticipants,
+                out var loadingGenerationStarted);
+            if (loadingGeneration <= 0)
+            {
+                FileLogger.Log(
+                    $"[DungeonHandler] stale loading projection rejected: " +
+                    $"cid={session.Player.CharacterId} " +
+                    $"instance={roomIdentity.Room.Instance.PartyDungeonInstanceId} " +
+                    $"room={roomIdentity.Room.RoomInstanceId} " +
+                    $"projection={loadingProjectionId}");
+                if (_loadingProjectionRejected != null
+                    && run.IsCurrentLoadingProjection(loadingProjectionId)
+                    && session.Player.IsCurrentDungeonParticipantRoom(
+                        roomIdentity))
+                {
+                    try
+                    {
+                        await _loadingProjectionRejected(
+                            session,
+                            runIdentity,
+                            roomIdentity.Room);
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLogger.Log(
+                            $"[DungeonHandler] stale loading projection cleanup failed: " +
+                            $"cid={session.Player.CharacterId} " +
+                            $"error={ex.Message}");
+                    }
+                }
+                return null;
+            }
+            if (loadingGenerationStarted && _loadingProjectionStarted != null)
+            {
+                try
+                {
+                    _loadingProjectionStarted(
+                        roomIdentity.Room,
+                        loadingRoom,
+                        loadingGeneration);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[DungeonHandler] loading timeout schedule failed: " +
+                        $"instance={roomIdentity.Room.Instance.PartyDungeonInstanceId} " +
+                        $"room={roomIdentity.Room.RoomInstanceId} " +
+                    $"generation={loadingGeneration} error={ex.Message}");
+                }
+            }
+            if (!run.TryCaptureLoadingProjectionCancellation(
+                    loadingProjectionId,
+                    out var loadingCancellation))
+            {
+                return null;
+            }
+            bool CanSendLoadingProjection()
+                => run.IsCurrentLoadingProjection(loadingProjectionId)
+                    && session.Player.IsCurrentDungeonParticipantRoom(
+                        roomIdentity);
             if (isBloodAltarMap)
             {
                 var failureReason = string.Empty;
@@ -590,44 +858,25 @@ namespace DfoServer.Network.Handlers.Dungeon
                     $"expectedMap={tournament.Definition.MapId} actualMap={sentMapId}");
                 return null;
             }
-            if (sendTournamentProjection)
+            if (!sendTournamentProjection)
             {
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                    0x00,
-                    (ushort)NotiPacketTypeA21.TOURNAMENT_INFO,
-                    TournamentPacketBuilder.BuildTournamentInfo(
-                        tournament,
-                        run.Difficulty,
-                        run.RoomStartSequence)));
-                if (!session.Player.IsCurrentDungeonParticipantRoom(roomIdentity))
+                if (!await TrySendLoadingProjectionPacketAsync(
+                        session,
+                        GamePacketEnvelopeBuilder.Build(
+                            0x00,
+                            isBloodAltarMap
+                                ? (ushort)NotiPacketTypeA21.START_BLOOD_MAP
+                                : (ushort)NotiPacketTypeA21.START_MAP,
+                            startMapBody),
+                        loadingCancellation,
+                        CanSendLoadingProjection))
+                {
                     return null;
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                    0x00,
-                    (ushort)NotiPacketTypeA21.TOURNAMENT_MAP_INFO,
-                    TournamentPacketBuilder.BuildTournamentMapInfo(
-                        (byte)sentMapX,
-                        (byte)sentMapY,
-                        run.Seed,
-                        (uint)tournament.Definition.MapId,
-                        revisit: !isFirstRunStartMap)));
-                FileLogger.Log(
-                    $"[Tournament] START_MAP projection sent: " +
-                    $"cid={session.Player.CharacterId} " +
-                    $"dungeon={run.DungeonId} map={sentMapId} " +
-                    $"firstSeq={run.RoomStartSequence} " +
-                    $"revisit={!isFirstRunStartMap}");
-            }
-            else
-            {
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                    0x00,
-                    isBloodAltarMap
-                        ? (ushort)NotiPacketTypeA21.START_BLOOD_MAP
-                        : (ushort)NotiPacketTypeA21.START_MAP,
-                    startMapBody));
+                }
             }
             if (!session.Player.IsCurrentDungeonRun(runIdentity)
-                || !session.Player.IsCurrentDungeonParticipantRoom(roomIdentity))
+                || !session.Player.IsCurrentDungeonParticipantRoom(roomIdentity)
+                || !run.IsCurrentLoadingProjection(loadingProjectionId))
             {
                 return null;
             }
@@ -637,21 +886,33 @@ namespace DfoServer.Network.Handlers.Dungeon
                 out var towerBaseApcInfoBody,
                 out var towerCurrentApcInfoBody))
             {
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                    0x00,
-                    (ushort)NotiPacketType.USER_APC_INFO_TOD,
-                    towerBaseApcInfoBody));
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                    0x00,
-                    (ushort)NotiPacketType.USER_APC_INFO_TOD,
-                    towerCurrentApcInfoBody));
+                if (!await TrySendLoadingProjectionPacketAsync(
+                        session,
+                        GamePacketEnvelopeBuilder.Build(
+                            0x00,
+                            (ushort)NotiPacketType.USER_APC_INFO_TOD,
+                            towerBaseApcInfoBody),
+                        loadingCancellation,
+                        CanSendLoadingProjection)
+                    || !await TrySendLoadingProjectionPacketAsync(
+                        session,
+                        GamePacketEnvelopeBuilder.Build(
+                            0x00,
+                            (ushort)NotiPacketType.USER_APC_INFO_TOD,
+                            towerCurrentApcInfoBody),
+                        loadingCancellation,
+                        CanSendLoadingProjection))
+                {
+                    return null;
+                }
                 FileLogger.Log(
                     $"[TowerOfDespair] base/current APC info sent after START_MAP: " +
                     $"dungeon={run.DungeonId} layers=0,{towerCurrentApcInfoBody[0]} " +
                     $"job={session.Player.Job} grow={session.Player.GrowType}");
             }
             if (!session.Player.IsCurrentDungeonRun(runIdentity)
-                || !session.Player.IsCurrentDungeonParticipantRoom(roomIdentity))
+                || !session.Player.IsCurrentDungeonParticipantRoom(roomIdentity)
+                || !run.IsCurrentLoadingProjection(loadingProjectionId))
             {
                 return null;
             }
@@ -668,26 +929,126 @@ namespace DfoServer.Network.Handlers.Dungeon
             {
                 await DungeonMechanismCoordinator.OnStartMapSentAsync(
                     session,
-                    roomIdentity);
+                    roomIdentity,
+                    (packet, packetCanSend, onSent) =>
+                        TrySendLoadingProjectionPacketAsync(
+                        session,
+                        packet,
+                        loadingCancellation,
+                        () => CanSendLoadingProjection()
+                            && (packetCanSend == null
+                                || packetCanSend()),
+                        onSent),
+                    CanSendLoadingProjection);
             }
             if (!session.Player.IsCurrentDungeonRun(runIdentity)
-                || !session.Player.IsCurrentDungeonParticipantRoom(roomIdentity))
+                || !session.Player.IsCurrentDungeonParticipantRoom(roomIdentity)
+                || !run.IsCurrentLoadingProjection(loadingProjectionId))
             {
                 return null;
             }
 
+            if (sendTournamentProjection)
+            {
+                if (!await TrySendLoadingProjectionPacketAsync(
+                        session,
+                        GamePacketEnvelopeBuilder.Build(
+                            0x00,
+                            (ushort)NotiPacketType.TOURNAMENT_INFO,
+                            TournamentPacketBuilder.BuildTournamentInfo(
+                                tournament,
+                                run.Difficulty,
+                                run.RoomStartSequence)),
+                        loadingCancellation,
+                        CanSendLoadingProjection))
+                {
+                    return null;
+                }
+                if (!session.Player.IsCurrentDungeonParticipantRoom(roomIdentity)
+                    || !run.IsCurrentLoadingProjection(loadingProjectionId))
+                    return null;
+                if (!await TrySendLoadingProjectionPacketAsync(
+                        session,
+                        GamePacketEnvelopeBuilder.Build(
+                            0x00,
+                            (ushort)NotiPacketType.TOURNAMENT_MAP_INFO,
+                            TournamentPacketBuilder.BuildTournamentMapInfo(
+                                (byte)sentMapX,
+                                (byte)sentMapY,
+                                run.Seed,
+                                (uint)tournament.Definition.MapId,
+                                revisit: !isFirstRunStartMap)),
+                        loadingCancellation,
+                        CanSendLoadingProjection))
+                {
+                    return null;
+                }
+                if (!session.Player.IsCurrentDungeonParticipantRoom(roomIdentity)
+                    || !run.IsCurrentLoadingProjection(loadingProjectionId))
+                    return null;
+                FileLogger.Log(
+                    $"[Tournament] START_MAP projection sent: " +
+                    $"cid={session.Player.CharacterId} " +
+                    $"dungeon={run.DungeonId} map={sentMapId} " +
+                    $"firstSeq={run.RoomStartSequence} " +
+                    $"revisit={!isFirstRunStartMap}");
+            }
+
             if (hellPartyMonsterInfoAfterStartMap != null && hellPartyMonsterInfoAfterStartMap.Count > 0)
             {
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                    0x00,
-                    (ushort)NotiPacketTypeA21.HELL_PARTY_MONSTER_INFO,
-                    DungeonNotificationBuilder.BuildHellPartyMonsterInfo(hellPartyMonsterInfoAfterStartMap)));
-                if (!session.Player.IsCurrentDungeonParticipantRoom(roomIdentity))
+                if (!await TrySendLoadingProjectionPacketAsync(
+                        session,
+                        GamePacketEnvelopeBuilder.Build(
+                            0x00,
+                            (ushort)NotiPacketTypeA21.HELL_PARTY_MONSTER_INFO,
+                            DungeonNotificationBuilder.BuildHellPartyMonsterInfo(
+                                hellPartyMonsterInfoAfterStartMap)),
+                        loadingCancellation,
+                        CanSendLoadingProjection))
+                {
+                    return null;
+                }
+                if (!session.Player.IsCurrentDungeonParticipantRoom(roomIdentity)
+                    || !run.IsCurrentLoadingProjection(loadingProjectionId))
                     return null;
                 FileLogger.Log($"[DungeonHandler] HELLPARTY monster info sent after hell START_MAP: entries={hellPartyMonsterInfoAfterStartMap.Count} actorLevels={string.Join(",", hellPartyMonsterInfoAfterStartMap.Select(x => $"{x.Key}:{x.Value}"))}");
             }
 
             return roomIdentity;
+        }
+
+        private List<DungeonRunIdentity> CaptureLoadingParticipants(
+            DungeonRun run,
+            DungeonRunIdentity self,
+            IReadOnlyList<DungeonRunIdentity> expectedParticipants)
+        {
+            var result = new List<DungeonRunIdentity>();
+            if (expectedParticipants != null)
+            {
+                for (var i = 0; i < expectedParticipants.Count; i++)
+                {
+                    var participant = expectedParticipants[i];
+                    if (participant.IsValid && !result.Contains(participant))
+                        result.Add(participant);
+                }
+            }
+            else
+            {
+                foreach (var participant in _svc.InstanceRegistry
+                             .CaptureInstanceParticipantRoster(
+                                 run.CaptureInstanceIdentity()))
+                {
+                    if (participant.RunIdentity.IsValid
+                        && !result.Contains(participant.RunIdentity))
+                    {
+                        result.Add(participant.RunIdentity);
+                    }
+                }
+            }
+
+            if (self.IsValid && !result.Contains(self))
+                result.Add(self);
+            return result;
         }
 
         private static DungeonData.MazeSumInfo BuildBloodAltarStartMapMaze(

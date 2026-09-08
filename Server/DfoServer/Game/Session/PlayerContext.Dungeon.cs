@@ -13,6 +13,7 @@ namespace DfoServer.Game.Session
 
         private long _dungeonRunGeneration;
         private long _dungeonSelectionGeneration;
+        private int _pendingPartyRetryDungeonId;
         private Game.Dungeon.DungeonSelectionContext _currentDungeonSelection;
 
         internal long CurrentDungeonRunGeneration =>
@@ -83,7 +84,19 @@ namespace DfoServer.Game.Session
         internal Game.Dungeon.DungeonSelectionContext BeginDungeonSelection(
             Game.Dungeon.DungeonTownReturnAnchor returnAnchor,
             bool isA21TutorialEntry = false)
+            => BeginDungeonSelection(
+                returnAnchor,
+                isA21TutorialEntry,
+                partyCohort: null,
+                out _);
+
+        internal Game.Dungeon.DungeonSelectionContext BeginDungeonSelection(
+            Game.Dungeon.DungeonTownReturnAnchor returnAnchor,
+            bool isA21TutorialEntry,
+            Game.Dungeon.DungeonPartySelectionCohort partyCohort,
+            out bool created)
         {
+            created = false;
             lock (DungeonRunLifecycleSyncRoot)
             {
                 if (CurrentRun != null)
@@ -102,8 +115,10 @@ namespace DfoServer.Game.Session
                     Interlocked.Increment(ref _dungeonSelectionGeneration),
                     CurrentDungeonRunGeneration,
                     returnAnchor,
-                    isA21TutorialEntry);
+                    isA21TutorialEntry,
+                    partyCohort);
                 Volatile.Write(ref _currentDungeonSelection, context);
+                created = true;
                 return context;
             }
         }
@@ -153,6 +168,18 @@ namespace DfoServer.Game.Session
             Volatile.Write(ref _currentDungeonSelection, null);
         }
 
+        internal bool TryInvalidateDungeonSelection(
+            Game.Dungeon.DungeonSelectionContext expected)
+        {
+            return expected != null
+                && ReferenceEquals(
+                    Interlocked.CompareExchange(
+                        ref _currentDungeonSelection,
+                        null,
+                        expected),
+                    expected);
+        }
+
         internal void CompleteDungeonSelection(
             Game.Dungeon.DungeonSelectionContext expected)
         {
@@ -171,11 +198,24 @@ namespace DfoServer.Game.Session
         internal Game.Dungeon.LinkedDungeonEntryAuthorization
             PendingLinkedDungeonEntryAuthorization { get; set; }
 
-        // A party leader can drive a follower's return from the leader's
-        // connection while that follower is also processing its own EPLP.
-        // Serialize those transitions so an old return cannot clear a newer run.
+        // Serialize owner-side ENTER_SELECT capture/create so a duplicate
+        // request cannot freeze a second party cohort while the first one is
+        // still projecting its selection state.
         internal SemaphoreSlim DungeonRunTransitionGate { get; } =
             new SemaphoreSlim(1, 1);
+
+        internal void MarkPendingPartyRetryEntry(int dungeonId) =>
+            Interlocked.Exchange(
+                ref _pendingPartyRetryDungeonId,
+                Math.Max(0, dungeonId));
+
+        internal bool ConsumePendingPartyRetryEntry(int dungeonId) =>
+            dungeonId > 0
+            && Interlocked.Exchange(ref _pendingPartyRetryDungeonId, 0)
+                == dungeonId;
+
+        internal void ClearPendingPartyRetryEntry() =>
+            Interlocked.Exchange(ref _pendingPartyRetryDungeonId, 0);
 
         // ---- 跨局存活字段(刻意不随 run 重建) ----
 

@@ -208,6 +208,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                         Database));
             CardRewards = new CardRewardCoordinator(
                 new Game.Dungeon.CardRewardService(PersistentEffects),
+                sessions: Sessions,
                 database: Database);
             AdmissionRejects = new DungeonAdmissionRejectSender();
         }

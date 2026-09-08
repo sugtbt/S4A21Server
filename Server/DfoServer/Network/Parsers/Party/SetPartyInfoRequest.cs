@@ -2,10 +2,11 @@ using System;
 
 namespace DfoServer.Network.Parsers.Party
 {
-    // SET_PARTY_INFO (0x000C) 请求。
-    // ⚠️ 86jp 实测 body 为定长 7 字节, 例: 00 XX 04 YY 00 05 00 (XX=用户在创建对话框的选择, 01~06)。
-    //    与 df_game_r 早期版不同: titleIndex==0 **不**携带 int32 队名串。故这里按定长宽松解析, 不因布局失败,
-    //    保证"创建队伍"能建队 + 回 PARTY_INFO。字段精确语义待真机进一步确认(byte[1]/byte[3] 随选择变)。
+    // A21 SET_PARTY_INFO (0x000C) has two captured request shapes:
+    //   create: 12 direct settings bytes;
+    //   edit:   2 leading settings bytes + raw-dstr title + 10 trailing bytes.
+    // Normalize both to the same 12-byte settings block consumed by
+    // PARTY_INFO(type 0/1); keep the title separate.
     public sealed class SetPartyInfoRequest
     {
         public byte TitleIndex { get; set; }
@@ -18,15 +19,39 @@ namespace DfoServer.Network.Parsers.Party
         public static bool TryParse(byte[] body, out SetPartyInfoRequest req)
         {
             req = new SetPartyInfoRequest();
-            if (body == null || body.Length < 1)
+            if (body == null)
                 return false;
 
-            req.Raw = body;
-            req.TitleIndex = body[0];
-            // 定长字段(容错读, 缺就默认): [titleIndex][userMax][u16 dungIndex][dungDiffi][尾...]
-            if (body.Length > 1) req.UserMax = body[1];
-            if (body.Length >= 4) req.DungIndex = BitConverter.ToUInt16(body, 2);
-            if (body.Length > 4) req.DungDiffi = body[4];
+            if (body.Length == 12)
+            {
+                req.Raw = (byte[])body.Clone();
+                req.TitleIndex = body[1];
+                req.UserMax = body[2];
+                return true;
+            }
+
+            // Captured edit sample:
+            // 01-00-0C-00-00-00-<12B UTF-8 title>-<10B settings tail>.
+            if (body.Length < 16 || body[0] > 2 || body[1] != 0)
+                return false;
+            var titleLength = BitConverter.ToInt32(body, 2);
+            if (titleLength < 0 || body.Length != 16 + titleLength)
+                return false;
+
+            req.Title = new byte[titleLength];
+            if (titleLength > 0)
+                Buffer.BlockCopy(body, 6, req.Title, 0, titleLength);
+            req.Raw = new byte[12];
+            req.Raw[0] = body[0];
+            req.Raw[1] = body[1];
+            Buffer.BlockCopy(
+                body,
+                6 + titleLength,
+                req.Raw,
+                2,
+                10);
+            req.TitleIndex = body[1];
+            req.UserMax = req.Raw[2];
             return true;
         }
     }

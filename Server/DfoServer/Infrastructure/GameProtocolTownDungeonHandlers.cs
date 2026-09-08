@@ -16,6 +16,10 @@ namespace DfoServer.Infrastructure
                 ?? throw new ArgumentNullException(nameof(reviveCoin));
             Town = town ?? throw new ArgumentNullException(nameof(town));
             Dungeon = dungeon ?? throw new ArgumentNullException(nameof(dungeon));
+            Dungeon.ConfigureTownPresenceProjection(
+                Town.ProjectDungeonTownPresenceAsync);
+            Dungeon.ConfigureRejectedPartySelectionReturn(
+                Town.ReturnRejectedPartySelectionToTownAsync);
         }
 
         internal ReviveCoinService ReviveCoin { get; }

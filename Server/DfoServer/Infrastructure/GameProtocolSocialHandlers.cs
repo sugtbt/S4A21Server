@@ -13,6 +13,7 @@ namespace DfoServer.Infrastructure
             PartyHandler party,
             RaidHandler raid,
             ChatHandler chat,
+            DungeonLoadingCoordinator dungeonLoading,
             DungeonRejoinCoordinator dungeonRejoin,
             PvpChannelInfoHandler pvpChannelInfo,
             PvpRoomHandler pvpRoom)
@@ -20,6 +21,8 @@ namespace DfoServer.Infrastructure
             Party = party ?? throw new ArgumentNullException(nameof(party));
             Raid = raid ?? throw new ArgumentNullException(nameof(raid));
             Chat = chat ?? throw new ArgumentNullException(nameof(chat));
+            DungeonLoading = dungeonLoading
+                ?? throw new ArgumentNullException(nameof(dungeonLoading));
             DungeonRejoin = dungeonRejoin
                 ?? throw new ArgumentNullException(nameof(dungeonRejoin));
             PvpChannelInfo = pvpChannelInfo
@@ -33,6 +36,8 @@ namespace DfoServer.Infrastructure
         internal RaidHandler Raid { get; }
 
         internal ChatHandler Chat { get; }
+
+        internal DungeonLoadingCoordinator DungeonLoading { get; }
 
         internal DungeonRejoinCoordinator DungeonRejoin { get; }
 

@@ -70,12 +70,53 @@ namespace DfoServer.Network
             byte[] data,
             CancellationToken cancellationToken)
         {
-            PacketFileLogger.Log("SEND", data);
             await _sendLock.WaitAsync(cancellationToken);
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                PacketFileLogger.Log("SEND", data);
                 await Stream.WriteAsync(
                     data, 0, data.Length, cancellationToken);
+            }
+            finally
+            {
+                _sendLock.Release();
+            }
+        }
+
+        internal async Task<bool> TrySendPacketAsync(
+            byte[] data,
+            CancellationToken cancellationToken,
+            Func<bool> canSend,
+            Action onSent = null)
+        {
+            try
+            {
+                await _sendLock.WaitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
+
+            try
+            {
+                if (cancellationToken.IsCancellationRequested
+                    || (canSend != null && !canSend()))
+                {
+                    return false;
+                }
+
+                // The condition is rechecked while this session's send lock is
+                // held. Once accepted, finish the small protocol frame without
+                // cancellation so a timeout cannot create a partial packet.
+                // Any newer projection/cleanup packet queues behind this write.
+                PacketFileLogger.Log("SEND", data);
+                await Stream.WriteAsync(
+                    data, 0, data.Length, CancellationToken.None);
+                onSent?.Invoke();
+                return true;
             }
             finally
             {

@@ -1,4 +1,5 @@
 using DfoServer.Network.Builders;
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -20,7 +21,8 @@ namespace DfoServer.Network.Handlers.Dungeon
         internal static async Task SendAddedAndActivateAsync(
             EnhancedClientSession session,
             IReadOnlyList<int> addedBuffIds,
-            IReadOnlyList<int> activeBuffIds)
+            IReadOnlyList<int> activeBuffIds,
+            Func<byte[], Task<bool>> trySendPacketAsync = null)
         {
             var addedCount = addedBuffIds?.Count ?? 0;
             for (var i = 0; i < addedCount; i++)
@@ -30,37 +32,64 @@ namespace DfoServer.Network.Handlers.Dungeon
                     0,
                     0,
                     0);
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                    0x00,
-                    (ushort)NotiPacketType.CHARACTER_ADD_BUFF,
-                    addBody));
+                await SendPacketAsync(
+                    session,
+                    GamePacketEnvelopeBuilder.Build(
+                        0x00,
+                        (ushort)NotiPacketType.CHARACTER_ADD_BUFF,
+                        addBody),
+                    trySendPacketAsync);
             }
 
             var activeBody = SpecialDungeonNotificationBuilder.BuildCharacterBuffDungeon(
                 activeBuffIds);
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                0x00,
-                (ushort)NotiPacketType.CHARACTER_BUFF_DUNGEON,
-                activeBody));
+            await SendPacketAsync(
+                session,
+                GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketType.CHARACTER_BUFF_DUNGEON,
+                    activeBody),
+                trySendPacketAsync);
         }
 
         internal static async Task ClearAsync(
             EnhancedClientSession session,
-            IReadOnlyList<int> buffIds)
+            IReadOnlyList<int> buffIds,
+            Func<byte[], Task<bool>> trySendPacketAsync = null)
         {
             var removeBody = SpecialDungeonNotificationBuilder.BuildCharacterRemoveBuff(
                 buffIds);
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                0x00,
-                (ushort)NotiPacketType.CHARACTER_DEL_BUFF,
-                removeBody));
+            await SendPacketAsync(
+                session,
+                GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketType.CHARACTER_DEL_BUFF,
+                    removeBody),
+                trySendPacketAsync);
 
             var clearBody = SpecialDungeonNotificationBuilder.BuildCharacterBuffDungeon(
                 System.Array.Empty<int>());
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                0x00,
-                (ushort)NotiPacketType.CHARACTER_BUFF_DUNGEON,
-                clearBody));
+            await SendPacketAsync(
+                session,
+                GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    (ushort)NotiPacketType.CHARACTER_BUFF_DUNGEON,
+                    clearBody),
+                trySendPacketAsync);
+        }
+
+        private static async Task SendPacketAsync(
+            EnhancedClientSession session,
+            byte[] packet,
+            Func<byte[], Task<bool>> trySendPacketAsync)
+        {
+            if (trySendPacketAsync != null)
+            {
+                await trySendPacketAsync(packet);
+                return;
+            }
+
+            await session.SendPacketAsync(packet);
         }
     }
 }

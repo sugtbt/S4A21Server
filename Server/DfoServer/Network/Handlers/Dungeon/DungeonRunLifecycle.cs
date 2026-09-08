@@ -55,6 +55,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             if (instance.DungeonId != dungeonId || instance.Difficulty != difficulty)
                 throw new InvalidOperationException("A participant run must match its shared dungeon instance.");
             var questSnapshot = CaptureQuestSnapshot(session);
+            var entryPartySlotIndex = oldRun?.EntryPartySlotIndex ?? 0;
 
             DungeonRun newRun;
             lock (session.Player.DungeonRunLifecycleSyncRoot)
@@ -76,6 +77,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                 ConfigureDropCharacterContext(session, newRun);
                 newRun.QuestSnapshot = questSnapshot;
                 newRun.TownReturnAnchor = returnAnchor;
+                newRun.EntryPartySlotIndex = entryPartySlotIndex;
                 newRun.TryBeginSelecting();
                 session.Player.ClearDungeonSelection();
                 session.Player.CurrentRun = newRun;
@@ -176,6 +178,13 @@ namespace DfoServer.Network.Handlers.Dungeon
                     "A participant run must match its shared dungeon instance.");
             }
             var questSnapshot = CaptureQuestSnapshot(session);
+            if (!TryResolveEntryPartySlotIndex(
+                    session,
+                    expectedSelection,
+                    out var entryPartySlotIndex))
+            {
+                return false;
+            }
             if (!player.TryReplaceDungeonSelectionWithRun(
                     expectedSelection,
                     generation =>
@@ -192,6 +201,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                             expectedSelection.ReturnAnchor,
                             expectedSelection.IsA21TutorialEntry,
                             experienceBonusSnapshot);
+                        created.EntryPartySlotIndex = entryPartySlotIndex;
+                        created.EntryPartySelectionCohort =
+                            expectedSelection.PartyCohort;
                         created.TryBeginSelecting();
                         return created;
                     },
@@ -269,6 +281,37 @@ namespace DfoServer.Network.Handlers.Dungeon
             run.QuestSnapshot = questSnapshot;
             run.TownReturnAnchor = returnAnchor;
             run.IsA21TutorialEntry = isA21TutorialEntry;
+        }
+
+        private static bool TryResolveEntryPartySlotIndex(
+            EnhancedClientSession session,
+            DungeonSelectionContext selection,
+            out byte slotIndex)
+        {
+            slotIndex = 0;
+            var cohort = selection?.PartyCohort;
+            if (cohort == null)
+                return true;
+
+            var player = session?.Player;
+            if (player == null)
+                return false;
+            foreach (var participant in cohort.Participants)
+            {
+                if (participant.UserId == player.UserId
+                    && participant.CharacterId == player.CharacterId
+                    && participant.SessionId == session.SessionId)
+                {
+                    slotIndex = participant.SlotIndex;
+                    return true;
+                }
+            }
+
+            FileLogger.Log(
+                $"[DungeonRunLifecycle] party slot freeze rejected: " +
+                $"cid={player.CharacterId} uid={player.UserId} " +
+                $"party={cohort.PartyId} projection={cohort.ProjectionId}");
+            return false;
         }
 
         private static void ConfigureDropCharacterContext(
@@ -722,6 +765,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             var player = session?.Player;
             if (player == null)
                 return false;
+            player.ClearPendingPartyRetryEntry();
 
             var detached = TryDetachCurrentRun(
                 player,
@@ -872,7 +916,10 @@ namespace DfoServer.Network.Handlers.Dungeon
                 player.DungeonSceneUniqueId = 0;
                 player.ClearDungeonSelection();
                 selection = player.BeginDungeonSelection(
-                    current.TownReturnAnchor);
+                    current.TownReturnAnchor,
+                    current.IsA21TutorialEntry,
+                    current.EntryPartySelectionCohort,
+                    out _);
                 if (selection == null)
                     return false;
 

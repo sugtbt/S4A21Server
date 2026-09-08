@@ -22,6 +22,9 @@ namespace DfoServer.Game.Party
         /// <summary>队伍是否已解散(成员清空后移除)。</summary>
         public bool Disbanded { get; set; }
 
+        /// <summary>副本回城时最后一名成员保留为单人队。</summary>
+        public bool SoleMemberPreserved { get; set; }
+
         /// <summary>队长是否变更(队长离队时转移)。</summary>
         public bool LeaderChanged { get; set; }
         public ushort NewLeaderUserId { get; set; }
@@ -98,6 +101,56 @@ namespace DfoServer.Game.Party
                     return false;
                 member.P2pPort = port;
                 return true;
+            }
+        }
+
+        public PartyOpResult UpdateSettings(
+            ushort leaderUserId,
+            System.Guid expectedSessionId,
+            byte[] titleBytes,
+            byte userMax,
+            byte[] partyInfoBlock)
+        {
+            if (!PartyConstants.IsSupportedCapacity(userMax))
+                return PartyOpResult.Fail("invalid_user_max");
+            if (partyInfoBlock == null ||
+                partyInfoBlock.Length != 12 ||
+                partyInfoBlock[2] != userMax)
+            {
+                return PartyOpResult.Fail("invalid_party_info");
+            }
+
+            lock (_lock)
+            {
+                if (!_userToParty.TryGetValue(leaderUserId, out var partyId) ||
+                    !_parties.TryGetValue(partyId, out var party))
+                {
+                    return PartyOpResult.Fail("not_in_party");
+                }
+
+                var leader = party.GetMember(leaderUserId);
+                if (leader == null || leader.SessionId != expectedSessionId)
+                    return PartyOpResult.Fail("stale_session");
+                if (party.LeaderUserId != leaderUserId)
+                    return PartyOpResult.Fail("not_leader");
+                if (party.Count > userMax)
+                    return PartyOpResult.Fail("member_count_exceeds_user_max");
+
+                party.TitleIndex = 0;
+                party.TitleBytes = titleBytes == null
+                    ? System.Array.Empty<byte>()
+                    : (byte[])titleBytes.Clone();
+                party.UserMax = userMax;
+                party.DungIndex = 0;
+                party.DungDiffi = 0;
+                party.PartyInfoBlock = (byte[])partyInfoBlock.Clone();
+                return new PartyOpResult
+                {
+                    Ok = true,
+                    Party = party,
+                    TargetUserId = leaderUserId,
+                    RemainingMembers = party.MembersBySlot(),
+                };
             }
         }
 
@@ -185,16 +238,87 @@ namespace DfoServer.Game.Party
             }
         }
 
+        public Party GetPartySnapshotByUser(ushort userId)
+        {
+            lock (_lock)
+            {
+                return _userToParty.TryGetValue(userId, out var partyId) &&
+                       _parties.TryGetValue(partyId, out var party)
+                    ? party.CreateSnapshot()
+                    : null;
+            }
+        }
+
+        public PartyOpResult LeaveForDungeonReturn(
+            ushort userId,
+            System.Guid expectedSessionId,
+            int expectedPartyId)
+        {
+            lock (_lock)
+            {
+                if (!TryGetMemberLocked(
+                        userId, out var party, out var member) ||
+                    member.SessionId != expectedSessionId)
+                {
+                    return PartyOpResult.Fail("stale_session");
+                }
+                if (party.PartyId != expectedPartyId)
+                    return PartyOpResult.Fail("party_generation_mismatch");
+
+                if (party.Count > 1)
+                {
+                    return LeaveLocked(userId) ??
+                           PartyOpResult.Fail("not_in_party");
+                }
+
+                var leaderChanged = party.LeaderUserId != userId;
+                party.LeaderUserId = userId;
+                return new PartyOpResult
+                {
+                    Ok = true,
+                    Party = party,
+                    TargetUserId = userId,
+                    SoleMemberPreserved = true,
+                    LeaderChanged = leaderChanged,
+                    NewLeaderUserId = userId,
+                    RemainingMembers = party.MembersBySlot(),
+                };
+            }
+        }
+
+        public PartyOpResult LeaveExpectedParty(
+            ushort userId,
+            System.Guid expectedSessionId,
+            int expectedPartyId)
+        {
+            lock (_lock)
+            {
+                if (!TryGetMemberLocked(
+                        userId, out var party, out var member) ||
+                    member.SessionId != expectedSessionId)
+                {
+                    return PartyOpResult.Fail("stale_session");
+                }
+                if (party.PartyId != expectedPartyId)
+                    return PartyOpResult.Fail("party_generation_mismatch");
+
+                return LeaveLocked(userId) ??
+                       PartyOpResult.Fail("not_in_party");
+            }
+        }
+
         // 已持锁的离队实现。不在任何队伍返回 null。
         // 建队/入队前的自动清理与显式 Leave 共用这一份, 保证队长转移/换槽/解散逻辑只有一处。
-        private PartyOpResult LeaveLocked(ushort userId)
+        private PartyOpResult LeaveLocked(
+            ushort userId,
+            bool preservePartyOnLeaderExit = false)
         {
             if (!_userToParty.TryGetValue(userId, out var pid) || !_parties.TryGetValue(pid, out var party))
                 return null;
 
             var wasLeader = party.LeaderUserId == userId;
             var retiredSnapshot =
-                wasLeader && party.Count > 1
+                wasLeader && party.Count > 1 && !preservePartyOnLeaderExit
                     ? party.CreateSnapshot()
                     : null;
             party.RemoveMember(userId);
@@ -212,6 +336,18 @@ namespace DfoServer.Game.Party
             if (wasLeader)
             {
                 var next = party.MembersBySlot()[0];
+                if (preservePartyOnLeaderExit)
+                {
+                    // A disconnected leader leaves the existing party in
+                    // place. The lowest occupied slot inherits leadership;
+                    // every surviving member keeps the same UI slot.
+                    party.LeaderUserId = next.UserId;
+                    result.LeaderChanged = true;
+                    result.NewLeaderUserId = next.UserId;
+                    result.RemainingMembers = party.MembersBySlot();
+                    return result;
+                }
+
                 var survivors = party.MembersBySlot();
 
                 // PARTY_INFO type=0 is applied by the 86 client as an ordered
@@ -261,6 +397,9 @@ namespace DfoServer.Game.Party
                 UserMax = source.UserMax,
                 DungIndex = source.DungIndex,
                 DungDiffi = source.DungDiffi,
+                PartyInfoBlock = source.PartyInfoBlock == null
+                    ? System.Array.Empty<byte>()
+                    : (byte[])source.PartyInfoBlock.Clone(),
                 IsSinglePlay = source.IsSinglePlay,
             };
 
@@ -399,6 +538,43 @@ namespace DfoServer.Game.Party
             }
         }
 
+        public PartyOpResult TransferLeader(
+            int partyId,
+            ushort byUserId,
+            System.Guid expectedBySessionId,
+            ushort newLeaderUserId,
+            System.Guid expectedNewLeaderSessionId)
+        {
+            lock (_lock)
+            {
+                if (!_parties.TryGetValue(partyId, out var party))
+                    return PartyOpResult.Fail("party_not_found");
+                if (party.LeaderUserId != byUserId)
+                    return PartyOpResult.Fail("not_leader");
+
+                var byMember = party.GetMember(byUserId);
+                var newLeader = party.GetMember(newLeaderUserId);
+                if (byMember == null ||
+                    byMember.SessionId != expectedBySessionId ||
+                    newLeader == null ||
+                    newLeader.SessionId != expectedNewLeaderSessionId)
+                {
+                    return PartyOpResult.Fail("stale_session");
+                }
+
+                party.LeaderUserId = newLeaderUserId;
+                return new PartyOpResult
+                {
+                    Ok = true,
+                    Party = party,
+                    TargetUserId = newLeaderUserId,
+                    LeaderChanged = true,
+                    NewLeaderUserId = newLeaderUserId,
+                    RemainingMembers = party.MembersBySlot(),
+                };
+            }
+        }
+
         /// <summary>队长手动转移。newLeader 必须是本队成员。</summary>
         public PartyOpResult TransferLeader(ushort byUserId, ushort newLeaderUserId)
         {
@@ -412,7 +588,6 @@ namespace DfoServer.Game.Party
                     return PartyOpResult.Fail("target_not_member");
 
                 party.LeaderUserId = newLeaderUserId;
-                party.MoveToSlotZero(newLeaderUserId);   // 客户端以 slot0=队长判定, 需把新队长排到 slot0
                 return new PartyOpResult
                 {
                     Ok = true,
@@ -482,7 +657,10 @@ namespace DfoServer.Game.Party
                         return PartyOpResult.Fail("stale_session");
                 }
 
-                return LeaveLocked(userId) ?? PartyOpResult.Fail("not_in_party");
+                return LeaveLocked(
+                           userId,
+                           preservePartyOnLeaderExit: true) ??
+                       PartyOpResult.Fail("not_in_party");
             }
         }
 
@@ -522,66 +700,207 @@ namespace DfoServer.Game.Party
         }
 
         /// <summary>
-        /// 登记一条与双方当前会话绑定的待应答邀请(A 邀请 B 入 A 的队)。
-        /// partyId=0 表示邀请时 A 尚未建队。
+        /// 登记一条与双方当前会话和队伍代际绑定的 type0 请求。
+        /// 双方都无队是普通建队；仅一方有队时，另一方加入该现有队伍。
         /// </summary>
         public bool RecordInvite(
             ushort inviteeUserId,
             System.Guid inviteeSessionId,
             ushort inviterUserId,
             System.Guid inviterSessionId,
-            int partyId)
+            out string failureReason)
         {
+            failureReason = null;
             if (inviteeUserId == 0 ||
                 inviterUserId == 0 ||
                 inviteeUserId == inviterUserId ||
                 inviteeSessionId == System.Guid.Empty ||
-                inviterSessionId == System.Guid.Empty ||
-                partyId < 0)
+                inviterSessionId == System.Guid.Empty)
             {
+                failureReason = "invalid_invite";
                 return false;
             }
 
             lock (_lock)
             {
+                var inviterInParty = TryGetMemberLocked(
+                    inviterUserId,
+                    out var inviterParty,
+                    out var inviterMember);
+                var inviteeInParty = TryGetMemberLocked(
+                    inviteeUserId,
+                    out var inviteeParty,
+                    out var inviteeMember);
+                if (inviterInParty &&
+                    inviterMember.SessionId != inviterSessionId)
+                {
+                    failureReason = "stale_session";
+                    return false;
+                }
+                if (inviteeInParty &&
+                    inviteeMember.SessionId != inviteeSessionId)
+                {
+                    failureReason = "stale_session";
+                    return false;
+                }
+                if (inviterInParty && inviteeInParty)
+                {
+                    failureReason = "both_in_party";
+                    return false;
+                }
+                if (inviterInParty)
+                {
+                    if (inviterParty.LeaderUserId != inviterUserId)
+                    {
+                        failureReason = "not_leader";
+                        return false;
+                    }
+                    if (inviterParty.IsFull)
+                    {
+                        failureReason = "party_full";
+                        return false;
+                    }
+                }
+                if (inviteeInParty && inviteeParty.IsFull)
+                {
+                    failureReason = "party_full";
+                    return false;
+                }
+
                 _pendingInvites[inviteeUserId] =
                     new PendingPartyInvite
                     {
                         InviteeSessionId = inviteeSessionId,
                         InviterUserId = inviterUserId,
                         InviterSessionId = inviterSessionId,
-                        PartyId = partyId,
+                        InviterPartyId = inviterParty?.PartyId ?? 0,
+                        InviteePartyId = inviteeParty?.PartyId ?? 0,
                     };
                 return true;
             }
         }
 
         /// <summary>
-        /// 仅当被邀请者、邀请者及双方会话都与登记时完全一致才消费。
-        /// 匹配失败不移除记录，避免旧连接抢先使新连接的合法邀请失效。
+        /// 在同一 PartyManager 锁内匹配 pending、复验双方会话与 PartyId，
+        /// 再完成普通建队、邀请入队或申请加入现有队伍。
         /// </summary>
-        public bool TryConsumeInvite(
+        public PartyOpResult AcceptInvite(
             ushort inviteeUserId,
             System.Guid inviteeSessionId,
             ushort inviterUserId,
             System.Guid inviterSessionId,
-            out int partyId)
+            PartyMember inviterMember,
+            PartyMember inviteeMember,
+            out string mode)
+        {
+            mode = null;
+            if (inviterMember == null ||
+                inviteeMember == null ||
+                inviterMember.UserId != inviterUserId ||
+                inviteeMember.UserId != inviteeUserId ||
+                inviterMember.SessionId != inviterSessionId ||
+                inviteeMember.SessionId != inviteeSessionId)
+            {
+                return PartyOpResult.Fail("invalid_member_identity");
+            }
+
+            lock (_lock)
+            {
+                if (!_pendingInvites.TryGetValue(
+                        inviteeUserId, out var invite) ||
+                    invite.InviteeSessionId != inviteeSessionId ||
+                    invite.InviterUserId != inviterUserId ||
+                    invite.InviterSessionId != inviterSessionId)
+                {
+                    return PartyOpResult.Fail("invite_not_found_or_stale");
+                }
+
+                // An exact response consumes this request once. State or
+                // capacity failures below require a fresh REQUEST_PEER and
+                // cannot become valid again through a same-session ABA.
+                _pendingInvites.Remove(inviteeUserId);
+
+                var inviterInParty = TryGetMemberLocked(
+                    inviterUserId,
+                    out var inviterParty,
+                    out var currentInviter);
+                var inviteeInParty = TryGetMemberLocked(
+                    inviteeUserId,
+                    out var inviteeParty,
+                    out var currentInvitee);
+                if (invite.InviterPartyId == 0)
+                {
+                    if (inviterInParty)
+                        return PartyOpResult.Fail("inviter_party_changed");
+                }
+                else if (!inviterInParty ||
+                         inviterParty.PartyId != invite.InviterPartyId ||
+                         currentInviter.SessionId != inviterSessionId ||
+                         inviterParty.LeaderUserId != inviterUserId)
+                {
+                    return PartyOpResult.Fail("inviter_not_current_leader");
+                }
+
+                if (invite.InviteePartyId == 0)
+                {
+                    if (inviteeInParty)
+                        return PartyOpResult.Fail("invitee_party_changed");
+                }
+                else if (!inviteeInParty ||
+                         inviteeParty.PartyId != invite.InviteePartyId ||
+                         currentInvitee.SessionId != inviteeSessionId)
+                {
+                    return PartyOpResult.Fail("invitee_party_changed");
+                }
+
+                var destination = invite.InviterPartyId != 0
+                    ? inviterParty
+                    : inviteeParty;
+                if (destination?.IsFull == true)
+                    return PartyOpResult.Fail("party_full");
+
+                if (invite.InviterPartyId == 0 &&
+                    invite.InviteePartyId == 0)
+                {
+                    mode = "create-inviter-party";
+                    var created = CreateParty(inviterMember);
+                    if (!created.Ok)
+                        return created;
+                    var joined = Join(created.Party.PartyId, inviteeMember);
+                    if (!joined.Ok)
+                        Disband(created.Party.PartyId);
+                    return joined;
+                }
+                if (invite.InviterPartyId != 0)
+                {
+                    mode = "invite-into-inviter-party";
+                    return Join(inviterParty.PartyId, inviteeMember);
+                }
+
+                mode = "apply-into-invitee-party";
+                return Join(inviteeParty.PartyId, inviterMember);
+            }
+        }
+
+        public bool CancelInvite(
+            ushort inviteeUserId,
+            System.Guid inviteeSessionId,
+            ushort inviterUserId,
+            System.Guid inviterSessionId)
         {
             lock (_lock)
             {
-                if (_pendingInvites.TryGetValue(
-                        inviteeUserId, out var invite) &&
-                    invite.InviteeSessionId == inviteeSessionId &&
-                    invite.InviterUserId == inviterUserId &&
-                    invite.InviterSessionId == inviterSessionId)
+                if (!_pendingInvites.TryGetValue(
+                        inviteeUserId, out var invite) ||
+                    invite.InviteeSessionId != inviteeSessionId ||
+                    invite.InviterUserId != inviterUserId ||
+                    invite.InviterSessionId != inviterSessionId)
                 {
-                    _pendingInvites.Remove(inviteeUserId);
-                    partyId = invite.PartyId;
-                    return true;
+                    return false;
                 }
 
-                partyId = 0;
-                return false;
+                _pendingInvites.Remove(inviteeUserId);
+                return true;
             }
         }
 
@@ -590,7 +909,8 @@ namespace DfoServer.Game.Party
             internal System.Guid InviteeSessionId;
             internal ushort InviterUserId;
             internal System.Guid InviterSessionId;
-            internal int PartyId;
+            internal int InviterPartyId;
+            internal int InviteePartyId;
         }
 
         public int PartyCount

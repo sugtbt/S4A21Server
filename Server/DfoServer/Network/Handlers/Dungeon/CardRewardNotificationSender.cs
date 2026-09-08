@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -7,12 +8,57 @@ using DfoServer.Network.Builders;
 
 namespace DfoServer.Network.Handlers.Dungeon
 {
+    internal readonly struct CardRewardPartySlotProjection
+    {
+        internal CardRewardPartySlotProjection(
+            short eligibility,
+            byte freeSelectorPartySlot,
+            byte paidSelectorPartySlot,
+            int paidGold,
+            int paidItemId,
+            int paidItemCount)
+        {
+            Eligibility = eligibility;
+            FreeSelectorPartySlot = freeSelectorPartySlot;
+            PaidSelectorPartySlot = paidSelectorPartySlot;
+            PaidGold = paidGold;
+            PaidItemId = paidItemId;
+            PaidItemCount = paidItemCount;
+        }
+
+        internal short Eligibility { get; }
+        internal byte FreeSelectorPartySlot { get; }
+        internal byte PaidSelectorPartySlot { get; }
+        internal int PaidGold { get; }
+        internal int PaidItemId { get; }
+        internal int PaidItemCount { get; }
+    }
+
+    internal sealed class CardRewardPartyProjection
+    {
+        internal const int WireSlotCount = 8;
+        private readonly CardRewardPartySlotProjection[] _slots;
+
+        internal CardRewardPartyProjection(
+            IReadOnlyList<CardRewardPartySlotProjection> slots)
+        {
+            if (slots == null || slots.Count != WireSlotCount)
+                throw new System.ArgumentOutOfRangeException(nameof(slots));
+            _slots = slots.ToArray();
+        }
+
+        internal CardRewardPartySlotProjection GetSlot(int index) =>
+            _slots[index];
+    }
+
     internal interface ICardRewardNotificationSender
     {
-        Task SendLayoutAsync(EnhancedClientSession session);
+        Task SendLayoutAsync(
+            EnhancedClientSession session,
+            CardRewardPartyProjection projection);
         Task SendCardInfoAsync(
             EnhancedClientSession session,
-            DungeonRun run);
+            CardRewardPartyProjection projection);
         Task SendExitAsync(
             EnhancedClientSession session,
             byte state,
@@ -25,7 +71,9 @@ namespace DfoServer.Network.Handlers.Dungeon
     internal sealed class CardRewardNotificationSender
         : ICardRewardNotificationSender
     {
-        public async Task SendLayoutAsync(EnhancedClientSession session)
+        public async Task SendLayoutAsync(
+            EnhancedClientSession session,
+            CardRewardPartyProjection projection)
         {
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
                 0x01,
@@ -34,16 +82,16 @@ namespace DfoServer.Network.Handlers.Dungeon
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
                 0x01,
                 0x0046,
-                BuildCardLayoutAck()));
+                BuildCardLayoutAck(projection)));
         }
 
         public Task SendCardInfoAsync(
             EnhancedClientSession session,
-            DungeonRun run)
+            CardRewardPartyProjection projection)
             => session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
                 0x01,
                 0x0047,
-                BuildCardInfoAck(run)));
+                BuildCardInfoAck(projection)));
 
         public Task SendExitAsync(
             EnhancedClientSession session,
@@ -69,13 +117,17 @@ namespace DfoServer.Network.Handlers.Dungeon
             }
         }
 
-        internal static byte[] BuildCardInfoAck(DungeonRun run)
+        internal static byte[] BuildCardInfoAck(
+            CardRewardPartyProjection projection)
         {
             var writer = new GamePacketWriter();
             writer.WriteByte(0x01);
-            for (var index = 0; index < 8; index++)
+            for (var index = 0;
+                 index < CardRewardPartyProjection.WireSlotCount;
+                 index++)
             {
-                if (index >= 4)
+                var slot = projection.GetSlot(index);
+                if (slot.Eligibility < 0 && index >= 4)
                 {
                     writer.WriteByte(0xFF);
                     writer.WriteByte(0xFF);
@@ -84,42 +136,15 @@ namespace DfoServer.Network.Handlers.Dungeon
                     continue;
                 }
 
-                var freeSelected = run.FreeCardSlots[index] != 0xFF;
-                var paidSelected = run.PaidCardSlots[index] != 0xFF;
-                if (index != 0)
+                writer.WriteByte(slot.FreeSelectorPartySlot);
+                writer.WriteByte(slot.PaidSelectorPartySlot);
+                if (slot.PaidSelectorPartySlot != 0xFF)
                 {
-                    writer.WriteByte(0xFF);
-                    writer.WriteByte(0xFF);
-                    writer.WriteByte(0x00);
-                    writer.WriteByte(0x00);
-                    continue;
-                }
-
-                writer.WriteByte(freeSelected ? (byte)0x00 : (byte)0xFF);
-                writer.WriteByte(paidSelected ? (byte)0x00 : (byte)0xFF);
-                if (paidSelected)
-                {
-                    var cards = run.CardRewards;
-                    var paidGold = cards != null
-                        && cards.Count > 4
-                        && cards[4].IsGold
-                        ? cards[4].GoldAmount
-                        : 0;
-                    var paidItemId = cards != null
-                        && cards.Count > 5
-                        && !cards[5].IsGold
-                        ? cards[5].ItemId
-                        : 0;
-                    var paidItemCount = cards != null
-                        && cards.Count > 5
-                        && !cards[5].IsGold
-                        ? cards[5].StackCount
-                        : 0;
                     writer.WriteByte(2);
                     writer.WriteUInt32(0);
-                    writer.WriteInt32(paidGold);
-                    writer.WriteUInt32((uint)paidItemId);
-                    writer.WriteInt32(paidItemCount);
+                    writer.WriteInt32(slot.PaidGold);
+                    writer.WriteUInt32((uint)Math.Max(0, slot.PaidItemId));
+                    writer.WriteInt32(Math.Max(0, slot.PaidItemCount));
                 }
                 else
                 {
@@ -130,13 +155,18 @@ namespace DfoServer.Network.Handlers.Dungeon
             return writer.ToArray();
         }
 
-        private static byte[] BuildCardLayoutAck()
+        internal static byte[] BuildCardLayoutAck(
+            CardRewardPartyProjection projection)
         {
             var writer = new GamePacketWriter();
             writer.WriteByte(0x01);
-            writer.WriteUInt16(0x0001);
-            for (var index = 1; index < 8; index++)
-                writer.WriteUInt16(0xFFFF);
+            for (var index = 0;
+                 index < CardRewardPartyProjection.WireSlotCount;
+                 index++)
+            {
+                writer.WriteUInt16(unchecked((ushort)projection
+                    .GetSlot(index).Eligibility));
+            }
             return writer.ToArray();
         }
     }

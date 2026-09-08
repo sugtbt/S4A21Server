@@ -13,6 +13,7 @@ using DfoServer.Network.Builders.Party;
 using DfoServer.Network.Parsers.Dungeon;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using DungeonData = DfoServer.GameWorld.Dungeon;
 
@@ -27,6 +28,239 @@ namespace DfoServer.Network.Handlers.Dungeon
 
         private readonly DungeonSharedServices _svc;
         private readonly DungeonMapHandler _mapHandler;
+        private long _partySelectionProjectionGeneration;
+        private Func<EnhancedClientSession, DungeonSelectionContext, Task>
+            _returnRejectedPartySelectionToTown;
+        private Func<Task> _publishTownPartyLists;
+
+        private readonly struct EnterSelectDungeonResult
+        {
+            internal EnterSelectDungeonResult(
+                DungeonSelectionContext selection,
+                bool created)
+            {
+                Selection = selection;
+                Created = created;
+            }
+
+            internal DungeonSelectionContext Selection { get; }
+            internal bool Created { get; }
+        }
+
+        private sealed class PartyEntryAdmissionPlan
+        {
+            internal EnhancedClientSession Session;
+            internal DungeonSelectionContext Selection;
+            internal DungeonRun Run;
+            internal InventoryLease Lease;
+            internal DungeonEntryAdmissionPreparation Preparation;
+            internal EntryCostResult CostResult;
+            internal byte PartySlot;
+        }
+
+        internal void ConfigureRejectedPartySelectionReturn(
+            Func<EnhancedClientSession, DungeonSelectionContext, Task> callback)
+        {
+            _returnRejectedPartySelectionToTown = callback
+                ?? throw new ArgumentNullException(nameof(callback));
+        }
+
+        internal void ConfigureTownPartyListPublisher(Func<Task> publisher)
+        {
+            _publishTownPartyLists = publisher
+                ?? throw new ArgumentNullException(nameof(publisher));
+        }
+
+        internal static bool TryBuildDungeonUserInfoProjectionOrder(
+            DungeonPartySelectionCohort cohort,
+            DungeonPartySelectionParticipant receiver,
+            Func<DungeonPartySelectionParticipant, bool> isCurrent,
+            out IReadOnlyList<DungeonPartySelectionParticipant> ordered,
+            out string error)
+        {
+            ordered = Array.Empty<DungeonPartySelectionParticipant>();
+            error = string.Empty;
+            if (!HasValidDungeonUserInfoIdentity(receiver)
+                || isCurrent == null)
+            {
+                error = "invalid_receiver";
+                return false;
+            }
+
+            if (cohort == null)
+            {
+                if (!isCurrent(receiver))
+                {
+                    error = "stale_receiver";
+                    return false;
+                }
+
+                ordered = new[] { receiver };
+                return true;
+            }
+
+            DungeonPartySelectionParticipant? frozenReceiver = null;
+            var peers = new List<DungeonPartySelectionParticipant>();
+            var userIds = new HashSet<ushort>();
+            var slots = new HashSet<byte>();
+            foreach (var participant in cohort.Participants)
+            {
+                if (!HasValidDungeonUserInfoIdentity(participant)
+                    || !userIds.Add(participant.UserId)
+                    || !slots.Add(participant.SlotIndex))
+                {
+                    error = "invalid_frozen_roster";
+                    return false;
+                }
+                if (!isCurrent(participant))
+                {
+                    error = $"stale_uid_{participant.UserId}";
+                    return false;
+                }
+
+                if (SameDungeonUserInfoIdentity(participant, receiver))
+                    frozenReceiver = participant;
+                else
+                    peers.Add(participant);
+            }
+
+            if (!frozenReceiver.HasValue)
+            {
+                error = "receiver_not_in_frozen_roster";
+                return false;
+            }
+
+            peers.Sort((left, right) =>
+                left.SlotIndex.CompareTo(right.SlotIndex));
+            var result = new List<DungeonPartySelectionParticipant>(
+                cohort.Participants.Count)
+            {
+                frozenReceiver.Value,
+            };
+            result.AddRange(peers);
+            ordered = result;
+            return true;
+        }
+
+        internal static bool TryBindDungeonPeerUserInfoIdentity(
+            byte[] body,
+            ushort userId,
+            ushort characterId,
+            out byte[] boundBody)
+        {
+            boundBody = null;
+            if (body == null
+                || body.Length < 20
+                || userId == 0
+                || body[0] != 1
+                || BitConverter.ToUInt16(body, 1) != 1
+                || BitConverter.ToUInt16(body, 18) != characterId)
+            {
+                return false;
+            }
+
+            boundBody = (byte[])body.Clone();
+            BitConverter.GetBytes(userId).CopyTo(boundBody, 3);
+            return true;
+        }
+
+        internal static IReadOnlyList<byte[]> BuildEnterSelectDungeonPrefix(
+            IReadOnlyList<byte[]> userInfoPackets,
+            ushort responseType,
+            IReadOnlyList<ushort> dungeonUserIds,
+            byte hostSlotIndex)
+        {
+            var packets = new List<byte[]>(
+                (userInfoPackets?.Count ?? 0) + 3);
+            if (userInfoPackets != null)
+                packets.AddRange(userInfoPackets);
+            packets.Add(GamePacketEnvelopeBuilder.Build(
+                0x01,
+                responseType,
+                new byte[] { 0x01 }));
+            packets.Add(GamePacketEnvelopeBuilder.Build(
+                0x00,
+                0x0003,
+                EnterSelectDungeonStateBuilder.BuildUserState(
+                    dungeonUserIds,
+                    0x01)));
+            packets.Add(GamePacketEnvelopeBuilder.Build(
+                0x00,
+                0x001A,
+                UdpHostBuilder.BuildHostSlot(hostSlotIndex)));
+            return packets;
+        }
+
+        internal static bool TryResolveDungeonHostSlot(
+            DungeonPartySelectionCohort cohort,
+            Game.Party.Party currentParty,
+            out byte slotIndex)
+        {
+            slotIndex = 0;
+            if (cohort != null)
+            {
+                foreach (var participant in cohort.Participants)
+                {
+                    if (participant.UserId != cohort.LeaderUserId)
+                        continue;
+                    if (participant.SlotIndex >= Game.Party.PartyConstants.MaxMembers)
+                        return false;
+
+                    slotIndex = participant.SlotIndex;
+                    return true;
+                }
+
+                return false;
+            }
+
+            if (currentParty == null)
+                return true;
+            var leader = currentParty.GetMember(currentParty.LeaderUserId);
+            if (leader == null ||
+                leader.SlotIndex >= Game.Party.PartyConstants.MaxMembers)
+            {
+                return false;
+            }
+
+            slotIndex = leader.SlotIndex;
+            return true;
+        }
+
+        internal static bool ShouldRejectPartySelectionRequest(
+            Game.Party.Party party,
+            ushort userId,
+            Guid sessionId)
+        {
+            if (party == null || party.Count <= 1)
+                return false;
+
+            var member = party.GetMember(userId);
+            return !party.IsLeader(userId) ||
+                   member == null ||
+                   member.SessionId != sessionId;
+        }
+
+        internal static bool ShouldRejectUnboundSelectionAfterPartyChange(
+            DungeonSelectionContext selection,
+            Game.Party.Party party)
+            => selection != null
+               && selection.PartyCohort == null
+               && party?.Count > 1;
+
+        private static bool HasValidDungeonUserInfoIdentity(
+            DungeonPartySelectionParticipant participant)
+            => participant.UserId != 0
+               && participant.CharacterId > 0
+               && participant.SessionId != Guid.Empty
+               && participant.SlotIndex < Game.Party.PartyConstants.MaxMembers;
+
+        private static bool SameDungeonUserInfoIdentity(
+            DungeonPartySelectionParticipant left,
+            DungeonPartySelectionParticipant right)
+            => left.UserId == right.UserId
+               && left.CharacterId == right.CharacterId
+               && left.SessionId == right.SessionId
+               && left.SlotIndex == right.SlotIndex;
 
         internal DungeonEntryHandler(DungeonSharedServices svc, DungeonMapHandler mapHandler)
         {
@@ -163,14 +397,135 @@ namespace DfoServer.Network.Handlers.Dungeon
                 return;
             }
 
-            await HandleEnterSelectDungeonCore(session, header, request);
+            // A duplicate ENTER_SELECT can arrive before its first async
+            // projection has returned. Serialize the capture/create step on
+            // the owner so both requests either reuse the live cohort or see
+            // a completed state, never two independently frozen cohorts.
+            var entryGate = session?.Player?.DungeonRunTransitionGate;
+            if (entryGate != null)
+                await entryGate.WaitAsync();
+            try
+            {
+                var existingSelection = session?.Player?.CurrentDungeonSelection;
+                var hasCurrentSelection = session?.Player?.IsCurrentDungeonSelection(
+                    existingSelection) == true
+                    && !existingSelection.IsReturning;
+                var retrySelection = hasCurrentSelection
+                    ? existingSelection
+                    : null;
+                var currentParty = hasCurrentSelection
+                    && existingSelection.PartyCohort == null
+                    ? _svc.PartyManager?.GetPartySnapshotByUser(
+                        session.Player.UserId)
+                    : null;
+                if (ShouldRejectUnboundSelectionAfterPartyChange(
+                        existingSelection,
+                        currentParty))
+                {
+                    session.Player.TryInvalidateDungeonSelection(
+                        existingSelection);
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        "ENTER_SELECT_DUNGEON rejected unbound selection " +
+                        "after party change: " +
+                        $"cid={session.Player.CharacterId} " +
+                        $"uid={session.Player.UserId} " +
+                        $"selection={existingSelection.SelectionId} " +
+                        $"party={currentParty.PartyId} " +
+                        $"count={currentParty.Count}");
+                    await _svc.AdmissionRejects.SendAsync(
+                        session,
+                        header.type,
+                        DungeonAdmissionReject.InvalidSelectionState);
+                    return;
+                }
+                // ENTER_SELECT can be retransmitted while its original selection
+                // is still live. That retry must reuse the frozen cohort rather
+                // than manufacture a second identity and reject itself as stale.
+                var partySelectionRejected = false;
+                var partyCohort = hasCurrentSelection
+                    ? existingSelection.PartyCohort
+                    : CapturePartySelectionCohort(
+                        session,
+                        request.DungeonId,
+                        out partySelectionRejected);
+                if (partySelectionRejected)
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        "ENTER_SELECT_DUNGEON rejected non-leader party member: " +
+                        $"cid={session?.Player?.CharacterId ?? 0} " +
+                        $"uid={session?.Player?.UserId ?? 0}");
+                    await _svc.AdmissionRejects.SendAsync(
+                        session,
+                        header.type,
+                        DungeonAdmissionReject.InvalidSelectionState);
+                    return;
+                }
+                if (partyCohort != null)
+                    await partyCohort.TransitionGate.WaitAsync();
+                try
+                {
+                    // A return may have won while this retry waited for the
+                    // cohort gate. Never recreate a canceled selection from
+                    // the captured cohort identity.
+                    if (retrySelection != null
+                        && !IsPartySelectionRetryCurrent(
+                            session?.Player,
+                            retrySelection,
+                            partyCohort))
+                    {
+                        FileLogger.Log(
+                            $"[{DungeonSharedServices.ProtocolLogName}] " +
+                            "ENTER_SELECT_DUNGEON rejected stale retry: " +
+                            $"cid={session?.Player?.CharacterId ?? 0} " +
+                            $"selection={retrySelection.SelectionId}");
+                        await _svc.AdmissionRejects.SendAsync(
+                            session,
+                            header.type,
+                            DungeonAdmissionReject.InvalidSelectionState);
+                        return;
+                    }
+
+                    var result = await HandleEnterSelectDungeonCore(
+                        session,
+                        header,
+                        request,
+                        partyCohort);
+                    if (partyCohort != null
+                        && result.Created)
+                    {
+                        // Project followers only for the first creation. A
+                        // retry must never recreate a member who already
+                        // canceled this cohort; failed projection is recovered
+                        // by canceling and opening a fresh selection.
+                        await ProjectPartyDungeonSelectionAsync(
+                            session,
+                            header,
+                            result.Selection,
+                            partyCohort);
+                    }
+                }
+                finally
+                {
+                    partyCohort?.TransitionGate.Release();
+                }
+            }
+            finally
+            {
+                entryGate?.Release();
+            }
         }
 
-        private async Task HandleEnterSelectDungeonCore(
+        private async Task<EnterSelectDungeonResult> HandleEnterSelectDungeonCore(
             EnhancedClientSession session,
             GamePacketHeader header,
-            EnterSelectDungeonRequest? request)
+            EnterSelectDungeonRequest? request,
+            DungeonPartySelectionCohort partyCohort)
         {
+            var responseType = ResolveEnterSelectDungeonResponseType(
+                header.type,
+                request.HasValue);
             var isA21TutorialEntry = IsFirstA21TutorialEntry(session);
             var requestDiagnostic = request.HasValue
                 ? $"source=wire dungeon={request.Value.DungeonId} " +
@@ -189,8 +544,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                     $"[{DungeonSharedServices.ProtocolLogName}] " +
                     $"ENTER_SELECT_DUNGEON rejected by raid state: " +
                     $"cid={session.Player.CharacterId} uid={session.Player.UserId}");
-                await SendRaidSelectionRejectedAsync(session, header.type);
-                return;
+                await SendRaidSelectionRejectedAsync(session, responseType);
+                return default;
             }
             if (_svc.MercenaryRestrictions != null
                 && !_svc.MercenaryRestrictions.CanEnterContent(session.Player.CharacterId))
@@ -202,14 +557,16 @@ namespace DfoServer.Network.Handlers.Dungeon
                     0x01,
                     StartGameResponseType,
                     BuildMercenaryContentErrorBody()));
-                return;
+                return default;
             }
 
             try
             {
                 var selection = BeginDungeonSelection(
                     session.Player,
-                    isA21TutorialEntry);
+                    isA21TutorialEntry,
+                    partyCohort,
+                    out var selectionCreated);
                 if (selection == null)
                 {
                     FileLogger.Log(
@@ -220,9 +577,25 @@ namespace DfoServer.Network.Handlers.Dungeon
                         $"selection={session.Player.CurrentDungeonSelection?.SelectionId ?? 0}");
                     await _svc.AdmissionRejects.SendAsync(
                         session,
-                        header.type,
+                        responseType,
                         DungeonAdmissionReject.InvalidSelectionState);
-                    return;
+                    return default;
+                }
+                if (partyCohort != null
+                    && !ReferenceEquals(selection.PartyCohort, partyCohort))
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"ENTER_SELECT_DUNGEON rejected by stale party cohort: " +
+                        $"cid={session.Player.CharacterId} " +
+                        $"selection={selection.SelectionId} " +
+                        $"party={partyCohort.PartyId} " +
+                        $"projection={partyCohort.ProjectionId}");
+                    await _svc.AdmissionRejects.SendAsync(
+                        session,
+                        responseType,
+                        DungeonAdmissionReject.InvalidSelectionState);
+                    return default;
                 }
                 else
                 {
@@ -233,66 +606,112 @@ namespace DfoServer.Network.Handlers.Dungeon
                         $"selection={selection.SelectionId} town={anchor.TownId} " +
                         $"area={anchor.AreaId} pos=({anchor.X},{anchor.Y})");
                 }
-                session.Player.UserState = 0x01;
-                // 进本 → 状态繁忙：同频道在线好友推 USERINFO(0x0002) 更新场景实体状态。
-                await UnitedFriendSystem.NotifyUserStateChanged(
-                    session, _svc.Sessions);
-
-                // NOTI 0x0002 subtype1 (ADDITION): dynamically built from structured table (same path as init flow)
-                int cid = session.Player.CharacterId;
                 HonorLevelSummary honorSummary = null;
-                if (cid <= 0)
+                IReadOnlyList<byte[]> userInfoPackets;
+                if (partyCohort != null)
                 {
-                    FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] ENTER_SELECT_DUNGEON ERROR: CharacterId<=0, USERINFO not sent");
+                    if (!TryBuildPartyDungeonUserInfoPackets(
+                            session,
+                            selection,
+                            partyCohort,
+                            out userInfoPackets,
+                            out honorSummary,
+                            out var partyUserInfoError))
+                    {
+                        FileLogger.Log(
+                            $"[{DungeonSharedServices.ProtocolLogName}] " +
+                            "ENTER_SELECT_DUNGEON party USERINFO rejected: " +
+                            $"cid={session.Player.CharacterId} " +
+                            $"party={partyCohort.PartyId} " +
+                            $"projection={partyCohort.ProjectionId} " +
+                            $"reason={partyUserInfoError}");
+                        if (selectionCreated
+                            && session.Player.IsCurrentDungeonSelection(
+                                selection))
+                        {
+                            session.Player.ClearDungeonSelection();
+                        }
+                        await _svc.AdmissionRejects.SendAsync(
+                            session,
+                            responseType,
+                            DungeonAdmissionReject.InvalidSelectionState);
+                        return default;
+                    }
                 }
                 else
                 {
-                    var record = _svc.CharacterRepository.GetById(cid);
-                    var addition = _svc.Subtype1Repository.HasData(cid) ? _svc.Subtype1Repository.Load(cid) : null;
-                    if (record != null && addition != null)
+                    var soloPackets = new List<byte[]>(1);
+                    if (TryBuildDungeonUserInfoPacket(
+                            session,
+                            session.Player.UserId,
+                            false,
+                            out var selfUserInfoPacket,
+                            out honorSummary))
                     {
-                        var accountId = session.Account?.AccountId ?? record.AccountId;
-                        var accountCharacters = _svc.CharacterRepository.ListByAccount(accountId);
-                        honorSummary = _svc.HonorLevel.LoadSummary(accountId, accountCharacters);
-                        AdventureGroupUserInfoSynchronizer.ApplyToUserInfoAddition(addition, accountCharacters);
-                        _svc.HonorLevel.ApplyToUserInfoAddition(
-                            addition, accountId, accountCharacters, honorSummary);
-                        var skillSnap = _svc.ProgressNotifications
-                            .LoadSyncedSkillState(cid, record.Level).Skills;
-                        var w = new GamePacketWriter();
-                        UserInfoBodyBuilder.WriteA21Subtype1Prefix(
-                            w,
-                            (ushort)record.CharacterId,
-                            addition.ManageLevel,
-                            addition.AuraSkinFlag);
-                        w.WriteBytes(UserInfoSubtype1Builder.BuildFromSnapshot(
-                            addition,
-                            skillSnap,
-                            record.Appearance));
-                        await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0002, w.ToArray()));
-                        FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] ENTER_SELECT_DUNGEON: NOTI 2 type1 dynamic body");
+                        soloPackets.Add(selfUserInfoPacket);
                     }
-                    else
-                    {
-                        FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] ENTER_SELECT_DUNGEON ERROR: record={record != null} addition={addition != null}, USERINFO not sent (no fallback)");
-                    }
+                    userInfoPackets = soloPackets;
                 }
 
                 await SendLicensedDungeonSelectionStateAsync(session);
 
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                    0x01,
-                    header.type,
-                    new byte[] { 0x01 }));
+                var hellPartySelection = isA21TutorialEntry
+                    ? null
+                    : BuildHellPartySelectionState(session.Player);
+                var dungeonUserIds = hellPartySelection?.UserIds
+                    ?? new List<ushort> { session.Player.UserId };
+                Game.Party.Party currentParty = null;
+                if (partyCohort == null)
+                {
+                    var liveParty = _svc.PartyManager?.GetPartyByUser(
+                        session.Player.UserId);
+                    currentParty = liveParty == null
+                        ? null
+                        : _svc.PartyManager.GetPartySnapshot(
+                            liveParty.PartyId);
+                }
+                if (!TryResolveDungeonHostSlot(
+                        partyCohort,
+                        currentParty,
+                        out var hostSlotIndex))
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        "ENTER_SELECT_DUNGEON host slot rejected: " +
+                        $"cid={session.Player.CharacterId} " +
+                        $"party={partyCohort?.PartyId ?? 0} " +
+                        $"leader={partyCohort?.LeaderUserId ?? 0}");
+                    if (selectionCreated
+                        && session.Player.IsCurrentDungeonSelection(selection))
+                    {
+                        session.Player.ClearDungeonSelection();
+                    }
+                    await _svc.AdmissionRejects.SendAsync(
+                        session,
+                        responseType,
+                        DungeonAdmissionReject.InvalidSelectionState);
+                    return default;
+                }
 
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0003, EnterSelectDungeonStateBuilder.BuildUserState(session.Player)));
-
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x001A, UdpHostBuilder.BuildUnavailable()));
+                // A21 keeps one party-member object per roster slot. Every
+                // receiver must see every dungeon participant transition to
+                // state 1; a self-only USER_STATE leaves remote slots at 0.
+                session.Player.UserState = 0x01;
+                if (_svc.Sessions != null)
+                    await UnitedFriendSystem.NotifyUserStateChanged(
+                        session,
+                        _svc.Sessions);
+                foreach (var packet in BuildEnterSelectDungeonPrefix(
+                    userInfoPackets,
+                    responseType,
+                    dungeonUserIds,
+                    hostSlotIndex))
+                {
+                    await session.SendPacketAsync(packet);
+                }
                 await _svc.PersistentMechanisms.RestoreBeforeSelectionAsync(session);
                 if (!isA21TutorialEntry)
                 {
-                    var hellPartySelection = BuildHellPartySelectionState(
-                        session.Player);
                     await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
                         0x00,
                         0x001B,
@@ -309,16 +728,320 @@ namespace DfoServer.Network.Handlers.Dungeon
                 }
                 await _svc.GrowthCapsuleSync.SendExpProgressAsync(
                     session, "enter-select-dungeon", honor: honorSummary);
-                // 进本过图后客户端重置结婚属性 UI：USERINFO subtype1/USER_STATE 投影之后
-                // 补发婚礼回放三包（与选角序列同包体）。仅覆盖进/出本触发点，不挂城镇内每次过图。
+                // 进本过图后客户端重置结婚属性 UI：USERINFO subtype1/
+                // USER_STATE 投影之后补发婚礼回放三包。只覆盖进/出本
+                // 触发点，不挂城镇内每次过图。
                 await InventoryRefreshSender.SendWeddingReplayRefresh(session);
+                if (!selection.TryCompletePartyProjection())
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"ENTER_SELECT_DUNGEON projection invalidated: " +
+                        $"cid={session.Player.CharacterId} " +
+                        $"selection={selection.SelectionId}");
+                    return default;
+                }
                 FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] ENTER_SELECT_DUNGEON: state packets and account EXP progress sent OK");
+                return new EnterSelectDungeonResult(
+                    selection,
+                    selectionCreated);
             }
             catch (Exception ex)
             {
                 FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] ENTER_SELECT_DUNGEON EXCEPTION: {ex}");
+                return default;
             }
         }
+
+        private bool TryBuildPartyDungeonUserInfoPackets(
+            EnhancedClientSession receiver,
+            DungeonSelectionContext selection,
+            DungeonPartySelectionCohort cohort,
+            out IReadOnlyList<byte[]> packets,
+            out HonorLevelSummary receiverHonorSummary,
+            out string error)
+        {
+            packets = Array.Empty<byte[]>();
+            receiverHonorSummary = null;
+            error = string.Empty;
+            if (receiver?.Player == null
+                || cohort == null
+                || !receiver.Player.IsCurrentDungeonSelection(selection)
+                || selection.IsReturning
+                || !ReferenceEquals(selection.PartyCohort, cohort))
+            {
+                error = "receiver_selection_mismatch";
+                return false;
+            }
+
+            var party = _svc.PartyManager?.GetPartySnapshot(cohort.PartyId);
+            if (party == null
+                || party.Count != cohort.Participants.Count
+                || party.LeaderUserId != cohort.LeaderUserId
+                || _svc.Sessions == null)
+            {
+                error = "party_generation_mismatch";
+                return false;
+            }
+
+            var receiverMember = party.GetMember(receiver.Player.UserId);
+            if (receiverMember == null)
+            {
+                error = "receiver_not_in_current_party";
+                return false;
+            }
+
+            var receiverIdentity = new DungeonPartySelectionParticipant(
+                receiver.Player.UserId,
+                receiver.Player.CharacterId,
+                receiver.SessionId,
+                receiverMember.SlotIndex);
+            var resolved = new Dictionary<ushort, EnhancedClientSession>();
+            bool IsCurrent(DungeonPartySelectionParticipant participant)
+            {
+                if (!TryResolveCurrentDungeonUserInfoSession(
+                        receiver,
+                        party,
+                        participant,
+                        out var current))
+                {
+                    return false;
+                }
+
+                resolved[participant.UserId] = current;
+                return true;
+            }
+
+            if (!TryBuildDungeonUserInfoProjectionOrder(
+                    cohort,
+                    receiverIdentity,
+                    IsCurrent,
+                    out var ordered,
+                    out error))
+            {
+                return false;
+            }
+
+            var built = new List<byte[]>(ordered.Count);
+            foreach (var participant in ordered)
+            {
+                if (!resolved.TryGetValue(
+                        participant.UserId,
+                        out var source)
+                    || !TryBuildDungeonUserInfoPacket(
+                        source,
+                        participant.UserId,
+                        participant.UserId != receiver.Player.UserId,
+                        out var packet,
+                        out var honorSummary))
+                {
+                    error = $"userinfo_build_failed_uid_{participant.UserId}";
+                    return false;
+                }
+
+                if (participant.UserId == receiver.Player.UserId)
+                    receiverHonorSummary = honorSummary;
+                built.Add(packet);
+            }
+
+            // Building a full subtype-1 body reads several character tables.
+            // Re-sample the party/session generation after those reads so a
+            // concurrent leave or reconnect cannot publish the frozen roster.
+            var currentParty =
+                _svc.PartyManager?.GetPartySnapshot(cohort.PartyId);
+            if (receiver?.Player == null
+                || !receiver.Player.IsCurrentDungeonSelection(selection)
+                || selection.IsReturning
+                || !ReferenceEquals(selection.PartyCohort, cohort)
+                || currentParty == null
+                || currentParty.Count != cohort.Participants.Count
+                || currentParty.LeaderUserId != cohort.LeaderUserId)
+            {
+                error = "party_generation_changed_during_userinfo_build";
+                return false;
+            }
+            foreach (var participant in ordered)
+            {
+                if (!resolved.TryGetValue(
+                        participant.UserId,
+                        out var resolvedSession)
+                    || !TryResolveCurrentDungeonUserInfoSession(
+                        receiver,
+                        currentParty,
+                        participant,
+                        out var currentSession)
+                    || !ReferenceEquals(resolvedSession, currentSession))
+                {
+                    error = $"session_generation_changed_uid_{participant.UserId}";
+                    return false;
+                }
+            }
+
+            packets = built;
+            return true;
+        }
+
+        private bool TryResolveCurrentDungeonUserInfoSession(
+            EnhancedClientSession receiver,
+            Game.Party.Party party,
+            DungeonPartySelectionParticipant participant,
+            out EnhancedClientSession current)
+        {
+            current = null;
+            var member = party?.GetMember(participant.UserId);
+            if (receiver?.Player == null
+                || member == null
+                || member.CharacterId != participant.CharacterId
+                || member.SessionId != participant.SessionId
+                || member.SlotIndex != participant.SlotIndex
+                || _svc.Sessions == null
+                || !_svc.Sessions.TryGet(
+                    participant.CharacterId,
+                    out current)
+                || current?.Player == null
+                || current.SessionId != participant.SessionId
+                || current.Player.CharacterId != participant.CharacterId
+                || current.Player.UserId != participant.UserId
+                || current.ListenerPort != receiver.ListenerPort
+                || current.Player.CurTownId != receiver.Player.CurTownId
+                || current.Player.CurAreaId != receiver.Player.CurAreaId
+                || current.Player.CurrentRun != null
+                || current.TcpClient == null
+                || !current.TcpClient.Connected)
+            {
+                current = null;
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool TryBuildDungeonUserInfoPacket(
+            EnhancedClientSession source,
+            ushort expectedUserId,
+            bool isRemote,
+            out byte[] packet,
+            out HonorLevelSummary honorSummary)
+        {
+            packet = null;
+            honorSummary = null;
+            var cid = source?.Player?.CharacterId ?? 0;
+            if (cid <= 0
+                || cid > ushort.MaxValue
+                || expectedUserId == 0
+                || source.Player.UserId != expectedUserId)
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    "ENTER_SELECT_DUNGEON ERROR: invalid USERINFO identity " +
+                    $"cid={cid} uid={expectedUserId}");
+                return false;
+            }
+
+            try
+            {
+                var record = _svc.CharacterRepository.GetById(cid);
+                var addition = _svc.Subtype1Repository.HasData(cid)
+                    ? _svc.Subtype1Repository.Load(cid)
+                    : null;
+                if (record == null
+                    || record.CharacterId != cid
+                    || addition == null)
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        "ENTER_SELECT_DUNGEON ERROR: " +
+                        $"cid={cid} record={record != null} " +
+                        $"addition={addition != null}, USERINFO not sent " +
+                        "(no fallback)");
+                    return false;
+                }
+
+                var accountId = source.Account?.AccountId
+                    ?? record.AccountId;
+                var accountCharacters =
+                    _svc.CharacterRepository.ListByAccount(accountId);
+                honorSummary = _svc.HonorLevel.LoadSummary(
+                    accountId,
+                    accountCharacters);
+                AdventureGroupUserInfoSynchronizer.ApplyToUserInfoAddition(
+                    addition,
+                    accountCharacters);
+                _svc.HonorLevel.ApplyToUserInfoAddition(
+                    addition,
+                    accountId,
+                    accountCharacters,
+                    honorSummary);
+                var skillSnapshot = _svc.ProgressNotifications
+                    .LoadSyncedSkillState(cid, record.Level).Skills;
+                var writer = new GamePacketWriter();
+                UserInfoBodyBuilder.WriteA21Subtype1Prefix(
+                    writer,
+                    (ushort)record.CharacterId,
+                    addition.ManageLevel,
+                    addition.AuraSkinFlag);
+                writer.WriteBytes(UserInfoSubtype1Builder.BuildFromSnapshot(
+                    addition,
+                    skillSnapshot,
+                    record.Appearance));
+                var body = writer.ToArray();
+                if (body.Length < 20
+                    || body[0] != 1
+                    || BitConverter.ToUInt16(body, 1) != 1
+                    || BitConverter.ToUInt16(body, 18) != (ushort)cid)
+                {
+                    return false;
+                }
+                if (isRemote
+                    && !TryBindDungeonPeerUserInfoIdentity(
+                        body,
+                        expectedUserId,
+                        (ushort)cid,
+                        out body))
+                {
+                    return false;
+                }
+
+                packet = GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    0x0002,
+                    body);
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    "ENTER_SELECT_DUNGEON: NOTI 2 type1 dynamic body " +
+                    $"cid={cid} uid={expectedUserId} remote={isRemote}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    "ENTER_SELECT_DUNGEON USERINFO build failed: " +
+                    $"cid={cid} uid={expectedUserId} error={ex.Message}");
+                return false;
+            }
+        }
+
+        internal static ushort ResolveEnterSelectDungeonResponseType(
+            ushort requestType,
+            bool isWireRequest)
+        {
+            // Party followers do not send ENTER_SELECT_DUNGEON themselves.
+            // They are projected when the leader opens the selection screen;
+            // the follower still expects the semantic response type 0x000F.
+            return isWireRequest ? requestType : StartGameResponseType;
+        }
+
+        internal static bool IsPartySelectionRetryCurrent(
+            Game.Session.PlayerContext player,
+            DungeonSelectionContext capturedSelection,
+            DungeonPartySelectionCohort capturedCohort)
+            => capturedSelection != null
+               && player?.IsCurrentDungeonSelection(capturedSelection) == true
+               && !capturedSelection.IsReturning
+               && ReferenceEquals(
+                   capturedSelection.PartyCohort,
+                   capturedCohort);
 
         internal static bool IsRaidDungeonSelectionAllowed(
             int listenerPort,
@@ -358,10 +1081,249 @@ namespace DfoServer.Network.Handlers.Dungeon
                     RaidSelectionRestrictionMessage)));
         }
 
+        private DungeonPartySelectionCohort CapturePartySelectionCohort(
+            EnhancedClientSession leader,
+            int dungeonId,
+            out bool rejected)
+        {
+            rejected = false;
+            var returnToTownOnEntryReject =
+                leader?.Player?.ConsumePendingPartyRetryEntry(dungeonId)
+                == true;
+            if (Environment.GetEnvironmentVariable(
+                    "DFO_PARTY_DUNGEON_COOP") == "0"
+                || leader?.Player == null
+                || IsFirstA21TutorialEntry(leader)
+                || _svc.PartyManager == null)
+            {
+                return null;
+            }
+
+            var leaderUserId = leader.Player.UserId;
+            var party = _svc.PartyManager.GetPartySnapshotByUser(
+                leaderUserId);
+            if (party == null || party.Count <= 1)
+                return null;
+            if (ShouldRejectPartySelectionRequest(
+                    party,
+                    leaderUserId,
+                    leader.SessionId))
+            {
+                rejected = true;
+                return null;
+            }
+
+            var participants = new List<DungeonPartySelectionParticipant>(
+                party.Count);
+            foreach (var member in party.MembersBySlot())
+            {
+                participants.Add(new DungeonPartySelectionParticipant(
+                    member.UserId,
+                    member.CharacterId,
+                    member.SessionId,
+                    member.SlotIndex));
+            }
+
+            return new DungeonPartySelectionCohort(
+                System.Threading.Interlocked.Increment(
+                    ref _partySelectionProjectionGeneration),
+                party.PartyId,
+                leaderUserId,
+                participants,
+                returnToTownOnEntryReject);
+        }
+
+        private async Task ProjectPartyDungeonSelectionAsync(
+            EnhancedClientSession leader,
+            GamePacketHeader header,
+            DungeonSelectionContext leaderSelection,
+            DungeonPartySelectionCohort cohort)
+        {
+            if (leader?.Player == null
+                || cohort == null
+                || cohort.LeaderUserId != leader.Player.UserId
+                || !leader.Player.IsCurrentDungeonSelection(leaderSelection)
+                || !ReferenceEquals(leaderSelection.PartyCohort, cohort)
+                || _svc.Sessions == null)
+            {
+                return;
+            }
+
+            var projected = 0;
+            var failed = 0;
+            foreach (var participant in cohort.Participants)
+            {
+                if (participant.UserId == cohort.LeaderUserId)
+                    continue;
+                if (!leader.Player.IsCurrentDungeonSelection(leaderSelection))
+                    return;
+
+                if (!_svc.Sessions.TryGet(
+                        participant.CharacterId, out var follower)
+                    || follower?.Player == null
+                    || follower.SessionId != participant.SessionId
+                    || follower.Player.UserId != participant.UserId
+                    || follower.ListenerPort != leader.ListenerPort
+                    || follower.Player.CurTownId != leader.Player.CurTownId
+                    || follower.Player.CurAreaId != leader.Player.CurAreaId
+                    || follower.TcpClient == null
+                    || !follower.TcpClient.Connected
+                    || follower.Player.CurrentRun != null)
+                {
+                    failed++;
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"PARTY_SELECTION_PROJECT skipped: " +
+                        $"party={cohort.PartyId} " +
+                        $"projection={cohort.ProjectionId} " +
+                        $"uid={participant.UserId} reason=session_or_area_mismatch");
+                    continue;
+                }
+
+                var existing = follower.Player.CurrentDungeonSelection;
+                if (existing != null
+                    && (!follower.Player.IsCurrentDungeonSelection(existing)
+                        || !ReferenceEquals(existing.PartyCohort, cohort)))
+                {
+                    failed++;
+                    continue;
+                }
+                if (existing?.IsPartyProjectionComplete == true)
+                {
+                    projected++;
+                    continue;
+                }
+
+                var result = await HandleEnterSelectDungeonCore(
+                    follower,
+                    header,
+                    request: null,
+                    partyCohort: cohort);
+                if (result.Selection != null
+                    && follower.Player.IsCurrentDungeonSelection(
+                        result.Selection)
+                    && ReferenceEquals(
+                        result.Selection.PartyCohort,
+                        cohort)
+                    && result.Selection.IsPartyProjectionComplete)
+                {
+                    projected++;
+                }
+                else
+                {
+                    failed++;
+                }
+            }
+
+            FileLogger.Log(
+                $"[{DungeonSharedServices.ProtocolLogName}] " +
+                $"PARTY_SELECTION_PROJECT: leader={leader.Player.CharacterId} " +
+                $"party={cohort.PartyId} projection={cohort.ProjectionId} " +
+                $"projected={projected}/{cohort.Participants.Count - 1} " +
+                $"failed={failed}");
+            if (failed > 0
+                && cohort.ReturnToTownOnEntryReject
+                && leader.Player.IsCurrentDungeonSelection(leaderSelection))
+            {
+                await RejectSelectionAsync(
+                    leader,
+                    leaderSelection,
+                    header.type,
+                    DungeonAdmissionReject.InvalidSelectionState);
+            }
+        }
+
+        private bool TryValidatePartySelectionCohort(
+            EnhancedClientSession leader,
+            DungeonSelectionContext leaderSelection,
+            out string error)
+        {
+            error = string.Empty;
+            var cohort = leaderSelection?.PartyCohort;
+            if (cohort == null)
+                return true;
+            if (leader?.Player == null
+                || cohort.LeaderUserId != leader.Player.UserId
+                || !leader.Player.IsCurrentDungeonSelection(leaderSelection)
+                || leaderSelection.IsReturning
+                || !leaderSelection.IsPartyProjectionComplete)
+            {
+                error = "leader_selection_mismatch";
+                return false;
+            }
+
+            var party = _svc.PartyManager?.GetPartySnapshot(cohort.PartyId);
+            if (party == null
+                || party.Count != cohort.Participants.Count
+                || !party.IsLeader(cohort.LeaderUserId))
+            {
+                error = "party_generation_mismatch";
+                return false;
+            }
+
+            foreach (var participant in cohort.Participants)
+            {
+                var member = party.GetMember(participant.UserId);
+                if (member == null
+                    || member.CharacterId != participant.CharacterId
+                    || member.SessionId != participant.SessionId
+                    || member.SlotIndex != participant.SlotIndex)
+                {
+                    error = $"roster_mismatch_uid_{participant.UserId}";
+                    return false;
+                }
+                if (participant.UserId == cohort.LeaderUserId)
+                {
+                    if (leader.SessionId != participant.SessionId)
+                    {
+                        error = "leader_session_mismatch";
+                        return false;
+                    }
+                    continue;
+                }
+
+                if (_svc.Sessions == null
+                    || !_svc.Sessions.TryGet(
+                        participant.CharacterId, out var follower)
+                    || follower?.Player == null
+                    || follower.SessionId != participant.SessionId
+                    || follower.Player.UserId != participant.UserId
+                    || follower.ListenerPort != leader.ListenerPort
+                    || follower.Player.CurTownId != leader.Player.CurTownId
+                    || follower.Player.CurAreaId != leader.Player.CurAreaId
+                    || follower.TcpClient == null
+                    || !follower.TcpClient.Connected
+                    || follower.Player.CurrentRun != null)
+                {
+                    error = $"follower_session_mismatch_uid_{participant.UserId}";
+                    return false;
+                }
+
+                var followerSelection =
+                    follower.Player.CurrentDungeonSelection;
+                if (!follower.Player.IsCurrentDungeonSelection(
+                        followerSelection)
+                    || !ReferenceEquals(
+                        followerSelection.PartyCohort,
+                        cohort)
+                    || followerSelection.IsReturning
+                    || !followerSelection.IsPartyProjectionComplete)
+                {
+                    error = $"follower_selection_mismatch_uid_{participant.UserId}";
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         private static DungeonSelectionContext BeginDungeonSelection(
             Game.Session.PlayerContext player,
-            bool isA21TutorialEntry)
+            bool isA21TutorialEntry,
+            DungeonPartySelectionCohort partyCohort,
+            out bool created)
         {
+            created = false;
             if (player == null)
                 return null;
 
@@ -387,7 +1349,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                 y,
                 player.CurDirection,
                 player.CurAreaState),
-                isA21TutorialEntry);
+                isA21TutorialEntry,
+                partyCohort,
+                out created);
         }
 
         private HellPartySelectionState BuildHellPartySelectionState(
@@ -987,13 +1951,75 @@ namespace DfoServer.Network.Handlers.Dungeon
             DungeonRunIdentity? expectedPredecessorIdentity,
             AnotherAradSelection? anotherAradSelection)
         {
+            // A party selection has one shared transition: either the leader
+            // consumes it to create the run, or a member returns it to town.
+            // Acquire the owner gate before sampling its cohort. Party accept
+            // uses the same owner gate, so a formerly solo selection cannot
+            // race a new member into a leader-only run.
+            var ownerGate = expectedPredecessorIdentity.HasValue
+                ? null
+                : session?.Player?.DungeonRunTransitionGate;
+            if (ownerGate != null)
+                await ownerGate.WaitAsync();
+            DungeonPartySelectionCohort cohort = null;
+            try
+            {
+                cohort = expectedPredecessorIdentity.HasValue
+                    ? null
+                    : session?.Player?.CurrentDungeonSelection?.PartyCohort;
+                if (cohort != null)
+                    await cohort.TransitionGate.WaitAsync();
+                await HandleSelectDungeonCoreUngated(
+                    session,
+                    header,
+                    body,
+                    linkedSourceDungeonId,
+                    expectedPredecessorIdentity,
+                    anotherAradSelection);
+            }
+            finally
+            {
+                cohort?.TransitionGate.Release();
+                ownerGate?.Release();
+            }
+        }
+
+        private async Task HandleSelectDungeonCoreUngated(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body,
+            int linkedSourceDungeonId,
+            DungeonRunIdentity? expectedPredecessorIdentity,
+            AnotherAradSelection? anotherAradSelection)
+        {
+            var initialSelection = session?.Player?.CurrentDungeonSelection;
             if (!CanEnterRaidDungeonSelection(session))
             {
                 FileLogger.Log(
                     $"[{DungeonSharedServices.ProtocolLogName}] " +
                     $"SELECT_DUNGEON rejected by raid state: " +
                     $"cid={session?.Player?.CharacterId} uid={session?.Player?.UserId}");
-                await SendRaidSelectionRejectedAsync(session, header.type);
+                try
+                {
+                    await SendRaidSelectionRejectedAsync(session, header.type);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"raid selection rejection projection failed cid=" +
+                        $"{session?.Player?.CharacterId ?? 0}: {ex.Message}");
+                }
+                if (initialSelection?.PartyCohort
+                        ?.ReturnToTownOnEntryReject == true
+                    && session?.Player?.IsCurrentDungeonSelection(
+                        initialSelection) == true
+                    && _returnRejectedPartySelectionToTown != null)
+                {
+                    await _returnRejectedPartySelectionToTown(
+                        session,
+                        initialSelection);
+                }
                 return;
             }
 
@@ -1026,8 +2052,55 @@ namespace DfoServer.Network.Handlers.Dungeon
                     $"cid={session?.Player?.CharacterId ?? 0} " +
                     $"run={predecessorRun?.RunId ?? 0} " +
                     $"selection={expectedSelection?.SelectionId ?? 0}");
-                await _svc.AdmissionRejects.SendAsync(
+                await RejectSelectionAsync(
                     session,
+                    expectedSelection,
+                    header.type,
+                    DungeonAdmissionReject.InvalidSelectionState);
+                return;
+            }
+            var currentParty = expectedSelection?.PartyCohort == null
+                && session?.Player != null
+                ? _svc.PartyManager?.GetPartySnapshotByUser(
+                    session.Player.UserId)
+                : null;
+            if (ShouldRejectUnboundSelectionAfterPartyChange(
+                    expectedSelection,
+                    currentParty))
+            {
+                session.Player.TryInvalidateDungeonSelection(
+                    expectedSelection);
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    "SELECT_DUNGEON rejected unbound selection after " +
+                    $"party change: cid={session.Player.CharacterId} " +
+                    $"selection={expectedSelection.SelectionId} " +
+                    $"party={currentParty.PartyId} " +
+                    $"count={currentParty.Count}");
+                await RejectSelectionAsync(
+                    session,
+                    expectedSelection,
+                    header.type,
+                    DungeonAdmissionReject.InvalidSelectionState);
+                return;
+            }
+            if (expectedSelection?.PartyCohort != null
+                && !TryValidatePartySelectionCohort(
+                    session,
+                    expectedSelection,
+                    out var partySelectionError))
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"SELECT_DUNGEON rejected by party selection cohort: " +
+                    $"cid={session?.Player?.CharacterId ?? 0} " +
+                    $"selection={expectedSelection.SelectionId} " +
+                    $"party={expectedSelection.PartyCohort.PartyId} " +
+                    $"projection={expectedSelection.PartyCohort.ProjectionId} " +
+                    $"reason={partySelectionError}");
+                await RejectSelectionAsync(
+                    session,
+                    expectedSelection,
                     header.type,
                     DungeonAdmissionReject.InvalidSelectionState);
                 return;
@@ -1082,8 +2155,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                     $"SELECT_DUNGEON level rejected: " +
                     $"cid={session.Player.CharacterId} dungeon={req.DungeonId} " +
                     $"level={session.Player.Level} required={minimumRequiredLevel}");
-                await _svc.AdmissionRejects.SendAsync(
+                await RejectSelectionAsync(
                     session,
+                    expectedSelection,
                     header.type,
                     DungeonAdmissionReject.DungeonUnavailable);
                 return;
@@ -1162,8 +2236,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                         $"quest={preferredCircleQuestId} active=" +
                         $"{(activeQuestIds?.Contains(preferredCircleQuestId) == true ? 1 : 0)} " +
                         $"diagnostic={preferredCircleDiagnostic ?? "not_active"}");
-                    await _svc.AdmissionRejects.SendAsync(
+                    await RejectSelectionAsync(
                         session,
+                        expectedSelection,
                         header.type,
                         DungeonAdmissionReject.DungeonUnavailable);
                     return;
@@ -1196,8 +2271,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                     $"cid={session.Player.CharacterId} dungeon={req.DungeonId} " +
                     $"mode={admission.Mode} reason={admission.Reason} " +
                     $"requiredQuests={string.Join(",", admission.RequiredQuestIds)}");
-                await _svc.AdmissionRejects.SendAsync(
+                await RejectSelectionAsync(
                     session,
+                    expectedSelection,
                     header.type,
                     DungeonAdmissionReject.DungeonUnavailable);
                 return;
@@ -1219,8 +2295,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                     $"cid={session.Player.CharacterId} dungeon={req.DungeonId} " +
                     $"policy={entryRewardPolicy.Kind} partyId={entryParty.PartyId} " +
                     $"partyCount={entryPartyMemberCount}");
-                await _svc.AdmissionRejects.SendAsync(
+                await RejectSelectionAsync(
                     session,
+                    expectedSelection,
                     header.type,
                     DungeonAdmissionReject.DungeonUnavailable);
                 return;
@@ -1318,8 +2395,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                         $"cid={session.Player.CharacterId} " +
                         $"dungeon={req.DungeonId} " +
                         $"reason={towerValidation?.FailReason ?? "inventory lease missing"}");
-                    await _svc.AdmissionRejects.SendAsync(
+                    await RejectSelectionAsync(
                         session,
+                        expectedSelection,
                         header.type,
                         ResolveEntryAdmissionReject(
                             towerValidation,
@@ -1593,6 +2671,61 @@ namespace DfoServer.Network.Handlers.Dungeon
                 clearConditionTemplate);
             if (!run.Instance.TryFreezeSelection(selectionSnapshot))
                 throw new InvalidOperationException("Dungeon selection was already frozen for this instance.");
+            selectionSnapshot.ApplyTo(run);
+
+            if (!TryBuildPartyEntryAdmissionPlans(
+                    session,
+                    run,
+                    expectedSelection,
+                    entryLease,
+                    entryPreparation,
+                    out var partyEntryPlans,
+                    out var partyEntryRejection,
+                    out var partyEntryFailure))
+            {
+                await RejectPreparedPartyEntryAsync(
+                    session,
+                    header.type,
+                    partyEntryPlans,
+                    partyEntryRejection,
+                    partyEntryFailure);
+                return;
+            }
+            if (!await TryPreparePartyDungeonEntryRunsAsync(
+                    session,
+                    req,
+                    experienceBonusPlan,
+                    expectedSelection,
+                    partyEntryPlans))
+            {
+                await RejectPreparedPartyEntryAsync(
+                    session,
+                    header.type,
+                    partyEntryPlans,
+                    DungeonAdmissionReject.InvalidSelectionState,
+                    "party_run_prepare_failed");
+                return;
+            }
+
+            var preparedFollowers = new List<EnhancedClientSession>();
+            if (!TryActivatePreparedPartyEntry(
+                    session,
+                    partyEntryPlans,
+                    preparedFollowers))
+            {
+                await ReturnPreparedPartyRunsToTownAsync(
+                    session,
+                    header.type,
+                    partyEntryPlans,
+                    DungeonAdmissionReject.InvalidSelectionState,
+                    "party_run_activation_failed");
+                return;
+            }
+
+            foreach (var plan in partyEntryPlans)
+                await NotifyTownAreaRosterDepartureAsync(plan.Session);
+
+            // 暗精灵遗迹入场在组队费用提交前最后提交; 此后任何失败路径都必须回滚 licensed entry
             var licensedCommittedStatus = default(LicensedDungeonStatus);
             if (licensedDungeonPlan != null
                 && !_svc.LicensedDungeons.TryCommitEntry(
@@ -1605,42 +2738,57 @@ namespace DfoServer.Network.Handlers.Dungeon
                     $"SELECT_DUNGEON licensed commit rejected: " +
                     $"cid={session.Player.CharacterId} " +
                     $"dungeon={req.DungeonId} reason={licensedCommitFailure}");
-                await RejectEntryAdmissionAsync(
+                await ReturnPreparedPartyRunsToTownAsync(
                     session,
                     header.type,
-                    run,
-                    DungeonAdmissionReject.DungeonUnavailable);
+                    partyEntryPlans,
+                    DungeonAdmissionReject.DungeonUnavailable,
+                    "licensed_commit_rejected");
                 return;
             }
 
-            EntryCostResult entryCost;
+            var commitRequests = partyEntryPlans
+                .Select(plan => new DungeonEntryAdmissionCommitRequest(
+                    plan.Lease,
+                    plan.Preparation))
+                .ToList();
+            IReadOnlyList<EntryCostResult> entryCosts;
             try
             {
-                entryCost = _svc.EntryAdmission.TryCommit(
-                    entryLease,
-                    entryPreparation);
+                if (!_svc.EntryAdmission.TryCommitGroup(
+                        commitRequests,
+                        out entryCosts)
+                    || entryCosts.Count != partyEntryPlans.Count)
+                {
+                    RollbackLicensedDungeonEntry(licensedDungeonPlan);
+                    await ReturnPreparedPartyRunsToTownAsync(
+                        session,
+                        header.type,
+                        partyEntryPlans,
+                        DungeonAdmissionReject.InvalidSelectionState,
+                        "party_cost_commit_failed");
+                    return;
+                }
             }
             catch
             {
                 RollbackLicensedDungeonEntry(licensedDungeonPlan);
                 throw;
             }
-            if (!entryCost.Success)
+            for (var index = 0; index < partyEntryPlans.Count; index++)
+                partyEntryPlans[index].CostResult = entryCosts[index];
+            var entryCost = partyEntryPlans
+                .First(plan => ReferenceEquals(plan.Session, session))
+                .CostResult;
+            if (!session.Player.IsCurrentDungeonRun(runIdentity))
             {
                 RollbackLicensedDungeonEntry(licensedDungeonPlan);
-                FileLogger.Log(
-                    $"[{DungeonSharedServices.ProtocolLogName}] " +
-                    $"SELECT_DUNGEON admission commit rejected: " +
-                    $"cid={session.Player.CharacterId} " +
-                    $"dungeon={req.DungeonId} " +
-                    $"reason={entryCost.FailReason}");
-                await RejectEntryAdmissionAsync(
+                await ReturnPreparedPartyRunsToTownAsync(
                     session,
                     header.type,
-                    run,
-                    ResolveEntryAdmissionReject(
-                        entryCost,
-                        ResolvePartySlot(session)));
+                    partyEntryPlans,
+                    DungeonAdmissionReject.InvalidSelectionState,
+                    "leader_changed_after_cost_commit");
                 return;
             }
             if (!await TryConsumeEntryLimitAsync(
@@ -1651,13 +2799,14 @@ namespace DfoServer.Network.Handlers.Dungeon
                     isDimensionDungeon))
             {
                 RollbackLicensedDungeonEntry(licensedDungeonPlan);
+                await ReturnPreparedPartyRunsToTownAsync(
+                    session,
+                    header.type,
+                    partyEntryPlans,
+                    DungeonAdmissionReject.DailyEntryLimitReached,
+                    "leader_entry_limit_consume_failed",
+                    sendAdmissionReject: false);
                 return;
-            }
-            selectionSnapshot.ApplyTo(run);
-            if (!run.TryActivate())
-            {
-                RollbackLicensedDungeonEntry(licensedDungeonPlan);
-                throw new InvalidOperationException("Dungeon run could not enter the active state after selection.");
             }
             var consumedDungeonBuffUse = _svc.DevilContracts.TryConsume(
                 session.Player.CharacterId,
@@ -1667,7 +2816,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             {
                 FileLogger.Log(
                     $"[{DungeonSharedServices.ProtocolLogName}] " +
-                    $"DEVIL_CONTRACT_DUNGEON_BUFF: consumed " +
+                    "DEVIL_CONTRACT_DUNGEON_BUFF: consumed " +
                     $"cid={session.Player.CharacterId} dungeon={run.DungeonId}");
             }
             if (licensedDungeonPlan != null)
@@ -1683,17 +2832,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                     $"groop={licensedCommittedStatus.MonthlyGroupAppearCount}/" +
                     $"{LicensedDungeonCatalog.GroupAppearCountPerMonth}");
             }
-            RegisterActiveParticipant(session, run);
-            // 城镇残留白影：进本提交后离开城镇，向旧区域广播不含离开者的名册清残留白影。
-            await NotifyTownAreaRosterDepartureAsync(session);
-
-            await SendEntryCostUpdates(
-                session,
-                runIdentity,
-                entryCost,
-                entryPreparation.CostPlan.Source);
-            if (!session.Player.IsCurrentDungeonRun(runIdentity))
-                return;
+            if (_publishTownPartyLists != null)
+                await _publishTownPartyLists();
 
             if (entryPreparation.HellParty != null)
             {
@@ -1714,6 +2854,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                 FileLogger.Log($"[DungeonHandler] WARNING: dungeon={req.DungeonId} maze={selection.Index} has no [clear condition]");
             if (isA21TutorialEntry)
             {
+                await SendPreparedPartyEntryCostUpdatesAsync(partyEntryPlans);
                 run.TutorialEntryProjectionPending = true;
                 run.TutorialEntryProjectionSent = false;
                 run.TutorialEntryUsesInitialLayout = true;
@@ -1725,18 +2866,147 @@ namespace DfoServer.Network.Handlers.Dungeon
                 return;
             }
 
-            await SendDungeonSelectPacketsTo(session, req, bossPos, (byte)selection.Index);
+            // All frozen participants were prepared, charged, activated, and
+            // registered before the first START_MAP projection.
+            if (!session.Player.IsCurrentDungeonRun(runIdentity))
+            {
+                await ReturnPreparedPartyRunsToTownAsync(
+                    session,
+                    header.type,
+                    partyEntryPlans,
+                    DungeonAdmissionReject.InvalidSelectionState,
+                    "leader_changed_before_loading_projection");
+                return;
+            }
+
+            var loadingProjectionId = DungeonMapHandler.CreateLoadingProjectionId();
+            if (!run.TryClaimLoadingProjection(loadingProjectionId))
+            {
+                await ReturnPreparedPartyRunsToTownAsync(
+                    session,
+                    header.type,
+                    partyEntryPlans,
+                    DungeonAdmissionReject.InvalidSelectionState,
+                    "leader_loading_projection_claim_failed");
+                return;
+            }
+
+            var projectedFollowers = new List<EnhancedClientSession>();
+            var loadingParticipants = new List<DungeonRunIdentity>
+            {
+                runIdentity,
+            };
+            foreach (var follower in preparedFollowers)
+            {
+                var followerRun = follower?.Player?.CurrentRun;
+                var followerIdentity = followerRun?.CaptureIdentity()
+                    ?? default;
+                if (followerIdentity.IsValid
+                    && followerRun.SharesPhysicalInstanceWith(run)
+                    && followerRun.TryClaimLoadingProjection(loadingProjectionId)
+                    && !loadingParticipants.Contains(followerIdentity))
+                {
+                    loadingParticipants.Add(followerIdentity);
+                    projectedFollowers.Add(follower);
+                }
+            }
+            if (projectedFollowers.Count != preparedFollowers.Count)
+            {
+                await ReturnPreparedPartyRunsToTownAsync(
+                    session,
+                    header.type,
+                    partyEntryPlans,
+                    DungeonAdmissionReject.InvalidSelectionState,
+                    "follower_loading_projection_claim_failed");
+                return;
+            }
+
+            var leaderProjectionSent = false;
+            try
+            {
+                leaderProjectionSent = await SendDungeonSelectPacketsTo(
+                    session,
+                    req,
+                    bossPos,
+                    (byte)selection.Index,
+                    loadingParticipants,
+                    loadingProjectionId);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"leader dungeon projection failed cid=" +
+                    $"{session.Player.CharacterId}: {ex.Message}");
+            }
+            if (!leaderProjectionSent)
+            {
+                await ReturnPreparedPartyRunsToTownAsync(
+                    session,
+                    header.type,
+                    partyEntryPlans,
+                    DungeonAdmissionReject.InvalidSelectionState,
+                    "leader_start_map_projection_failed");
+                return;
+            }
             if (!session.Player.IsCurrentDungeonRun(runIdentity))
                 return;
 
-            // ★组队副本联机: 队长进本时把整队队员也驱动进【同一实例】。⚠️待真机验证(见 DFO_PARTY_DUNGEON_COOP)。
-            await TryFanOutDungeonEntryToPartyAsync(
-                session,
-                header,
-                req,
-                bossPos,
-                (byte)selection.Index,
-                experienceBonusPlan);
+            var followerProjections = new List<Task>();
+            foreach (var follower in projectedFollowers)
+            {
+                followerProjections.Add(
+                    SendPreparedPartyDungeonProjectionAsync(
+                        follower,
+                        run,
+                        req,
+                        bossPos,
+                        (byte)selection.Index,
+                        loadingParticipants,
+                        loadingProjectionId));
+            }
+
+            // Each follower projection catches and logs its own failures. Do
+            // not make the leader's command loop wait on a half-open follower
+            // socket; the shared loading barrier owns the 45-second timeout.
+            _ = Task.WhenAll(followerProjections);
+            _ = SendPreparedPartyEntryCostUpdatesAsync(partyEntryPlans);
+        }
+
+        private async Task SendPreparedPartyDungeonProjectionAsync(
+            EnhancedClientSession follower,
+            DungeonRun leaderRun,
+            Network.Parsers.Dungeon.SelectDungeonRequest request,
+            int[] bossPosition,
+            byte selectedMazeIndex,
+            IReadOnlyList<DungeonRunIdentity> loadingParticipants,
+            long loadingProjectionId)
+        {
+            try
+            {
+                var followerRun = follower?.Player?.CurrentRun;
+                if (followerRun == null
+                    || !followerRun.SharesPhysicalInstanceWith(leaderRun))
+                {
+                    return;
+                }
+
+                await SendDungeonSelectPacketsTo(
+                    follower,
+                    request,
+                    bossPosition,
+                    selectedMazeIndex,
+                    loadingParticipants,
+                    loadingProjectionId);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"PARTY_DUNGEON_COOP projection failed: " +
+                    $"cid={follower?.Player?.CharacterId ?? 0} " +
+                    $"error={ex.Message}");
+            }
         }
 
         internal static byte[] BuildMercenaryContentErrorBody()
@@ -1994,16 +3264,22 @@ namespace DfoServer.Network.Handlers.Dungeon
 
         // 给指定会话发送 SELECT_DUNGEON 出站序列；秘密商店 NPC 上下文只在通关后发送。
         // Hell 等参数从该会话自己的 CurrentRun 读(队员的 run 已拷贝队长 selection)。
-        private async Task SendDungeonSelectPacketsTo(
+        private async Task<bool> SendDungeonSelectPacketsTo(
             EnhancedClientSession s,
             Network.Parsers.Dungeon.SelectDungeonRequest req,
             int[] bossPos,
-            byte selectedMazeIndex)
+            byte selectedMazeIndex,
+            IReadOnlyList<DungeonRunIdentity> loadingParticipants = null,
+            long loadingProjectionId = 0)
         {
             var run = s.Player.CurrentRun;
             if (run == null)
-                return;
+                return false;
             var runIdentity = run.CaptureIdentity();
+            if (loadingProjectionId <= 0)
+                loadingProjectionId = DungeonMapHandler.CreateLoadingProjectionId();
+            if (!run.TryClaimLoadingProjection(loadingProjectionId))
+                return false;
             if (run.AnotherAradActive && run.AnotherAradCrackQuestId > 0)
             {
                 await s.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
@@ -2012,7 +3288,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                     BitConverter.GetBytes(
                         (uint)run.AnotherAradCrackQuestId)));
                 if (!s.Player.IsCurrentDungeonRun(runIdentity))
-                    return;
+                    return false;
             }
             var extraPairGroups =
                 DungeonMechanismCoordinator.ResolveSelectionMinimapIconGroups(
@@ -2029,8 +3305,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                     0x00,
                     0x019F,
                     StrikerSupportTagCharacterBodyBuilder.BuildEmptyBody()));
-            if (!s.Player.IsCurrentDungeonRun(runIdentity))
-                return;
+            if (!s.Player.IsCurrentDungeonRun(runIdentity)
+                || !run.IsCurrentLoadingProjection(loadingProjectionId))
+                return false;
 
             var bloodAltar = run.Instance.Mechanisms.BloodAltar;
             var tournament = run.Instance.Mechanisms.Tournament;
@@ -2061,161 +3338,138 @@ namespace DfoServer.Network.Handlers.Dungeon
                         hellPartyEnabled: run.HellMode ? (ushort)1 : (ushort)0,
                         value2: run.HellMode ? (byte)0x0B : (byte)0,
                         flagA: extraPairGroups != null ? (byte)1 : (byte)0)));
-                if (!s.Player.IsCurrentDungeonRun(runIdentity))
-                    return;
+                if (!s.Player.IsCurrentDungeonRun(runIdentity)
+                    || !run.IsCurrentLoadingProjection(loadingProjectionId))
+                    return false;
 
                 await DungeonMechanismCoordinator.SendSelectionStateAsync(
                     s,
                     "after_dungeon_info");
             }
-            if (!s.Player.IsCurrentDungeonRun(runIdentity))
-                return;
+            if (!s.Player.IsCurrentDungeonRun(runIdentity)
+                || !run.IsCurrentLoadingProjection(loadingProjectionId))
+                return false;
             var hasSelectedStart = run.MazeStartX >= 0 && run.MazeStartY >= 0;
             var startRoomIdentity = await _mapHandler.SendStartMapAsync(
                 s,
                 run,
                 hasSelectedStart ? run.MazeStartX : 0xFF,
                 hasSelectedStart ? run.MazeStartY : 0xFF,
-                overrideMapId: -1);
+                overrideMapId: -1,
+                expectedLoadingParticipants: loadingParticipants,
+                loadingProjectionId: loadingProjectionId);
             if (!startRoomIdentity.HasValue
                 || !s.Player.IsCurrentDungeonParticipantRoom(
                     startRoomIdentity.Value))
-                return;
+                return false;
 
+            return true;
         }
 
-        // ★组队副本联机 fan-out(⚠️协议+客户端渲染, 待真机验证; DFO_PARTY_DUNGEON_COOP=0 可隔离):
-        // df 模型=队长进本调 CParty::dungeon_start, 建【一个共享实例】广播全队、goto_dungeon 把每个队员推进去。
-        // 队员是【服务端驱动】换图、不走传送门→不触发本地"该地下城已锁定"门。这里复刻: 拷队长迷宫 selection
-        // 到每个队员 run(同一实例) → 给队员重放 SELECT 序列 → 全队进入同一副本实例。
-        private async Task TryFanOutDungeonEntryToPartyAsync(
+        private bool TryBuildPartyEntryAdmissionPlans(
             EnhancedClientSession leader,
-            GamePacketHeader header,
-            Network.Parsers.Dungeon.SelectDungeonRequest req,
-            int[] bossPos,
-            byte selectedMazeIndex,
-            DungeonEntryExperienceBonusPlan experienceBonusPlan)
+            DungeonRun leaderRun,
+            DungeonSelectionContext leaderSelection,
+            InventoryLease leaderLease,
+            DungeonEntryAdmissionPreparation leaderPreparation,
+            out List<PartyEntryAdmissionPlan> plans,
+            out DungeonAdmissionReject rejection,
+            out string failureReason)
         {
-            if (System.Environment.GetEnvironmentVariable("DFO_PARTY_DUNGEON_COOP") == "0") return;
-            var pm = _svc.PartyManager;
-            var sessions = _svc.Sessions;
-            if (pm == null || sessions == null) return;
-
-            var leaderUid = (ushort)leader.Player.CharacterId;   // 队伍成员 UserId==(ushort)CharacterId(见 BuildMember)
-            var party = pm.GetPartyByUser(leaderUid);
-            if (party == null || party.Count <= 1 || !party.IsLeader(leaderUid)) return;
-
-            var lr = leader.Player.CurrentRun;
-            if (lr == null)
-                return;
-            var leaderRunIdentity = lr.CaptureIdentity();
-            FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] PARTY_DUNGEON_COOP: leader={leader.Player.CharacterId} party={party.PartyId} members={party.Count} dungeon={req.DungeonId} → fan-out");
-            foreach (var m in party.MembersBySlot())
+            plans = new List<PartyEntryAdmissionPlan>();
+            rejection = DungeonAdmissionReject.InvalidSelectionState;
+            failureReason = string.Empty;
+            if (leader?.Player == null
+                || leaderRun == null
+                || leaderLease == null
+                || leaderPreparation == null)
             {
-                if (m.UserId == leaderUid) continue;
-                sessions.TryGet(m.CharacterId, out var bs);
-                if (bs?.Player == null || bs.TcpClient == null || !bs.TcpClient.Connected)
-                {
-                    FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] PARTY_DUNGEON_COOP: member uid={m.UserId} 不在线/无会话, 跳过");
-                    continue;
-                }
-                try
-                {
-                    if (!leader.Player.IsCurrentDungeonRun(leaderRunIdentity))
-                        return;
-                    var memberPredecessorRun = bs.Player.CurrentRun;
-                    var memberPredecessorGeneration =
-                        bs.Player.CurrentDungeonRunGeneration;
-                    // ★前奏: 队员从没"打开副本选择页", 直接收 SELECT 会半悬空(显示进房间但不真换图)。
-                    //   先给队员补发 ENTER_SELECT(0x17/0x02/0x03/0x1A/0x1B, =A 发 0x000F 时收到的),
-                    //   让其客户端进入"进副本"状态, 再重放 SELECT 才能真换图。
-                    await HandleEnterSelectDungeonCore(bs, header, request: null);
-                    if (!leader.Player.IsCurrentDungeonRun(leaderRunIdentity))
-                        return;
-                    var memberSelection = bs.Player.CurrentDungeonSelection;
-                    if (memberPredecessorRun != null
-                        || memberSelection == null
-                        || !IsEntrySourceCurrent(
-                            bs,
-                            memberPredecessorRun,
-                            memberPredecessorGeneration,
-                            memberSelection))
-                        continue;
-
-                    await DungeonMechanismCoordinator.ClearRunEffectsAsync(
-                        bs,
-                        "party_select_dungeon_replace_run");
-                    if (!leader.Player.IsCurrentDungeonRun(leaderRunIdentity))
-                        return;
-                    if (!IsEntrySourceCurrent(
-                            bs,
-                            memberPredecessorRun,
-                            memberPredecessorGeneration,
-                            memberSelection))
-                        continue;
-                    if (!DungeonRunLifecycle.BeginRun(
-                        bs,
-                        req.DungeonId,
-                        req.Difficulty,
-                        lr.Instance,
-                        _svc.InstanceRegistry,
-                        experienceBonusPlan?.ForParticipant(bs),
-                        memberSelection))
-                    {
-                        continue;
-                    }
-                    var br = bs.Player.CurrentRun;
-                    if (br == null)
-                        continue;
-                    var memberRunIdentity = br.CaptureIdentity();
-                    var sharedSelection = lr.Instance.Selection;
-                    if (sharedSelection == null)
-                        throw new InvalidOperationException("Party dungeon selection snapshot is missing.");
-                    sharedSelection.ApplyTo(br);
-                    var memberStoryExperienceBonus =
-                        DungeonStoryExperienceProfilePolicy.Capture(br);
-                    if (memberStoryExperienceBonus.IsStoryRun)
-                    {
-                        br.TryFreezeStoryExperienceProfile(
-                            memberStoryExperienceBonus.RatePercent,
-                            memberStoryExperienceBonus
-                                .ExperienceDifficulty);
-                    }
-                    br.HellMode = lr.HellMode;
-                    br.HellPartyMode = lr.HellPartyMode;
-                    br.HellMapId = lr.HellMapId;
-                    br.HellMapX = lr.HellMapX;
-                    br.HellMapY = lr.HellMapY;
-                    br.HellRoomInfo = lr.HellRoomInfo;
-                    br.LinkedDungeonNextId = lr.LinkedDungeonNextId;
-                    br.LinkedDungeonNextRate = lr.LinkedDungeonNextRate;
-                    br.LinkedDungeonNextCondition =
-                        lr.LinkedDungeonNextCondition;
-                    DungeonMechanismCoordinator.CloneSelection(
-                        bs,
-                        lr,
-                        br,
-                        "party_select_dungeon");
-                    if (!br.TryActivate())
-                        throw new InvalidOperationException("Party member run could not enter the active state.");
-                    RegisterActiveParticipant(bs, br);
-                    // 城镇残留白影：队员进本同样离开城镇，向旧区域广播不含离开者的名册清残留白影。
-                    await NotifyTownAreaRosterDepartureAsync(bs);
-                    bs.Player.UserState = 0x01;
-                    await SendDungeonSelectPacketsTo(bs, req, bossPos, selectedMazeIndex);
-                    if (!leader.Player.IsCurrentDungeonRun(leaderRunIdentity))
-                        return;
-                    if (!bs.Player.IsCurrentDungeonRun(memberRunIdentity))
-                        continue;
-                    FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] PARTY_DUNGEON_COOP: member cid={bs.Player.CharacterId} 驱动进副本 maze={br.MazeIndex}");
-                }
-                catch (Exception ex)
-                {
-                    FileLogger.Log($"[{DungeonSharedServices.ProtocolLogName}] PARTY_DUNGEON_COOP: member uid={m.UserId} 驱动异常: {ex.Message}");
-                }
+                failureReason = "leader_preparation_missing";
+                return false;
             }
+            plans.Add(new PartyEntryAdmissionPlan
+            {
+                Session = leader,
+                Selection = leaderSelection,
+                Run = leaderRun,
+                Lease = leaderLease,
+                Preparation = leaderPreparation,
+                PartySlot = leaderRun.EntryPartySlotIndex,
+            });
+
+            var cohort = leaderSelection?.PartyCohort;
+            if (cohort == null)
+                return true;
+            if (_svc.Sessions == null
+                || cohort.LeaderUserId != leader.Player.UserId)
+            {
+                failureReason = "party_cohort_unavailable";
+                return false;
+            }
+
+            foreach (var participant in cohort.Participants)
+            {
+                if (participant.UserId == cohort.LeaderUserId)
+                    continue;
+                if (!_svc.Sessions.TryGet(
+                        participant.CharacterId,
+                        out var candidate)
+                    || candidate?.Player == null
+                    || candidate.SessionId != participant.SessionId
+                    || candidate.Player.UserId != participant.UserId
+                    || candidate.ListenerPort != leader.ListenerPort
+                    || candidate.TcpClient == null
+                    || !candidate.TcpClient.Connected
+                    || candidate.Player.CurrentRun != null)
+                {
+                    failureReason =
+                        $"session_mismatch_uid_{participant.UserId}";
+                    return false;
+                }
+                var selection = candidate.Player.CurrentDungeonSelection;
+                DungeonEntryAdmissionPreparation preparation = null;
+                InventoryLease lease = null;
+                EntryCostResult validation = null;
+                if (!candidate.Player.IsCurrentDungeonSelection(selection)
+                    || !ReferenceEquals(selection.PartyCohort, cohort)
+                    || !TryValidateExistingRunEntry(
+                        candidate,
+                        leaderRun,
+                        out preparation,
+                        out lease,
+                        out validation,
+                        requireCurrentRun: false))
+                {
+                    rejection = ResolveEntryAdmissionReject(
+                        validation,
+                        participant.SlotIndex);
+                    failureReason = validation?.FailReason
+                        ?? $"selection_mismatch_uid_{participant.UserId}";
+                    return false;
+                }
+                plans.Add(new PartyEntryAdmissionPlan
+                {
+                    Session = candidate,
+                    Selection = selection,
+                    Lease = lease,
+                    Preparation = preparation,
+                    PartySlot = participant.SlotIndex,
+                });
+            }
+
+            if (plans.Count != cohort.Participants.Count)
+            {
+                failureReason = "party_plan_count_mismatch";
+                return false;
+            }
+            plans.Sort((left, right) =>
+                left.PartySlot.CompareTo(right.PartySlot));
+            return true;
         }
 
+        // The ENTER_SELECT stage has already frozen and projected the party
+        // cohort. SELECT only consumes those exact member selections, attaches
+        // them to the leader's shared instance, and replays START_MAP.
         internal Task HandleGorgeousChallengeToggle(EnhancedClientSession session, GamePacketHeader header, byte[] body)
         {
             if (session?.Player == null)
@@ -2356,8 +3610,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                         _svc.InstanceRegistry);
                 if (selection != null)
                 {
-                    await _svc.AdmissionRejects.SendAsync(
+                    await RejectSelectionAsync(
                         session,
+                        selection,
                         header.type,
                         DungeonAdmissionReject.DungeonUnavailable);
                 }
@@ -2409,8 +3664,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                 _svc.InstanceRegistry);
             if (selection != null)
             {
-                await _svc.AdmissionRejects.SendAsync(
+                await RejectSelectionAsync(
                     session,
+                    selection,
                     header.type,
                     DungeonAdmissionReject.DungeonUnavailable);
             }
@@ -2424,6 +3680,497 @@ namespace DfoServer.Network.Handlers.Dungeon
                 : _svc.PartyManager?.GetPartyByUser(session.Player.UserId);
             var member = party?.GetMember(session.Player.UserId);
             return member?.SlotIndex ?? 0;
+        }
+
+        internal bool TryValidateExistingRunEntry(
+            EnhancedClientSession session,
+            DungeonRun run,
+            out DungeonEntryAdmissionPreparation preparation,
+            out InventoryLease lease,
+            out EntryCostResult validation,
+            bool requireCurrentRun = true)
+        {
+            preparation = null;
+            lease = null;
+            validation = null;
+            if (session?.Player == null
+                || run == null
+                || (requireCurrentRun
+                    && !session.Player.IsCurrentDungeonRun(
+                        run.CaptureIdentity())))
+            {
+                validation = new EntryCostResult().Fail(
+                    "stale participant run",
+                    EntryCostFailureKind.InvalidState);
+                return false;
+            }
+            if (!WorldMap.IsStoryDungeon(run.DungeonId)
+                && !DungeonData.MeetsMinimumRequiredLevel(
+                    run.DungeonId,
+                    session.Player.Level,
+                    out var minimumLevel))
+            {
+                validation = new EntryCostResult().Fail(
+                    $"level {session.Player.Level} requires {minimumLevel}",
+                    EntryCostFailureKind.MissingPermission);
+                return false;
+            }
+            if (_svc.MercenaryRestrictions != null
+                && !_svc.MercenaryRestrictions.CanEnterContent(
+                    session.Player.CharacterId))
+            {
+                validation = new EntryCostResult().Fail(
+                    "mercenary content restricted",
+                    EntryCostFailureKind.MissingPermission);
+                return false;
+            }
+            if (!TryLoadEntryQuestSets(
+                    session.Player.CharacterId,
+                    out var activeQuestIds,
+                    out var clearedQuestIds,
+                    out var questError))
+            {
+                validation = new EntryCostResult().Fail(
+                    questError,
+                    EntryCostFailureKind.InvalidState);
+                return false;
+            }
+            var admission = WorldMap.EvaluateDungeonAdmission(
+                run.DungeonId,
+                session.Player.Level,
+                activeQuestIds,
+                clearedQuestIds);
+            if (!admission.Allowed)
+            {
+                validation = new EntryCostResult().Fail(
+                    "worldmap " + admission.Reason,
+                    EntryCostFailureKind.MissingPermission);
+                return false;
+            }
+
+            PvfLib.MazeInfo maze;
+            try
+            {
+                maze = DungeonData.GetDungeonMaze(
+                    run.DungeonId,
+                    run.MazeIndex);
+            }
+            catch (Exception ex)
+            {
+                validation = new EntryCostResult().Fail(
+                    "maze unavailable: " + ex.Message,
+                    EntryCostFailureKind.Unavailable);
+                return false;
+            }
+            if (maze == null
+                || !TryGetOwnedInventoryLease(session, out lease)
+                || !_svc.EntryAdmission.TryPrepareRun(
+                    lease,
+                    run,
+                    run.Instance.Mechanisms.Tournament?.Definition,
+                    run.HellMode,
+                    run.HellPartyMode,
+                    maze,
+                    run.MazeIndex,
+                    run.HellGorgeousChallenge,
+                    out preparation,
+                    out validation))
+            {
+                validation ??= new EntryCostResult().Fail(
+                    maze == null
+                        ? "maze unavailable"
+                        : "owned inventory lease is missing",
+                    EntryCostFailureKind.InvalidState);
+                return false;
+            }
+            return true;
+        }
+
+        private bool TryLoadEntryQuestSets(
+            int characterId,
+            out HashSet<int> activeQuestIds,
+            out HashSet<int> clearedQuestIds,
+            out string error)
+        {
+            activeQuestIds = null;
+            clearedQuestIds = null;
+            error = string.Empty;
+            try
+            {
+                var active = QuestService.LoadActiveQuests(
+                    _svc.ConnectionString,
+                    characterId);
+                if (active.Count > 0)
+                {
+                    activeQuestIds = new HashSet<int>(
+                        active.ConvertAll(quest => (int)quest.QuestId));
+                }
+                var cleared = new QuestRepository(_svc.ConnectionString)
+                    .LoadClearedFlags(characterId);
+                if (cleared.Count > 0)
+                    clearedQuestIds = new HashSet<int>(cleared.Keys);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = "quest probe failed: " + ex.Message;
+                return false;
+            }
+        }
+
+        private async Task<bool> TryPreparePartyDungeonEntryRunsAsync(
+            EnhancedClientSession leader,
+            Network.Parsers.Dungeon.SelectDungeonRequest req,
+            DungeonEntryExperienceBonusPlan experienceBonusPlan,
+            DungeonSelectionContext leaderSelection,
+            IReadOnlyList<PartyEntryAdmissionPlan> plans)
+        {
+            var cohort = leaderSelection?.PartyCohort;
+            if (cohort == null)
+                return true;
+            if (plans == null
+                || plans.Count != cohort.Participants.Count
+                || cohort.LeaderUserId != leader.Player.UserId)
+            {
+                return false;
+            }
+
+            var leaderRun = leader.Player.CurrentRun;
+            if (leaderRun == null)
+                return false;
+            var leaderIdentity = leaderRun.CaptureIdentity();
+            foreach (var plan in plans)
+            {
+                var member = plan.Session;
+                if (ReferenceEquals(member, leader))
+                    continue;
+                try
+                {
+                    if (!leader.Player.IsCurrentDungeonRun(leaderIdentity)
+                        || member?.Player == null
+                        || member.Player.CurrentRun != null
+                        || !member.Player.IsCurrentDungeonSelection(
+                            plan.Selection)
+                        || !ReferenceEquals(
+                            plan.Selection.PartyCohort,
+                            cohort))
+                    {
+                        return false;
+                    }
+                    await DungeonMechanismCoordinator.ClearRunEffectsAsync(
+                        member,
+                        "party_select_dungeon_prepare_run");
+                    if (!leader.Player.IsCurrentDungeonRun(leaderIdentity)
+                        || !member.Player.IsCurrentDungeonSelection(
+                            plan.Selection)
+                        || !DungeonRunLifecycle.BeginRun(
+                            member,
+                            req.DungeonId,
+                            req.Difficulty,
+                            leaderRun.Instance,
+                            _svc.InstanceRegistry,
+                            experienceBonusPlan?.ForParticipant(member),
+                            plan.Selection))
+                    {
+                        return false;
+                    }
+
+                    var run = member.Player.CurrentRun;
+                    var sharedSelection = leaderRun.Instance.Selection;
+                    if (run == null)
+                        return false;
+                    plan.Run = run;
+                    if (sharedSelection == null)
+                        return false;
+                    sharedSelection.ApplyTo(run);
+                    plan.Preparation.ApplyTo(run);
+                    var storyBonus =
+                        DungeonStoryExperienceProfilePolicy.Capture(run);
+                    if (storyBonus.IsStoryRun)
+                    {
+                        run.TryFreezeStoryExperienceProfile(
+                            storyBonus.RatePercent,
+                            storyBonus.ExperienceDifficulty);
+                    }
+                    run.LinkedDungeonNextId = leaderRun.LinkedDungeonNextId;
+                    run.LinkedDungeonNextRate = leaderRun.LinkedDungeonNextRate;
+                    run.LinkedDungeonNextCondition =
+                        leaderRun.LinkedDungeonNextCondition;
+                    DungeonMechanismCoordinator.CloneSelection(
+                        member,
+                        leaderRun,
+                        run,
+                        "party_select_dungeon_prepare_run");
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"PARTY_DUNGEON_COOP prepare failed: " +
+                        $"cid={member?.Player?.CharacterId ?? 0} " +
+                        $"error={ex.Message}");
+                    return false;
+                }
+            }
+            return plans.All(plan => plan.Run != null);
+        }
+
+        private bool TryActivatePreparedPartyEntry(
+            EnhancedClientSession leader,
+            IReadOnlyList<PartyEntryAdmissionPlan> plans,
+            ICollection<EnhancedClientSession> preparedFollowers)
+        {
+            var cohort = plans?
+                .FirstOrDefault(plan => ReferenceEquals(plan.Session, leader))
+                ?.Run?.EntryPartySelectionCohort;
+            if (cohort != null)
+            {
+                var party = _svc.PartyManager?.GetPartySnapshot(cohort.PartyId);
+                if (party == null
+                    || party.Count != cohort.Participants.Count
+                    || !party.IsLeader(cohort.LeaderUserId))
+                {
+                    return false;
+                }
+                foreach (var participant in cohort.Participants)
+                {
+                    var member = party.GetMember(participant.UserId);
+                    if (member == null
+                        || member.CharacterId != participant.CharacterId
+                        || member.SessionId != participant.SessionId
+                        || member.SlotIndex != participant.SlotIndex
+                        || !plans.Any(plan =>
+                            plan.Session?.SessionId == participant.SessionId
+                            && plan.Session.Player?.CharacterId
+                                == participant.CharacterId
+                            && plan.PartySlot == participant.SlotIndex))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            foreach (var plan in plans)
+            {
+                var session = plan.Session;
+                var run = plan.Run;
+                if (session?.Player == null
+                    || run == null
+                    || run.RunState != DungeonRunState.Selecting
+                    || !session.Player.IsCurrentDungeonRun(
+                        run.CaptureIdentity()))
+                {
+                    return false;
+                }
+            }
+
+            foreach (var plan in plans)
+            {
+                var session = plan.Session;
+                var run = plan.Run;
+                try
+                {
+                    if (!run.TryActivate())
+                        return false;
+                    RegisterActiveParticipant(session, run);
+                    session.Player.UserState = 0x01;
+                    if (!ReferenceEquals(session, leader))
+                        preparedFollowers.Add(session);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"party run activation failed cid=" +
+                        $"{session.Player.CharacterId}: {ex.Message}");
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private async Task SendPreparedPartyEntryCostUpdatesAsync(
+            IReadOnlyList<PartyEntryAdmissionPlan> plans)
+        {
+            foreach (var plan in plans)
+            {
+                try
+                {
+                    await SendEntryCostUpdates(
+                        plan.Session,
+                        plan.Run.CaptureIdentity(),
+                        plan.CostResult,
+                        plan.Preparation.CostPlan.Source);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"party entry cost projection failed cid=" +
+                        $"{plan.Session?.Player?.CharacterId ?? 0}: " +
+                        ex.Message);
+                }
+            }
+        }
+
+        private async Task RejectPreparedPartyEntryAsync(
+            EnhancedClientSession leader,
+            ushort wireType,
+            IReadOnlyList<PartyEntryAdmissionPlan> plans,
+            DungeonAdmissionReject rejection,
+            string reason)
+        {
+            DungeonSelectionContext leaderSelection = null;
+            if (plans != null)
+            {
+                foreach (var plan in plans)
+                {
+                    var run = plan.Run;
+                    if (run == null
+                        || run.RunState != DungeonRunState.Selecting
+                        || plan.Session?.Player?.IsCurrentDungeonRun(
+                            run.CaptureIdentity()) != true)
+                    {
+                        continue;
+                    }
+                    var restored = await DungeonRunLifecycle
+                        .RejectSelectingRunAsync(
+                            plan.Session,
+                            run.CaptureIdentity(),
+                            _svc.InstanceRegistry);
+                    if (ReferenceEquals(plan.Session, leader))
+                        leaderSelection = restored;
+                }
+            }
+            try
+            {
+                await _svc.AdmissionRejects.SendAsync(
+                    leader,
+                    wireType,
+                    rejection);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"party entry rejection projection failed cid=" +
+                    $"{leader?.Player?.CharacterId ?? 0}: {ex.Message}");
+            }
+            FileLogger.Log(
+                $"[{DungeonSharedServices.ProtocolLogName}] " +
+                $"PARTY_DUNGEON_COOP rejected: " +
+                $"cid={leader?.Player?.CharacterId ?? 0} reason={reason}");
+            if (leaderSelection?.PartyCohort?.ReturnToTownOnEntryReject == true
+                && _returnRejectedPartySelectionToTown != null)
+            {
+                await _returnRejectedPartySelectionToTown(
+                    leader,
+                    leaderSelection);
+            }
+        }
+
+        private async Task ReturnPreparedPartyRunsToTownAsync(
+            EnhancedClientSession leader,
+            ushort wireType,
+            IReadOnlyList<PartyEntryAdmissionPlan> plans,
+            DungeonAdmissionReject rejection,
+            string reason,
+            bool sendAdmissionReject = true)
+        {
+            var ended = new List<(EnhancedClientSession Session,
+                DungeonRunIdentity Identity,
+                DungeonTownReturnAnchor Anchor)>();
+            foreach (var plan in plans ?? Array.Empty<PartyEntryAdmissionPlan>())
+            {
+                var session = plan.Session;
+                var run = plan.Run;
+                if (run == null
+                    || session?.Player?.IsCurrentDungeonRun(
+                        run.CaptureIdentity()) != true)
+                {
+                    continue;
+                }
+                var identity = run.CaptureIdentity();
+                var anchor = run.TownReturnAnchor;
+                try
+                {
+                    var detached = await DungeonRunLifecycle.EndRunAsync(
+                        session,
+                        DungeonRunEndReason.EntryRejected,
+                        identity,
+                        _svc.InstanceRegistry);
+                    if (detached
+                        || DungeonRunLifecycle.CanProjectTownState(
+                            session,
+                            identity))
+                    {
+                        ended.Add((session, identity, anchor));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"party entry rollback failed cid=" +
+                        $"{session.Player.CharacterId}: {ex.Message}");
+                    if (DungeonRunLifecycle.CanProjectTownState(
+                            session,
+                            identity))
+                    {
+                        ended.Add((session, identity, anchor));
+                    }
+                }
+            }
+
+            foreach (var entry in ended)
+            {
+                DungeonRunLifecycle.ApplyTownReturnAnchor(
+                    entry.Session.Player,
+                    entry.Anchor,
+                    entry.Session.ListenerPort);
+                entry.Session.Player.UserState = 0x00;
+            }
+            leader?.Player?.ClearPendingPartyRetryEntry();
+            if (sendAdmissionReject)
+            {
+                try
+                {
+                    await _svc.AdmissionRejects.SendAsync(
+                        leader,
+                        wireType,
+                        rejection);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"party entry rejection projection failed cid=" +
+                        $"{leader?.Player?.CharacterId ?? 0}: {ex.Message}");
+                }
+            }
+            foreach (var entry in ended)
+            {
+                try
+                {
+                    await _svc.TownReturn.ProjectEndedRunAsync(
+                        entry.Session,
+                        entry.Identity,
+                        entry.Anchor);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Log(
+                        $"[{DungeonSharedServices.ProtocolLogName}] " +
+                        $"party entry town projection failed cid=" +
+                        $"{entry.Session.Player.CharacterId}: {ex.Message}");
+                }
+            }
+            FileLogger.Log(
+                $"[{DungeonSharedServices.ProtocolLogName}] " +
+                $"PARTY_DUNGEON_COOP returned after rejection: " +
+                $"leader={leader?.Player?.CharacterId ?? 0} " +
+                $"returned={ended.Count}/{plans?.Count ?? 0} " +
+                $"reason={reason}");
         }
 
         private async Task<bool> TryValidateEntryLimitAsync(
@@ -2659,10 +4406,41 @@ namespace DfoServer.Network.Handlers.Dungeon
                 _svc.InstanceRegistry);
             if (selection != null)
             {
+                await RejectSelectionAsync(
+                    session,
+                    selection,
+                    wireType,
+                    rejection);
+            }
+        }
+
+        private async Task RejectSelectionAsync(
+            EnhancedClientSession session,
+            DungeonSelectionContext selection,
+            ushort wireType,
+            DungeonAdmissionReject rejection)
+        {
+            try
+            {
                 await _svc.AdmissionRejects.SendAsync(
                     session,
                     wireType,
                     rejection);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[{DungeonSharedServices.ProtocolLogName}] " +
+                    $"selection rejection projection failed cid=" +
+                    $"{session?.Player?.CharacterId ?? 0}: {ex.Message}");
+            }
+            if (selection?.PartyCohort?.ReturnToTownOnEntryReject == true
+                && session?.Player?.IsCurrentDungeonSelection(selection) == true
+                && _returnRejectedPartySelectionToTown != null)
+            {
+                await _returnRejectedPartySelectionToTown(
+                    session,
+                    selection);
             }
         }
 
@@ -2837,6 +4615,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                     party?.PartyId ?? 0,
                     session.SessionId,
                     run));
+            run.Instance.RegisterParticipantLife(attachment.RunIdentity);
             FileLogger.Log(
                 $"[DungeonInstanceRegistry] participant registered " +
                 $"cid={characterId} party={attachment.PartyId} " +

@@ -26,7 +26,10 @@ namespace DfoServer.Game.Mercenary
                 && candidate.CharacterId > 0
                 && candidate.CharacterId <= ushort.MaxValue
                 && candidate.CharacterId != activeCharacterId
-                && candidate.Level >= StrikerSkillDataProvider.GetMinimumSupportLevel();
+                && candidate.Level >= StrikerSkillDataProvider.GetMinimumSupportLevel()
+                // 游戏内提示: 支援兵需 Lv50+ 且完成第一次觉醒。
+                // grow_type 高四位记录觉醒段 (0x10=一觉, 0x20=二觉)。
+                && (candidate.GrowType & 0xF0) >= 0x10;
         }
 
         // 城镇点当前角色自己 = 取消支援。

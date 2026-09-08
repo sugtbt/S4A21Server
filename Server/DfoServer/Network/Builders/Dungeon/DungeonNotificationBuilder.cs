@@ -239,7 +239,10 @@ namespace DfoServer.Network.Builders
             return writer.ToArray();
         }
 
-        public static byte[] BuildStartMapRevisit(Dungeon.MazeSumInfo maze, uint seed)
+        public static byte[] BuildStartMapRevisit(
+            Dungeon.MazeSumInfo maze,
+            uint seed,
+            byte partyMemberIndex = 0xFF)
         {
             var writer = new GamePacketWriter();
             writer.WriteByte((byte)maze.X);
@@ -255,7 +258,7 @@ namespace DfoServer.Network.Builders
             writer.WriteByte(0);                      // extra entry count
             writer.WriteByte(0);                      // 深渊雾/小地图标记
             writer.WriteByte(0);                      // 可骑乘对象分组数
-            writer.WriteByte(0xFF);                   // 队员索引
+            writer.WriteByte(partyMemberIndex);       // 当前接收者的队内槽位
             return writer.ToArray();
         }
 

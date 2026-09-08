@@ -44,6 +44,9 @@ namespace DfoServer.Game.Session
         internal long LatestTownMovementSequence
             => Interlocked.Read(ref _townMovementSequence);
 
+        internal void ResetTownMovementSequence()
+            => Interlocked.Exchange(ref _townMovementSequence, 0);
+
         /// <summary>
         /// </summary>
         public DateTime LastPositionPersistAt { get; set; } = DateTime.MinValue;

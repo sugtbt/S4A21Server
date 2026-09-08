@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Threading;
 
 namespace DfoServer.Game.Dungeon
 {
@@ -199,6 +200,55 @@ namespace DfoServer.Game.Dungeon
         internal DungeonEventEnvelope Source { get; }
     }
 
+    internal readonly struct DungeonRoomLoadingReadyResult
+    {
+        internal DungeonRoomLoadingReadyResult(
+            bool accepted,
+            bool firstReady,
+            bool released,
+            long generation,
+            IReadOnlyList<DungeonRunIdentity> participants)
+        {
+            Accepted = accepted;
+            FirstReady = firstReady;
+            Released = released;
+            Generation = generation;
+            Participants = participants ?? Array.Empty<DungeonRunIdentity>();
+        }
+
+        internal bool Accepted { get; }
+        internal bool FirstReady { get; }
+        internal bool Released { get; }
+        internal long Generation { get; }
+        internal IReadOnlyList<DungeonRunIdentity> Participants { get; }
+    }
+
+    internal readonly struct DungeonRoomLoadingTimeoutResult
+    {
+        internal DungeonRoomLoadingTimeoutResult(
+            bool accepted,
+            bool released,
+            long generation,
+            long projectionId,
+            IReadOnlyList<DungeonRunIdentity> readyParticipants,
+            IReadOnlyList<DungeonRunIdentity> missingParticipants)
+        {
+            Accepted = accepted;
+            Released = released;
+            Generation = generation;
+            ProjectionId = projectionId;
+            ReadyParticipants = readyParticipants ?? Array.Empty<DungeonRunIdentity>();
+            MissingParticipants = missingParticipants ?? Array.Empty<DungeonRunIdentity>();
+        }
+
+        internal bool Accepted { get; }
+        internal bool Released { get; }
+        internal long Generation { get; }
+        internal long ProjectionId { get; }
+        internal IReadOnlyList<DungeonRunIdentity> ReadyParticipants { get; }
+        internal IReadOnlyList<DungeonRunIdentity> MissingParticipants { get; }
+    }
+
     public sealed class DungeonInstanceRoom
     {
         private const byte SpecialPassiveObjectActorType = 9;
@@ -214,10 +264,19 @@ namespace DfoServer.Game.Dungeon
         private readonly Dictionary<int, DungeonActorDeathFact>
             _ordinaryMapOwnedActorDeaths =
                 new Dictionary<int, DungeonActorDeathFact>();
+        private readonly HashSet<DungeonRunIdentity> _loadingProjectedParticipants =
+            new HashSet<DungeonRunIdentity>();
+        private readonly List<DungeonRunIdentity> _loadingExpectedParticipants =
+            new List<DungeonRunIdentity>();
+        private readonly HashSet<DungeonRunIdentity> _loadingReadyParticipants =
+            new HashSet<DungeonRunIdentity>();
         private Lazy<PassiveObjectDropPlan> _passiveObjectDropPlan;
         private DungeonRoomState _state = DungeonRoomState.Created;
         private long _partyDungeonInstanceId;
         private DungeonEventEnvelope _clearSource;
+        private long _loadingProjectionId;
+        private long _loadingGeneration;
+        private bool _loadingReleased = true;
 
         internal DungeonInstanceRoom(
             long roomInstanceId,
@@ -293,6 +352,187 @@ namespace DfoServer.Game.Dungeon
                         "A dungeon room cannot be attached to multiple instances.");
                 }
             }
+        }
+
+        internal long RegisterLoadingProjection(
+            DungeonRunIdentity participant,
+            long projectionId,
+            IReadOnlyList<DungeonRunIdentity> expectedParticipants,
+            out bool generationStarted)
+        {
+            generationStarted = false;
+            if (!participant.IsValid || projectionId <= 0)
+                return 0;
+
+            lock (_syncRoot)
+            {
+                if (_state == DungeonRoomState.Closed)
+                    return 0;
+
+                if (projectionId < _loadingProjectionId
+                    || (projectionId == _loadingProjectionId
+                        && _loadingReleased))
+                {
+                    return 0;
+                }
+
+                if (projectionId > _loadingProjectionId)
+                {
+                    if (!_loadingReleased)
+                        return 0;
+
+                    _loadingProjectionId = projectionId;
+                    _loadingGeneration = _loadingGeneration == long.MaxValue
+                        ? 1
+                        : _loadingGeneration + 1;
+                    _loadingProjectedParticipants.Clear();
+                    _loadingExpectedParticipants.Clear();
+                    _loadingReadyParticipants.Clear();
+                    _loadingReleased = false;
+                    generationStarted = true;
+                }
+
+                // The target roster is captured by the START_MAP producer,
+                // before clients can race FINISH_LOADING back to the server.
+                // Never let the first fast client replace that frozen roster
+                // with a partial runtime snapshot.
+                if (_loadingReadyParticipants.Count == 0
+                    && expectedParticipants != null)
+                {
+                    var expected = CaptureValidLoadingParticipants(
+                        expectedParticipants);
+                    for (var i = 0; i < expected.Count; i++)
+                    {
+                        if (!_loadingExpectedParticipants.Contains(expected[i]))
+                            _loadingExpectedParticipants.Add(expected[i]);
+                    }
+                }
+
+                _loadingProjectedParticipants.Add(participant);
+                return _loadingGeneration;
+            }
+        }
+
+        internal DungeonRoomLoadingReadyResult MarkLoadingReady(
+            DungeonRunIdentity participant,
+            IReadOnlyList<DungeonRunIdentity> activeParticipants)
+        {
+            lock (_syncRoot)
+            {
+                if (_state == DungeonRoomState.Closed
+                    || _loadingReleased
+                    || !participant.IsValid
+                    || !_loadingProjectedParticipants.Contains(participant))
+                {
+                    return default;
+                }
+
+                if (_loadingReadyParticipants.Contains(participant))
+                    return default;
+
+                var firstReady = _loadingReadyParticipants.Count == 0;
+                if (firstReady)
+                {
+                    if (_loadingExpectedParticipants.Count == 0)
+                    {
+                        _loadingExpectedParticipants.AddRange(
+                            CaptureValidLoadingParticipants(activeParticipants));
+                    }
+                    if (!_loadingExpectedParticipants.Contains(participant))
+                        _loadingExpectedParticipants.Add(participant);
+                }
+                else if (!_loadingExpectedParticipants.Contains(participant))
+                {
+                    return default;
+                }
+
+                _loadingReadyParticipants.Add(participant);
+                var participants = new List<DungeonRunIdentity>(
+                    _loadingExpectedParticipants);
+
+                for (var i = 0; i < participants.Count; i++)
+                {
+                    var current = participants[i];
+                    if (!_loadingProjectedParticipants.Contains(current)
+                        || !_loadingReadyParticipants.Contains(current))
+                    {
+                        return new DungeonRoomLoadingReadyResult(
+                            true,
+                            firstReady,
+                            false,
+                            _loadingGeneration,
+                            null);
+                    }
+                }
+
+                _loadingReleased = true;
+                return new DungeonRoomLoadingReadyResult(
+                    true,
+                    firstReady,
+                    true,
+                    _loadingGeneration,
+                    participants);
+            }
+        }
+
+        internal DungeonRoomLoadingTimeoutResult ForceLoadingCompletion(
+            long expectedGeneration,
+            IReadOnlyList<DungeonRunIdentity> activeParticipants)
+        {
+            lock (_syncRoot)
+            {
+                if (_state == DungeonRoomState.Closed
+                    || _loadingReleased
+                    || expectedGeneration <= 0
+                    || expectedGeneration != _loadingGeneration)
+                {
+                    return default;
+                }
+
+                var active = _loadingExpectedParticipants.Count > 0
+                    ? new List<DungeonRunIdentity>(_loadingExpectedParticipants)
+                    : CaptureValidLoadingParticipants(activeParticipants);
+                var ready = new List<DungeonRunIdentity>();
+                var missing = new List<DungeonRunIdentity>();
+                for (var i = 0; i < active.Count; i++)
+                {
+                    var current = active[i];
+                    if (_loadingProjectedParticipants.Contains(current)
+                        && _loadingReadyParticipants.Contains(current))
+                    {
+                        ready.Add(current);
+                    }
+                    else
+                    {
+                        missing.Add(current);
+                    }
+                }
+
+                _loadingReleased = true;
+                return new DungeonRoomLoadingTimeoutResult(
+                    true,
+                    ready.Count > 0,
+                    _loadingGeneration,
+                    _loadingProjectionId,
+                    ready,
+                    missing);
+            }
+        }
+
+        private static List<DungeonRunIdentity> CaptureValidLoadingParticipants(
+            IReadOnlyList<DungeonRunIdentity> participants)
+        {
+            var result = new List<DungeonRunIdentity>();
+            if (participants == null)
+                return result;
+
+            for (var i = 0; i < participants.Count; i++)
+            {
+                var participant = participants[i];
+                if (participant.IsValid && !result.Contains(participant))
+                    result.Add(participant);
+            }
+            return result;
         }
 
         internal PassiveObjectDropPlan GetOrCreatePassiveObjectDropPlan(
@@ -589,6 +829,11 @@ namespace DfoServer.Game.Dungeon
                 if (_state == DungeonRoomState.Closed)
                     return false;
                 _state = DungeonRoomState.Closed;
+                _loadingReleased = true;
+                _loadingProjectionId = 0;
+                _loadingProjectedParticipants.Clear();
+                _loadingExpectedParticipants.Clear();
+                _loadingReadyParticipants.Clear();
                 return true;
             }
         }
@@ -651,6 +896,8 @@ namespace DfoServer.Game.Dungeon
 
     public sealed class DungeonInstance
     {
+        internal static readonly TimeSpan PartyWipeDelay =
+            TimeSpan.FromSeconds(10);
         private readonly object _syncRoot = new object();
         private readonly Dictionary<RoomKey, DungeonInstanceRoom> _rooms =
             new Dictionary<RoomKey, DungeonInstanceRoom>();
@@ -665,6 +912,12 @@ namespace DfoServer.Game.Dungeon
         private int _normalKillCount;
         private int _championKillCount;
         private int _bossKillCount;
+        private readonly Dictionary<DungeonRunIdentity, bool> _participantDeaths =
+            new Dictionary<DungeonRunIdentity, bool>();
+        private long _partyWipeGeneration;
+        private bool _partyWipePending;
+        private bool _partyWipeCommitted;
+        private DateTime _partyWipeDeadlineUtc = DateTime.MinValue;
 
         public DungeonInstance(short dungeonId, byte difficulty)
             : this(
@@ -734,6 +987,12 @@ namespace DfoServer.Game.Dungeon
         }
         public DateTime CreatedUtc { get; }
         public DungeonEffectLedger Effects { get; } = new DungeonEffectLedger();
+        internal SemaphoreSlim ParticipantLifeGate { get; } =
+            new SemaphoreSlim(1, 1);
+        internal SemaphoreSlim CardRewardProjectionGate { get; } =
+            new SemaphoreSlim(1, 1);
+        internal SemaphoreSlim SettlementTransitionGate { get; } =
+            new SemaphoreSlim(1, 1);
         public DungeonParticipantEffectJournal ParticipantEffects { get; } =
             new DungeonParticipantEffectJournal();
         internal DungeonInstanceMechanismRuntimeSet Mechanisms { get; } =
@@ -770,6 +1029,209 @@ namespace DfoServer.Game.Dungeon
                 _selection = selection;
                 return true;
             }
+        }
+
+        internal void RegisterParticipantLife(DungeonRunIdentity participant)
+        {
+            if (!participant.IsValid
+                || participant.PartyDungeonInstanceId != PartyDungeonInstanceId)
+            {
+                return;
+            }
+
+            lock (_syncRoot)
+            {
+                if (!_participantDeaths.ContainsKey(participant))
+                    _participantDeaths.Add(participant, false);
+            }
+        }
+
+        internal (
+            bool Changed,
+            bool WipeStarted,
+            long Generation,
+            DateTime DeadlineUtc) MarkParticipantDead(
+                DungeonRunIdentity participant,
+                IReadOnlyList<DungeonRunIdentity> activeParticipants,
+                DateTime utcNow,
+                TimeSpan wipeDelay)
+        {
+            if (!participant.IsValid
+                || participant.PartyDungeonInstanceId != PartyDungeonInstanceId
+                || wipeDelay <= TimeSpan.Zero)
+            {
+                return default;
+            }
+
+            lock (_syncRoot)
+            {
+                if (_state == DungeonInstanceState.Ending
+                    || _state == DungeonInstanceState.Ended
+                    || _partyWipeCommitted)
+                {
+                    return default;
+                }
+
+                var changed = !_participantDeaths.TryGetValue(
+                    participant,
+                    out var wasDead) || !wasDead;
+                _participantDeaths[participant] = true;
+
+                if (!AreAllParticipantsDeadLocked(activeParticipants)
+                    || _partyWipePending)
+                {
+                    return (
+                        changed,
+                        false,
+                        _partyWipeGeneration,
+                        _partyWipeDeadlineUtc);
+                }
+
+                _partyWipeGeneration = _partyWipeGeneration == long.MaxValue
+                    ? 1
+                    : _partyWipeGeneration + 1;
+                _partyWipePending = true;
+                _partyWipeDeadlineUtc = utcNow.Kind == DateTimeKind.Local
+                    ? utcNow.ToUniversalTime().Add(wipeDelay)
+                    : DateTime.SpecifyKind(utcNow, DateTimeKind.Utc)
+                        .Add(wipeDelay);
+                return (
+                    changed,
+                    true,
+                    _partyWipeGeneration,
+                    _partyWipeDeadlineUtc);
+            }
+        }
+
+        internal (bool Changed, bool WipeCancelled) MarkParticipantAlive(
+            DungeonRunIdentity participant)
+        {
+            if (!participant.IsValid
+                || participant.PartyDungeonInstanceId != PartyDungeonInstanceId)
+            {
+                return default;
+            }
+
+            lock (_syncRoot)
+            {
+                if (_partyWipeCommitted)
+                    return default;
+                var changed = _participantDeaths.TryGetValue(
+                    participant,
+                    out var wasDead) && wasDead;
+                _participantDeaths[participant] = false;
+                if (!changed || !_partyWipePending)
+                    return (changed, false);
+
+                _partyWipePending = false;
+                _partyWipeDeadlineUtc = DateTime.MinValue;
+                return (true, true);
+            }
+        }
+
+        internal (
+            bool WipeStarted,
+            long Generation,
+            DateTime DeadlineUtc) RemoveParticipantLife(
+                DungeonRunIdentity participant,
+                IReadOnlyList<DungeonRunIdentity> remainingParticipants,
+                DateTime utcNow,
+                TimeSpan wipeDelay)
+        {
+            lock (_syncRoot)
+            {
+                _participantDeaths.Remove(participant);
+                if (_partyWipeCommitted
+                    || _state == DungeonInstanceState.Ending
+                    || _state == DungeonInstanceState.Ended
+                    || remainingParticipants == null
+                    || remainingParticipants.Count == 0
+                    || _partyWipePending
+                    || !AreAllParticipantsDeadLocked(remainingParticipants))
+                {
+                    return default;
+                }
+
+                _partyWipeGeneration = _partyWipeGeneration == long.MaxValue
+                    ? 1
+                    : _partyWipeGeneration + 1;
+                _partyWipePending = true;
+                _partyWipeDeadlineUtc = utcNow.Kind == DateTimeKind.Local
+                    ? utcNow.ToUniversalTime().Add(wipeDelay)
+                    : DateTime.SpecifyKind(utcNow, DateTimeKind.Utc)
+                        .Add(wipeDelay);
+                return (
+                    true,
+                    _partyWipeGeneration,
+                    _partyWipeDeadlineUtc);
+            }
+        }
+
+        internal bool IsParticipantDead(DungeonRunIdentity participant)
+        {
+            lock (_syncRoot)
+            {
+                return participant.IsValid
+                    && _participantDeaths.TryGetValue(participant, out var dead)
+                    && dead;
+            }
+        }
+
+        internal bool CanReviveParticipant(DungeonRunIdentity participant)
+        {
+            lock (_syncRoot)
+            {
+                return !_partyWipeCommitted
+                    && participant.IsValid
+                    && _participantDeaths.TryGetValue(participant, out var dead)
+                    && dead;
+            }
+        }
+
+        internal bool TryCommitPartyWipe(
+            long generation,
+            IReadOnlyList<DungeonRunIdentity> activeParticipants,
+            DateTime utcNow)
+        {
+            var normalizedUtc = utcNow.Kind == DateTimeKind.Local
+                ? utcNow.ToUniversalTime()
+                : DateTime.SpecifyKind(utcNow, DateTimeKind.Utc);
+            lock (_syncRoot)
+            {
+                if (!_partyWipePending
+                    || generation <= 0
+                    || generation != _partyWipeGeneration
+                    || normalizedUtc < _partyWipeDeadlineUtc
+                    || !AreAllParticipantsDeadLocked(activeParticipants))
+                {
+                    return false;
+                }
+
+                _partyWipePending = false;
+                _partyWipeCommitted = true;
+                _partyWipeDeadlineUtc = DateTime.MinValue;
+                return true;
+            }
+        }
+
+        private bool AreAllParticipantsDeadLocked(
+            IReadOnlyList<DungeonRunIdentity> activeParticipants)
+        {
+            if (activeParticipants == null || activeParticipants.Count == 0)
+                return false;
+
+            for (var i = 0; i < activeParticipants.Count; i++)
+            {
+                var current = activeParticipants[i];
+                if (!current.IsValid
+                    || current.PartyDungeonInstanceId != PartyDungeonInstanceId
+                    || !_participantDeaths.TryGetValue(current, out var dead)
+                    || !dead)
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
         public DungeonInstanceRoom GetOrCreateRoom(
@@ -931,6 +1393,8 @@ namespace DfoServer.Game.Dungeon
                 }
 
                 _state = DungeonInstanceState.Ending;
+                _partyWipePending = false;
+                _partyWipeDeadlineUtc = DateTime.MinValue;
             }
 
             Mechanisms.OnInstanceEnding();

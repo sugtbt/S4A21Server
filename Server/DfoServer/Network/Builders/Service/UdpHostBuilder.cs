@@ -4,10 +4,10 @@ namespace DfoServer.Network.Builders
 {
     public static class UdpHostBuilder
     {
-        public static byte[] BuildUnavailable()
+        public static byte[] BuildHostSlot(byte slotIndex)
         {
             var writer = new GamePacketWriter();
-            writer.WriteByte(0x00);
+            writer.WriteByte(slotIndex);
             return writer.ToArray();
         }
     }

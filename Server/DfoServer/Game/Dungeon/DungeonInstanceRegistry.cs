@@ -35,6 +35,8 @@ namespace DfoServer.Game.Dungeon
         private readonly DungeonParticipantAttachmentOptions _options;
         private readonly Func<DateTime> _utcNow;
         private readonly string _timerPrefix;
+        private Action<DungeonInstance, long, DateTime, string>
+            _partyWipeStarted;
         private bool _disposed;
 
         internal DungeonInstanceRegistry(
@@ -46,6 +48,13 @@ namespace DfoServer.Game.Dungeon
             _options = options ?? DungeonParticipantAttachmentOptions.Default;
             _utcNow = utcNow ?? (() => DateTime.UtcNow);
             _timerPrefix = "dungeon-rejoin:" + Guid.NewGuid().ToString("N") + ":";
+        }
+
+        internal void ConfigurePartyWipeStarted(
+            Action<DungeonInstance, long, DateTime, string> callback)
+        {
+            lock (_syncRoot)
+                _partyWipeStarted = callback;
         }
 
         internal DungeonParticipantAttachmentSnapshot RegisterActive(
@@ -411,7 +420,7 @@ namespace DfoServer.Game.Dungeon
             DungeonRunIdentity expectedRun,
             string reason)
         {
-            ClockService.ClockTimerHandle timer;
+            DungeonRun run;
             lock (_syncRoot)
             {
                 if (_disposed
@@ -420,13 +429,76 @@ namespace DfoServer.Game.Dungeon
                 {
                     return false;
                 }
+                run = entry.Run;
+            }
 
-                timer = RemoveEntryLocked(
-                    entry,
-                    DungeonParticipantAttachmentState.Terminated);
+            var lifeGate = run?.Instance?.ParticipantLifeGate;
+            lifeGate?.Wait();
+            ClockService.ClockTimerHandle timer = null;
+            var removed = false;
+            try
+            {
+                Action<DungeonInstance, long, DateTime, string>
+                    partyWipeStarted = null;
+                lock (_syncRoot)
+                {
+                    if (!_disposed
+                        && _byCharacterId.TryGetValue(characterId, out var entry)
+                        && entry.RunIdentity.Equals(expectedRun))
+                    {
+                        timer = RemoveEntryLocked(
+                            entry,
+                            DungeonParticipantAttachmentState.Terminated);
+                        partyWipeStarted = _partyWipeStarted;
+                        removed = true;
+                    }
+                }
+
+                if (removed && run?.Instance != null)
+                {
+                    var remainingRuns = new List<DungeonRunIdentity>();
+                    foreach (var participant in CaptureInstanceParticipantRoster(
+                                 run.CaptureInstanceIdentity()))
+                    {
+                        if (participant.RunIdentity.IsValid
+                            && !remainingRuns.Contains(participant.RunIdentity))
+                        {
+                            remainingRuns.Add(participant.RunIdentity);
+                        }
+                    }
+                    var transition = run.Instance.RemoveParticipantLife(
+                        expectedRun,
+                        remainingRuns,
+                        NormalizeUtc(_utcNow()),
+                        DungeonInstance.PartyWipeDelay);
+                    if (transition.WipeStarted && partyWipeStarted != null)
+                    {
+                        try
+                        {
+                            partyWipeStarted(
+                                run.Instance,
+                                transition.Generation,
+                                transition.DeadlineUtc,
+                                reason);
+                        }
+                        catch (Exception ex)
+                        {
+                            FileLogger.Log(
+                                $"[DungeonInstanceRegistry] party wipe callback " +
+                                $"failed instance={run.PartyDungeonInstanceId}: " +
+                                ex.Message);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                lifeGate?.Release();
             }
 
             timer?.Cancel();
+            if (!removed)
+                return false;
             FileLogger.Log(
                 $"[DungeonInstanceRegistry] participant terminated " +
                 $"cid={characterId} instance={expectedRun.PartyDungeonInstanceId} " +

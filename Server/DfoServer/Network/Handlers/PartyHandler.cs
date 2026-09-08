@@ -39,6 +39,11 @@ namespace DfoServer.Network.Handlers
         private readonly object _broadcastGatesLock = new object();
         private readonly Dictionary<int, BroadcastGateEntry> _broadcastGates =
             new Dictionary<int, BroadcastGateEntry>();
+        private readonly SemaphoreSlim _partyListPublishGate =
+            new SemaphoreSlim(1, 1);
+        private readonly Dictionary<Guid, HashSet<int>>
+            _publishedTownPartyIds =
+                new Dictionary<Guid, HashSet<int>>();
         internal Func<int, int, Task>
             GenerationPublishAfterCurrentCheckAsync { get; set; }
         private const string ProtocolName = "GameProtocol";
@@ -119,7 +124,9 @@ namespace DfoServer.Network.Handlers
             FileLogger.Log(
                 $"[{ProtocolName}] SET_UDP_IP_PORT registered: " +
                 $"cid={session.Player.CharacterId} " +
-                $"bodyLength={body.Length}");
+                $"endpoint={request.InnerIpv4}:{request.Port} " +
+                $"outer={request.OuterIpv4} nat={request.NatType} " +
+                $"mtu={request.Mtu} bodyLength={body.Length}");
         }
 
         private static string FormatUdpParseFailure(
@@ -141,6 +148,16 @@ namespace DfoServer.Network.Handlers
 
         private async Task OnSessionEndingAsync(int characterId, EnhancedClientSession dying)
         {
+            await _partyListPublishGate.WaitAsync();
+            try
+            {
+                _publishedTownPartyIds.Remove(dying.SessionId);
+            }
+            finally
+            {
+                _partyListPublishGate.Release();
+            }
+
             var uid = (ushort)characterId;
             var result = _partyManager.OnSessionDisconnected(
                 uid, dying.SessionId);
@@ -151,6 +168,16 @@ namespace DfoServer.Network.Handlers
             await PublishCommittedDepartureAsync(
                 result,
                 $"disconnect uid={uid}");
+            if (result.LeaderChanged &&
+                !result.Disbanded &&
+                result.Party != null)
+            {
+                await PublishPartyHostProjectionAsync(
+                    result.Party.PartyId,
+                    result.NewLeaderUserId,
+                    includeRealtime: false,
+                    reason: $"disconnect-successor uid={uid}");
+            }
         }
 
         // 建队/入队时若目标玩家原本在别的队伍, 原队剩余成员需要收到名册刷新(否则那边永远显示旧名册)。
@@ -240,6 +267,7 @@ namespace DfoServer.Network.Handlers
             {
                 if (committedParty != null)
                     await CloseRelayRoomAsync(committedParty.PartyId);
+                await PublishTownPartyListsAsync();
                 return;
             }
 
@@ -279,6 +307,7 @@ namespace DfoServer.Network.Handlers
                         $"old={retiredPartyId} " +
                         $"new={replacementPartyId} reason={reason}; " +
                         "old relay closed, wire publish skipped");
+                    await PublishTownPartyListsAsync();
                     return;
                 }
 
@@ -326,15 +355,18 @@ namespace DfoServer.Network.Handlers
                         $"[{ProtocolName}] PARTY generation superseded " +
                         $"during publish: old={retiredPartyId} " +
                         $"new={replacementPartyId} reason={reason}");
+                    await PublishTownPartyListsAsync();
                     return;
                 }
 
                 await BroadcastPartyInfoWithinGate(
                     replacementPartyId);
+                await PublishTownPartyListsAsync();
                 return;
             }
 
             await BroadcastPartyInfo(replacementPartyId);
+            await PublishTownPartyListsAsync();
         }
 
         private PartyMember BuildMember(EnhancedClientSession session, int cid)
@@ -437,12 +469,91 @@ namespace DfoServer.Network.Handlers
         }
 
         // 0x000C 创建/更新队伍。无队则建(请求者=队长), 更新设置, 回整份 PARTY_INFO(type=0)。
-        public async Task Handle_SET_PARTY_INFO(EnhancedClientSession session, GamePacketHeader header, byte[] body)
+        private static Game.Dungeon.DungeonPartySelectionCohort
+            ResolveEntryPartyTransitionCohort(EnhancedClientSession session)
+            => session?.Player?.CurrentRun?.EntryPartySelectionCohort
+               ?? session?.Player?.CurrentDungeonSelection?.PartyCohort;
+
+        private static async Task RunWithEntryPartyTransitionGatesAsync(
+            Func<Task> action,
+            params EnhancedClientSession[] sessions)
+        {
+            var cohorts = (sessions ?? Array.Empty<EnhancedClientSession>())
+                .Select(ResolveEntryPartyTransitionCohort)
+                .Where(cohort => cohort != null)
+                .Distinct()
+                .OrderBy(cohort => cohort.PartyId)
+                .ThenBy(cohort => cohort.ProjectionId)
+                .ToList();
+            foreach (var cohort in cohorts)
+                await cohort.TransitionGate.WaitAsync();
+            try
+            {
+                await action();
+            }
+            finally
+            {
+                for (var index = cohorts.Count - 1; index >= 0; index--)
+                    cohorts[index].TransitionGate.Release();
+            }
+        }
+
+        private static async Task
+            RunWithDungeonSelectionAndEntryPartyTransitionGatesAsync(
+                Func<Task> action,
+                params EnhancedClientSession[] sessions)
+        {
+            var ownerGates = (sessions ?? Array.Empty<EnhancedClientSession>())
+                .Where(session => session?.Player != null)
+                .OrderBy(session => session.Player.CharacterId)
+                .ThenBy(session => session.SessionId)
+                .Select(session => session.Player.DungeonRunTransitionGate)
+                .Distinct()
+                .ToList();
+            foreach (var gate in ownerGates)
+                await gate.WaitAsync();
+            try
+            {
+                await RunWithEntryPartyTransitionGatesAsync(
+                    action,
+                    sessions);
+            }
+            finally
+            {
+                for (var index = ownerGates.Count - 1;
+                     index >= 0;
+                     index--)
+                {
+                    ownerGates[index].Release();
+                }
+            }
+        }
+
+        public Task Handle_SET_PARTY_INFO(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body)
+            => RunWithEntryPartyTransitionGatesAsync(
+                () => HandleSetPartyInfoCore(session, header, body),
+                session);
+
+        private async Task HandleSetPartyInfoCore(EnhancedClientSession session, GamePacketHeader header, byte[] body)
         {
             FileLogger.Log($"[{ProtocolName}] SET_PARTY_INFO recv({body?.Length ?? 0}B): {(body != null ? System.BitConverter.ToString(body) : "null")}");
             if (!SetPartyInfoRequest.TryParse(body, out var req))
             {
                 await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x01, 0x000C, new byte[] { 0x00, 0x04 }));
+                return;
+            }
+            if (!PartyConstants.IsSupportedCapacity(req.UserMax))
+            {
+                FileLogger.Log(
+                    $"[{ProtocolName}] SET_PARTY_INFO rejected: " +
+                    $"reason=invalid_user_max userMax={req.UserMax}");
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x01,
+                    0x000C,
+                    new byte[] { 0x00, 0x04 }));
                 return;
             }
 
@@ -453,6 +564,8 @@ namespace DfoServer.Network.Handlers
             var member = BuildMember(session, cid);
             Party party = null;
             PartyOpResult createdResult = null;
+            PartyOpResult settingsResult = null;
+            string failureReason = null;
             if (!await RunCurrentPartyMutationAsync(
                     session,
                     () =>
@@ -464,32 +577,86 @@ namespace DfoServer.Network.Handlers
                                 _partyManager.CreateParty(member);
                             party = createdResult.Party;
                         }
-                        party.TitleIndex = 0;
-                        party.TitleBytes =
+                        var titleBytes =
                             (req.Title != null &&
                              req.Title.Length > 0)
                                 ? req.Title
                                 : leaderName;
-                        party.UserMax = 4;
-                        party.DungIndex = 0;
-                        party.DungDiffi = 0;
+                        settingsResult = _partyManager.UpdateSettings(
+                            uid,
+                            session.SessionId,
+                            titleBytes,
+                            req.UserMax,
+                            req.Raw);
+                        if (!settingsResult.Ok)
+                        {
+                            failureReason = settingsResult.Reason;
+                            return;
+                        }
+                        party = settingsResult.Party;
                     }))
             {
+                return;
+            }
+            if (failureReason != null)
+            {
+                FileLogger.Log(
+                    $"[{ProtocolName}] SET_PARTY_INFO rejected: " +
+                    $"uid={uid} reason={failureReason}");
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x01,
+                    0x000C,
+                    new byte[] { 0x00, 0x04 }));
                 return;
             }
 
             await NotifyPriorPartyAsync(
                 createdResult?.PriorPartyLeave);
 
-            FileLogger.Log($"[{ProtocolName}] SET_PARTY_INFO uid={uid} party={party.PartyId} titleIdx={req.TitleIndex} userMax={party.UserMax} dung={req.DungIndex}/{req.DungDiffi} members={party.Count}");
+            FileLogger.Log($"[{ProtocolName}] SET_PARTY_INFO uid={uid} party={party.PartyId} settings={System.BitConverter.ToString(req.Raw)} members={party.Count}");
 
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0009, PartyInfoNotiBuilder.Build(party, 0)));
-            // 主动补发实时信息(0x0099), 保证组队窗口 HP/MP 立即填充(不依赖客户端是否请求 0x00A6)。
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0099, PartyRealtimeInfoBuilder.Build(party)));
+            if (createdResult != null)
+            {
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    0x0009,
+                    PartyInfoNotiBuilder.Build(party, 0)));
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    0x0099,
+                    PartyRealtimeInfoBuilder.Build(party)));
+            }
+            else
+            {
+                await BroadcastPartySettings(party.PartyId);
+            }
+            await PublishTownPartyListsAsync();
         }
 
         // 0x000D 退队。df 成功无对本人回包(走广播刷新剩余成员); 失败回 0x12(不在队)。
-        public async Task Handle_LEAVE_PARTY(EnhancedClientSession session, GamePacketHeader header, byte[] body)
+        public async Task Handle_LEAVE_PARTY(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body)
+        {
+            var transitionGate =
+                session?.Player?.CurrentRun?.EntryPartySelectionCohort
+                    ?.TransitionGate
+                ?? session?.Player?.CurrentDungeonSelection?.PartyCohort
+                    ?.TransitionGate;
+            if (transitionGate != null)
+                await transitionGate.WaitAsync();
+            try
+            {
+                await HandleLeavePartyCore(session, header, body);
+            }
+            finally
+            {
+                transitionGate?.Release();
+            }
+        }
+
+        private async Task HandleLeavePartyCore(EnhancedClientSession session, GamePacketHeader header, byte[] body)
         {
             var (cid, aid) = SessionOwnerResolver.Resolve(session);
             var uid = (ushort)cid;
@@ -541,38 +708,69 @@ namespace DfoServer.Network.Handlers
             }
         }
 
-        // 未通关副本中【队长主动放弃】的专用退队路径:
-        // 队长本人已由 TownHandler 拉回城; 这里只把队长移出队伍、让顺位成员接任，
-        // 并让仍在副本里的成员从空窗口重建名册。非队长放弃不改变队伍归属。
-        public async Task HandleDungeonLeaderGiveupAsync(EnhancedClientSession session)
+        // 未通关副本中主动放弃后的队伍策略。调用点仍持有本次入场 cohort
+        // 的 TransitionGate，因此多名成员接近同时回城时，离队顺序与 EndRun
+        // 顺序一致。前面的成员离队；最后一名保留为单人队。
+        internal async Task HandleDungeonGiveupWithinTransitionAsync(
+            EnhancedClientSession session,
+            ushort expectedUserId,
+            Guid expectedSessionId,
+            int expectedPartyId)
         {
-            var (cid, _) = SessionOwnerResolver.Resolve(session);
-            if (cid <= 0)
+            if (expectedUserId == 0 || expectedSessionId == Guid.Empty)
                 return;
 
-            var uid = (ushort)cid;
-            var party = _partyManager.GetPartyByUser(uid);
-            if (party == null || party.Count <= 1 || !party.IsLeader(uid))
+            var uid = expectedUserId;
+            if (expectedPartyId <= 0)
             {
-                FileLogger.Log($"[{ProtocolName}] DUNGEON_LEADER_GIVEUP skip uid={uid} party={(party?.PartyId ?? -1)} count={(party?.Count ?? 0)} isLeader={(party?.IsLeader(uid) ?? false)}");
+                FileLogger.Log(
+                    $"[{ProtocolName}] DUNGEON_GIVEUP leave skip " +
+                    $"uid={uid} reason=no_expected_party");
                 return;
             }
 
-            int partyId = party.PartyId;
-            PartyOpResult result = null;
-            if (!await RunCurrentPartyMutationAsync(
-                    session,
-                    () =>
-                    {
-                        result = _partyManager.Leave(
-                            uid, session.SessionId);
-                    }))
+            var identityCurrent = session?.SessionId == expectedSessionId &&
+                                  session.Player?.UserId == uid;
+            var result = identityCurrent
+                ? _partyManager.LeaveForDungeonReturn(
+                    uid,
+                    expectedSessionId,
+                    expectedPartyId)
+                : _partyManager.LeaveExpectedParty(
+                    uid,
+                    expectedSessionId,
+                    expectedPartyId);
+            if (!result.Ok)
             {
+                FileLogger.Log(
+                    $"[{ProtocolName}] DUNGEON_GIVEUP leave failed " +
+                    $"uid={uid} party={expectedPartyId} " +
+                    $"reason={result.Reason}");
                 return;
             }
-            if (!result.Ok || result.Disbanded || result.Party == null)
+
+            if (!identityCurrent)
             {
-                FileLogger.Log($"[{ProtocolName}] DUNGEON_LEADER_GIVEUP failed uid={uid} party={partyId} ok={result.Ok} disbanded={result.Disbanded} reason={result.Reason}");
+                await PublishCommittedDepartureAsync(
+                    result,
+                    $"dungeon-giveup-stale-identity uid={uid}");
+                FileLogger.Log(
+                    $"[{ProtocolName}] DUNGEON_GIVEUP stale identity cleanup " +
+                    $"uid={uid} party={expectedPartyId}");
+                return;
+            }
+
+            if (result.SoleMemberPreserved)
+            {
+                await PublishPartyHostProjectionAsync(
+                    result.Party.PartyId,
+                    uid,
+                    includeRealtime: true,
+                    reason: "dungeon-giveup-last-member");
+                FileLogger.Log(
+                    $"[{ProtocolName}] DUNGEON_GIVEUP preserved solo party " +
+                    $"uid={uid} party={result.Party.PartyId} " +
+                    $"slot={result.Party.GetMember(uid)?.SlotIndex ?? 0}");
                 return;
             }
 
@@ -581,15 +779,20 @@ namespace DfoServer.Network.Handlers
                 await SendPartyClearBestEffortAsync(
                     session,
                     GetDepartureClearParty(result),
-                    $"dungeon-leader-giveup-clear uid={uid}");
+                    $"dungeon-giveup-clear uid={uid}");
             }
             finally
             {
                 await PublishCommittedDepartureAsync(
                     result,
-                    $"dungeon-leader-giveup uid={uid}");
+                    $"dungeon-giveup uid={uid}");
             }
-            FileLogger.Log($"[{ProtocolName}] DUNGEON_LEADER_GIVEUP uid={uid} leftParty={partyId} newLeader={result.NewLeaderUserId} remaining=[{string.Join(",", result.RemainingMembers.Select(m => m.UserId))}]");
+            FileLogger.Log(
+                $"[{ProtocolName}] DUNGEON_GIVEUP left party " +
+                $"uid={uid} party={expectedPartyId} " +
+                $"disbanded={result.Disbanded} " +
+                $"newLeader={result.NewLeaderUserId} " +
+                $"remaining=[{string.Join(",", result.RemainingMembers.Select(m => m.UserId))}]");
         }
 
         // 退队/被踢共用: 若该会话仍在副本实例里, 清 run + 发 4 包城镇序列拉回城镇(否则人离队却卡本里)。
@@ -746,7 +949,43 @@ namespace DfoServer.Network.Handlers
         }
 
         // 0x000E 踢人。请求 = byte 目标 slot。仅队长可踢; 失败回 0x13。成功后剩余成员重发 PARTY_INFO。
-        public async Task Handle_WALKOUT_PARTY_MEMBER(EnhancedClientSession session, GamePacketHeader header, byte[] body)
+        public async Task Handle_WALKOUT_PARTY_MEMBER(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body)
+        {
+            var initialParty = session?.Player == null
+                ? null
+                : _partyManager.GetPartyByUser(session.Player.UserId);
+            var target = body != null && body.Length >= 1
+                ? initialParty?.MembersBySlot().FirstOrDefault(
+                    member => member.SlotIndex == body[0])
+                : null;
+            EnhancedClientSession targetSession = null;
+            if (target != null)
+                _sessions?.TryGet(target.CharacterId, out targetSession);
+            var transitionGate =
+                session?.Player?.CurrentRun?.EntryPartySelectionCohort
+                    ?.TransitionGate
+                ?? session?.Player?.CurrentDungeonSelection?.PartyCohort
+                    ?.TransitionGate
+                ?? targetSession?.Player?.CurrentRun
+                    ?.EntryPartySelectionCohort?.TransitionGate
+                ?? targetSession?.Player?.CurrentDungeonSelection
+                    ?.PartyCohort?.TransitionGate;
+            if (transitionGate != null)
+                await transitionGate.WaitAsync();
+            try
+            {
+                await HandleWalkoutPartyMemberCore(session, header, body);
+            }
+            finally
+            {
+                transitionGate?.Release();
+            }
+        }
+
+        private async Task HandleWalkoutPartyMemberCore(EnhancedClientSession session, GamePacketHeader header, byte[] body)
         {
             var (cid, aid) = SessionOwnerResolver.Resolve(session);
             var uid = (ushort)cid;
@@ -863,15 +1102,18 @@ namespace DfoServer.Network.Handlers
         }
 
         // ==== Phase B: 组队邀请流(需 ISessionDirectory 跨会话定位)。假人两连接可端到端联调状态机。====
-        // 0x0079 CHANGE_HOST:【委托队长】(真机实测右键队伍成员→委托队长, 客户端发 0x0079 body=1字节槽位)。
-        // ⚠️ 脱壳定论(sub_14A4AA0 有序 slot-diff):此客户端【不支持原地换队长】。队长由【slot0】判定(PARTY_INFO
-        //    名册块无独立 leader 字段), 想让 B 当队长必须把 B 挪到 slot0。但客户端收到"某成员移到更低槽位"的 diff 时,
-        //    会 clobber 该成员自身的回指指针(memberObj+1028)→ B 自己被踢出队伍;A 侧则卡"连接中"。真机已复现。
-        // 修法(Option A 解散重建):先给两端发 PARTY_INFO type=3(sub_D1BD10: type==3→清所有槽), 把队伍窗口清空,
-        //   再用 [B(新队长/slot0), 其余成员按原序] 重新组队并广播——因客户端是【从空重建】而非 diff, 不触发 clobber。
-        //   全用初始组队时已验证过的成熟原语(type=3 清窗 + CreateParty/Join + BroadcastPartyInfo formation 序列)。
-        // ⚠️ 客户端渲染结果须真机确认(晨测清单 ①); 若仍异常, 回退为"安全空操作"(不重排/不解散, 保持 A 队长不崩)。
-        public async Task Handle_CHANGE_HOST(EnhancedClientSession session, GamePacketHeader header, byte[] body)
+        // 0x0079 CHANGE_HOST: body[0] 是目标成员的稳定槽位。
+        // A21 NOTI 0x001A consumer 与 100 神迹 send_host_info 都把一字节
+        // body 当作 host 槽；委任只切 leader/host，不重排成员槽或重建队伍。
+        public Task Handle_CHANGE_HOST(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body)
+            => RunWithEntryPartyTransitionGatesAsync(
+                () => HandleChangeHostCore(session, header, body),
+                session);
+
+        private async Task HandleChangeHostCore(EnhancedClientSession session, GamePacketHeader header, byte[] body)
         {
             if (body == null || body.Length < 1) return;
             byte slot = body[0];
@@ -910,78 +1152,49 @@ namespace DfoServer.Network.Handlers
                 return;
             }
 
-            // --- Option A: 解散 + 以 [target(新队长), 其余原序] 重建 ---
-            int oldPartyId = party.PartyId;
-            var newLeader = target;                                   // B → slot0
-            var oldMembers = party.MembersBySlot();                   // 清窗要发给全体(含离场重建前的所有成员会话)
-
-            // 1) 先给全体在线成员发 PARTY_INFO type=3 清空组队窗口(避免客户端做 slot-diff)。
-            foreach (var m in oldMembers)
-            {
-                EnhancedClientSession ms = null;
-                if (_sessions != null) _sessions.TryGet(m.CharacterId, out ms);
-                if (ms?.TcpClient != null &&
-                    ms.SessionId == m.SessionId &&
-                    ms.TcpClient.Connected)
-                {
-                    var clearPacket =
-                        GamePacketEnvelopeBuilder.Build(
-                            0x00,
-                            0x0009,
-                            PartyInfoNotiBuilder.Build(
-                                party, 3));
-                    await Game.Session.SessionDirectory
-                        .TrySendBestEffortAsync(
-                            cancellationToken =>
-                                ms.SendPacketAsync(
-                                    clearPacket,
-                                    cancellationToken),
-                            $"change-host-clear uid={m.UserId}");
-                }
-            }
-
-            // 2) 服务端解散旧队 + 以新队长为 slot0 重建(TryAddMember 会重新分配 SlotIndex)。
-            PartyOpResult rebuild = null;
+            var partyId = party.PartyId;
+            PartyOpResult transfer = null;
             if (!await RunCurrentPartyPairMutationAsync(
                     session,
                     targetSession,
                     () =>
                     {
-                        rebuild =
-                            _partyManager.RebuildWithLeader(
-                                oldPartyId,
+                        transfer =
+                            _partyManager.TransferLeader(
+                                partyId,
                                 byUid,
                                 session.SessionId,
-                                newLeader.UserId,
-                                newLeader.SessionId);
+                                target.UserId,
+                                target.SessionId);
                     }))
             {
-                var repairParty =
-                    _partyManager.GetPartySnapshot(
-                        oldPartyId);
-                if (repairParty != null)
-                    await BroadcastPartyInfo(repairParty);
+                FileLogger.Log(
+                    $"[{ProtocolName}] CHANGE_HOST transfer aborted: " +
+                    $"by={byUid} party={partyId} reason=stale_transition");
                 return;
             }
-            if (rebuild == null || !rebuild.Ok)
+            if (transfer == null || !transfer.Ok)
             {
                 FileLogger.Log(
-                    $"[{ProtocolName}] CHANGE_HOST rebuild aborted: " +
-                    $"by={byUid} party={oldPartyId} " +
-                    $"reason={rebuild?.Reason ?? "stale_session"}");
-                var repairParty =
-                    _partyManager.GetPartyByUser(byUid);
-                if (repairParty != null)
-                    await BroadcastPartyInfo(repairParty);
+                    $"[{ProtocolName}] CHANGE_HOST transfer aborted: " +
+                    $"by={byUid} party={partyId} " +
+                    $"reason={transfer?.Reason ?? "stale_session"}");
                 return;
             }
 
-            await CloseRelayRoomAsync(oldPartyId);
-            var newParty = rebuild.Party;
-
-            FileLogger.Log($"[{ProtocolName}] CHANGE_HOST: 委托队长 {byUid} → {newLeader.UserId}(slot={slot}); 解散旧队 {oldPartyId} → 重建 {newParty.PartyId} 成员=[{string.Join(",", newParty.MembersBySlot().Select(x => $"uid{x.UserId}@slot{x.SlotIndex}"))}]; 全体先 type=3 清窗再 formation 广播");
-            // 3) 像初始组队一样广播(0x99→0x0B→0x09 formation 序列), 客户端从空重建, 不触发 slot-diff clobber。
-            await BroadcastPartyInfo(newParty);
+            await PublishPartyHostProjectionAsync(
+                partyId,
+                target.UserId,
+                includeRealtime: false,
+                reason: "change-host");
+            var committed = _partyManager.GetPartySnapshot(partyId);
+            FileLogger.Log(
+                $"[{ProtocolName}] CHANGE_HOST: 委托队长 {byUid} → " +
+                $"{target.UserId}(slot={slot}); party={partyId} " +
+                $"成员槽保持=[{string.Join(",", committed?.MembersBySlot().Select(
+                    x => $"uid{x.UserId}@slot{x.SlotIndex}") ??
+                    Enumerable.Empty<string>())}]");
+            await PublishTownPartyListsAsync();
         }
 
         // 0x01A3 belongs to the chat-group/1:1 conversation flow, not party
@@ -1095,8 +1308,8 @@ namespace DfoServer.Network.Handlers
                 return;
             }
 
-            // 组队邀请在弹框前登记，并绑定双方当前 SessionId 与邀请时的
-            // PartyId。随后只有这一对会话发来的 RES_PEER 才能消费。
+            // type0 同时承载普通邀请与申请加入。登记双方当前 SessionId
+            // 以及请求时各自的 PartyId，接受时按同一状态重新校验。
             var inviteRecorded = false;
             string inviteFailure = null;
             if (!await RunCurrentPartyPairMutationAsync(
@@ -1104,41 +1317,12 @@ namespace DfoServer.Network.Handlers
                     targetSession,
                     () =>
                     {
-                        var inviterParty =
-                            _partyManager.GetPartyByUser(inviterUid);
-                        var partyId = 0;
-                        if (inviterParty != null)
-                        {
-                            var inviterState =
-                                inviterParty.GetMember(inviterUid);
-                            if (inviterState?.SessionId !=
-                                session.SessionId)
-                            {
-                                inviteFailure = "stale_session";
-                                return;
-                            }
-                            if (inviterParty.LeaderUserId !=
-                                inviterUid)
-                            {
-                                inviteFailure = "not_leader";
-                                return;
-                            }
-                            if (inviterParty.IsFull)
-                            {
-                                inviteFailure = "party_full";
-                                return;
-                            }
-                            partyId = inviterParty.PartyId;
-                        }
-
                         inviteRecorded = _partyManager.RecordInvite(
                             targetUid,
                             targetSession.SessionId,
                             inviterUid,
                             session.SessionId,
-                            partyId);
-                        if (!inviteRecorded)
-                            inviteFailure = "invalid_invite";
+                            out inviteFailure);
                     }))
             {
                 return;
@@ -1189,11 +1373,48 @@ namespace DfoServer.Network.Handlers
                     $"发 REQUEST_PEER(0x0007) 邀请弹框 " +
                     $"crossAreaContext={inviteContext != null}");
             }
+            else
+            {
+                _partyManager.CancelInvite(
+                    targetUid,
+                    targetSession.SessionId,
+                    inviterUid,
+                    session.SessionId);
+            }
         }
 
-        // 0x000B RES_PEER: 被邀请者接受 REQUEST_PEER 邀请(真机抓包: body = 邀请者uid(u16) + 5B 尾)。
-        // 接受 → 把接受者并入邀请者的队(邀请者=队长)+ 给全体广播 PARTY_INFO(0x09)+实时(0x99)。
-        public async Task Handle_RES_PEER(EnhancedClientSession session, GamePacketHeader header, byte[] body)
+        // 0x000B RES_PEER: type0 接受为精确 7B；拒绝为同一前缀后追加 u16 0x0085 的 9B。
+        // 只有接受形态才允许进入组队 mutation；拒绝/异常形态只消费 exact pending。
+        internal static bool IsAcceptedTypeZeroPeerResponse(byte[] body)
+            => body != null && body.Length == 7 && body[2] == 0;
+
+        public Task Handle_RES_PEER(
+            EnhancedClientSession session,
+            GamePacketHeader header,
+            byte[] body)
+        {
+            var inviterSession = body != null && body.Length >= 2
+                ? FindSessionByUserId(BitConverter.ToUInt16(body, 0))
+                : null;
+            var requestType = body != null && body.Length >= 3
+                ? body[2]
+                : (byte)0;
+            if (body != null &&
+                body.Length >= 2 &&
+                requestType == 0)
+            {
+                return RunWithDungeonSelectionAndEntryPartyTransitionGatesAsync(
+                    () => HandleResPeerCore(session, header, body),
+                    session,
+                    inviterSession);
+            }
+            return RunWithEntryPartyTransitionGatesAsync(
+                () => HandleResPeerCore(session, header, body),
+                session,
+                inviterSession);
+        }
+
+        private async Task HandleResPeerCore(EnhancedClientSession session, GamePacketHeader header, byte[] body)
         {
             if (_sessions == null || body == null || body.Length < 2)
                 return;
@@ -1204,7 +1425,7 @@ namespace DfoServer.Network.Handlers
             byte reqType = body.Length >= 3 ? body[2] : (byte)0;
             var (acid, aaid) = SessionOwnerResolver.Resolve(session);
             ushort accepterUid = (ushort)acid;
-            FileLogger.Log($"[{ProtocolName}] RES_PEER accept: accepter={accepterUid} inviter={inviterUid} type={reqType} body={System.BitConverter.ToString(body)}");
+            FileLogger.Log($"[{ProtocolName}] RES_PEER recv: accepter={accepterUid} inviter={inviterUid} type={reqType} body={System.BitConverter.ToString(body)}");
 
             if (inviterUid == accepterUid)
             {
@@ -1235,6 +1456,35 @@ namespace DfoServer.Network.Handlers
                     $"from={session.ListenerPort} to={inviterSession.ListenerPort}");
                 if (reqType == 2)
                     await SendPvpInviteFailureAsync(session, 19);
+                return;
+            }
+
+            if (reqType == 0 && !IsAcceptedTypeZeroPeerResponse(body))
+            {
+                var exactInviteCanceled = false;
+                if (!await RunCurrentPartyPairMutationAsync(
+                        inviterSession,
+                        session,
+                        () =>
+                        {
+                            exactInviteCanceled = _partyManager.CancelInvite(
+                                accepterUid,
+                                session.SessionId,
+                                inviterUid,
+                                inviterSession.SessionId);
+                        }))
+                {
+                    return;
+                }
+
+                var capturedRefusal = body.Length == 9 &&
+                    BitConverter.ToUInt16(body, 7) == 0x0085;
+                FileLogger.Log(
+                    $"[{ProtocolName}] RES_PEER: " +
+                    $"{(capturedRefusal ? "拒绝" : "invalid type0 response")} " +
+                    $"accepter={accepterUid} inviter={inviterUid} " +
+                    $"pendingCanceled={exactInviteCanceled} " +
+                    $"body={BitConverter.ToString(body)}");
                 return;
             }
 
@@ -1275,73 +1525,34 @@ namespace DfoServer.Network.Handlers
             var accepterMember =
                 BuildMember(session, acid);
             Party party = null;
-            PartyOpResult createdResult = null;
             PartyOpResult join = null;
+            string joinMode = null;
             string failureReason = null;
             if (!await RunCurrentPartyPairMutationAsync(
                     inviterSession,
                     session,
                     () =>
                     {
-                        if (!_partyManager.TryConsumeInvite(
+                        if (inviterSession.Player?.CurrentRun != null ||
+                            session.Player?.CurrentRun != null)
+                        {
+                            failureReason = _partyManager.CancelInvite(
                                 accepterUid,
                                 session.SessionId,
                                 inviterUid,
-                                inviterSession.SessionId,
-                                out var invitedPartyId))
-                        {
-                            failureReason =
-                                "invite_not_found_or_stale";
+                                inviterSession.SessionId)
+                                    ? "party_accept_during_dungeon_run"
+                                    : "invite_not_found_or_stale";
                             return;
                         }
-
-                        party = _partyManager.GetPartyByUser(
-                            inviterUid);
-                        if (party != null)
-                        {
-                            var inviterState =
-                                party.GetMember(inviterUid);
-                            if (inviterState?.SessionId !=
-                                    inviterSession.SessionId ||
-                                party.LeaderUserId != inviterUid)
-                            {
-                                failureReason =
-                                    "inviter_not_current_leader";
-                                return;
-                            }
-                            if (invitedPartyId != 0 &&
-                                party.PartyId != invitedPartyId)
-                            {
-                                failureReason =
-                                    "party_generation_changed";
-                                return;
-                            }
-                        }
-                        else if (invitedPartyId != 0)
-                        {
-                            failureReason =
-                                "party_generation_changed";
-                            return;
-                        }
-
-                        if (party == null)
-                        {
-                            createdResult =
-                                _partyManager.CreateParty(
-                                    inviterMember);
-                            party = createdResult.Party;
-                        }
-                        if (party.Contains(accepterUid))
-                            return;
-                        if (party.IsFull)
-                        {
-                            failureReason = "party_full";
-                            return;
-                        }
-
-                        join = _partyManager.Join(
-                            party.PartyId,
-                            accepterMember);
+                        join = _partyManager.AcceptInvite(
+                            accepterUid,
+                            session.SessionId,
+                            inviterUid,
+                            inviterSession.SessionId,
+                            inviterMember,
+                            accepterMember,
+                            out joinMode);
                         if (!join.Ok)
                         {
                             failureReason = join.Reason;
@@ -1354,8 +1565,6 @@ namespace DfoServer.Network.Handlers
             }
 
             await NotifyPriorPartyAsync(
-                createdResult?.PriorPartyLeave);
-            await NotifyPriorPartyAsync(
                 join?.PriorPartyLeave);
             if (failureReason != null)
             {
@@ -1366,12 +1575,18 @@ namespace DfoServer.Network.Handlers
             }
             if (join?.Ok == true && join.PriorPartyLeave == null)
             {
+                var joiningSession = join.TargetUserId == inviterUid
+                    ? inviterSession
+                    : session;
                 await ClearPartyViewAsync(
-                    session,
+                    joiningSession,
                     party,
                     "res-peer-new-member");
             }
-            FileLogger.Log($"[{ProtocolName}] RES_PEER: 组队成功 party={party.PartyId} members={party.Count} leader={party.LeaderUserId}");
+            FileLogger.Log(
+                $"[{ProtocolName}] RES_PEER: 组队成功 mode={joinMode} " +
+                $"party={party.PartyId} members={party.Count} " +
+                $"leader={party.LeaderUserId}");
 
             // df 0x081F14D2: 接受成功后单发 SC 0x08 "peer已接受" 回执给【邀请者A】(body=B.uid + 0 + A.uid, 7B)。
             // 疑为让 A 客户端认领队伍单例(dword_3091F50), 使随后的 PARTY_INFO(0x09) 落到被渲染的那个队伍对象上。
@@ -1406,6 +1621,7 @@ namespace DfoServer.Network.Handlers
                             $"(B={accepterUid})");
                     }
                 });
+            await PublishTownPartyListsAsync();
         }
         // 按 UserId 找在线会话。
         private EnhancedClientSession FindSessionByUserId(ushort uid)
@@ -1417,6 +1633,157 @@ namespace DfoServer.Network.Handlers
                     return s;
             }
             return null;
+        }
+
+        internal async Task PublishTownPartyListsAsync()
+        {
+            if (_sessions == null)
+                return;
+
+            var gateAcquired = false;
+            try
+            {
+                await _partyListPublishGate.WaitAsync();
+                gateAcquired = true;
+                foreach (var recipient in _sessions.GetAllGameSessions())
+                {
+                    var player = recipient?.Player;
+                    if (player == null ||
+                        player.CharacterId <= 0 ||
+                        !player.TownPresenceReady ||
+                        player.UserState != 0x00 ||
+                        player.CurrentRun != null ||
+                        !IsDirectoryCurrent(recipient) ||
+                        _partyManager.GetPartySnapshotByUser(
+                            player.UserId) != null)
+                    {
+                        continue;
+                    }
+
+                    var expectedSessionId = recipient.SessionId;
+                    var expectedCharacterId = player.CharacterId;
+                    var expectedUserId = player.UserId;
+                    var expectedTownId = player.CurTownId;
+                    var expectedAreaId = player.CurAreaId;
+                    var expectedListenerPort = recipient.ListenerPort;
+
+                    var visibleParties = new List<Party>();
+                    var seenPartyIds = new HashSet<int>();
+                    foreach (var visibleSession in _sessions.GetSessionsInArea(
+                                 player.CurTownId,
+                                 player.CurAreaId,
+                                 excludeCharacterId: -1,
+                                 recipient.ListenerPort))
+                    {
+                        var visibleUserId =
+                            visibleSession?.Player?.UserId ?? (ushort)0;
+                        var party = visibleUserId == 0
+                            ? null
+                            : _partyManager.GetPartySnapshotByUser(
+                                visibleUserId);
+                        if (party == null ||
+                            party.IsSinglePlay ||
+                            !seenPartyIds.Add(party.PartyId))
+                        {
+                            continue;
+                        }
+                        visibleParties.Add(party);
+                    }
+                    visibleParties.Sort(
+                        (left, right) =>
+                            left.PartyId.CompareTo(right.PartyId));
+                    var currentPartyIds = new HashSet<int>(
+                        visibleParties.Select(value => value.PartyId));
+                    _publishedTownPartyIds.TryGetValue(
+                        expectedSessionId,
+                        out var priorPartyIds);
+                    var removedPartyIds = priorPartyIds == null
+                        ? Array.Empty<int>()
+                        : priorPartyIds
+                            .Where(value => !currentPartyIds.Contains(value))
+                            .OrderBy(value => value)
+                            .ToArray();
+
+                    var packet = GamePacketEnvelopeBuilder.Build(
+                        0x00,
+                        (ushort)NotiPacketTypeA21.PARTY_INFO,
+                        PartyInfoNotiBuilder.BuildList(
+                            visibleParties,
+                            removedPartyIds));
+                    var projectionSent = false;
+                    var sendCompleted = await Game.Session.SessionDirectory
+                        .TrySendBestEffortAsync(
+                            async cancellationToken =>
+                            {
+                                projectionSent = await recipient
+                                    .TrySendPacketAsync(
+                                        packet,
+                                        cancellationToken,
+                                        () => IsCurrentPartyListRecipient(
+                                            recipient,
+                                            expectedSessionId,
+                                            expectedCharacterId,
+                                            expectedUserId,
+                                            expectedTownId,
+                                            expectedAreaId,
+                                            expectedListenerPort));
+                            },
+                            $"party list uid={expectedUserId}");
+                    var sent = sendCompleted && projectionSent;
+                    if (sent)
+                    {
+                        _publishedTownPartyIds[expectedSessionId] =
+                            currentPartyIds;
+                        FileLogger.Log(
+                            $"[{ProtocolName}] PARTY_LIST projection: " +
+                            $"uid={player.UserId} " +
+                            $"town={player.CurTownId} " +
+                            $"area={player.CurAreaId} " +
+                            $"parties=[{string.Join(",", currentPartyIds.OrderBy(
+                                value => value))}] " +
+                            $"removed=[{string.Join(",", removedPartyIds)}]");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Public discovery is supplemental. It must never abort an
+                // already-committed party mutation, town arrival, or dungeon
+                // entry projection.
+                FileLogger.Log(
+                    $"[{ProtocolName}] PARTY_LIST projection failed: " +
+                    ex.Message);
+            }
+            finally
+            {
+                if (gateAcquired)
+                    _partyListPublishGate.Release();
+            }
+        }
+
+        private bool IsCurrentPartyListRecipient(
+            EnhancedClientSession session,
+            Guid expectedSessionId,
+            int expectedCharacterId,
+            ushort expectedUserId,
+            byte expectedTownId,
+            byte expectedAreaId,
+            int expectedListenerPort)
+        {
+            var player = session?.Player;
+            return player != null
+                   && session.SessionId == expectedSessionId
+                   && session.ListenerPort == expectedListenerPort
+                   && player.CharacterId == expectedCharacterId
+                   && player.UserId == expectedUserId
+                   && player.CurTownId == expectedTownId
+                   && player.CurAreaId == expectedAreaId
+                   && player.TownPresenceReady
+                   && player.UserState == 0x00
+                   && player.CurrentRun == null
+                   && IsDirectoryCurrent(session)
+                   && _partyManager.GetPartySnapshotByUser(
+                       expectedUserId) == null;
         }
 
         internal static bool IsSameGameChannel(
@@ -1463,7 +1830,98 @@ namespace DfoServer.Network.Handlers
                 body);
         }
 
-        // 向队伍全体在线成员广播整份 PARTY_INFO(0x09 type=0)+ 实时信息(0x99)+ P2P 端点(0x0B)。
+        internal static byte[][] BuildPartyHostProjectionPackets(
+            Party party,
+            bool includeRealtime)
+        {
+            var leader = party?.GetMember(party.LeaderUserId);
+            if (leader == null ||
+                leader.SlotIndex >= PartyConstants.MaxMembers)
+            {
+                return Array.Empty<byte[]>();
+            }
+
+            var packets = new List<byte[]>(includeRealtime ? 3 : 2)
+            {
+                GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    0x001A,
+                    UdpHostBuilder.BuildHostSlot(leader.SlotIndex)),
+                GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    0x0009,
+                    PartyInfoNotiBuilder.Build(party, 2)),
+            };
+            if (includeRealtime)
+            {
+                packets.Add(GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    0x0099,
+                    PartyRealtimeInfoBuilder.Build(party)));
+            }
+            return packets.ToArray();
+        }
+
+        private async Task PublishPartyHostProjectionAsync(
+            int partyId,
+            ushort expectedLeaderUserId,
+            bool includeRealtime,
+            string reason)
+        {
+            if (_sessions == null || partyId <= 0)
+                return;
+
+            using var gate = await AcquireBroadcastGateAsync(partyId);
+            var party = _partyManager.GetPartySnapshot(partyId);
+            if (party == null ||
+                party.LeaderUserId != expectedLeaderUserId)
+            {
+                FileLogger.Log(
+                    $"[{ProtocolName}] PARTY host projection stale: " +
+                    $"party={partyId} leader={expectedLeaderUserId} " +
+                    $"reason={reason}");
+                return;
+            }
+
+            var packets = BuildPartyHostProjectionPackets(
+                party,
+                includeRealtime);
+            if (packets.Length == 0)
+                return;
+
+            foreach (var member in party.MembersBySlot())
+            {
+                if (!_sessions.TryGet(member.CharacterId, out var recipient) ||
+                    recipient?.TcpClient == null ||
+                    recipient.SessionId != member.SessionId)
+                {
+                    continue;
+                }
+
+                foreach (var packet in packets)
+                {
+                    await Game.Session.SessionDirectory
+                        .TrySendBestEffortAsync(
+                            cancellationToken =>
+                                recipient.SendPacketAsync(
+                                    packet,
+                                    cancellationToken),
+                            $"party={partyId} host projection " +
+                            $"reason={reason} uid={member.UserId}");
+                }
+            }
+
+            var leader = party.GetMember(party.LeaderUserId);
+            FileLogger.Log(
+                $"[{ProtocolName}] PARTY host projection: " +
+                $"party={partyId} leader={party.LeaderUserId} " +
+                $"slot={leader?.SlotIndex ?? 0} " +
+                $"realtime={includeRealtime} reason={reason}");
+        }
+
+        // 向队伍全体在线成员广播 PARTY_INFO(0x09)+ 实时信息(0x99)+ P2P 端点(0x0B)。
+        // A21 当前最稳的 formation 基线是双方统一发送完整 type=0。
+        // type=2 分流是本轮双端退出的最强回归点，先回到该基线再实机闭环。
         // includeP2p=false: 只发 0x09 名册刷新, 不重发 0x0B/0x99。委托队长用: 队伍已 P2P 连着,
         //   swap 槽位后再重发 0x0B 会触发客户端 P2P 重握手 → 崩溃/超时(真机实测 A 断连)。换队长只需名册刷新。
         private Task BroadcastPartyInfo(
@@ -1478,6 +1936,47 @@ namespace DfoServer.Network.Handlers
                 party.PartyId,
                 includeP2p,
                 afterRealtime);
+        }
+
+        private async Task BroadcastPartySettings(int partyId)
+        {
+            if (_sessions == null || partyId <= 0)
+                return;
+
+            using var gate = await AcquireBroadcastGateAsync(partyId);
+            var party = _partyManager.GetPartySnapshot(partyId);
+            if (party == null)
+                return;
+            var packet = GamePacketEnvelopeBuilder.Build(
+                0x00,
+                0x0009,
+                PartyInfoNotiBuilder.Build(party, 1));
+            var sent = 0;
+            foreach (var member in party.MembersBySlot())
+            {
+                if (!_sessions.TryGet(member.CharacterId, out var recipient) ||
+                    recipient?.TcpClient == null ||
+                    recipient.SessionId != member.SessionId)
+                {
+                    continue;
+                }
+
+                if (await Game.Session.SessionDirectory
+                        .TrySendBestEffortAsync(
+                            cancellationToken => recipient.SendPacketAsync(
+                                packet,
+                                cancellationToken),
+                            $"party={partyId} phase=settings " +
+                            $"characterId={member.CharacterId}"))
+                {
+                    sent++;
+                }
+            }
+            FileLogger.Log(
+                $"[{ProtocolName}] PARTY settings projection: " +
+                $"party={partyId} leader={party.LeaderUserId} " +
+                $"sent={sent}/{party.Count} " +
+                $"settings={BitConverter.ToString(party.PartyInfoBlock)}");
         }
 
         private async Task BroadcastPartyInfo(
@@ -1510,7 +2009,7 @@ namespace DfoServer.Network.Handlers
             }
 
             var members = party.MembersBySlot();
-            var info0x09 = PartyInfoNotiBuilder.Build(party, 0);
+            var fullInfo0x09 = PartyInfoNotiBuilder.Build(party, 0);
             FileLogger.Log(
                 $"[{ProtocolName}] BroadcastPartyInfo " +
                 $"party={party.PartyId} leader={party.LeaderUserId} " +
@@ -1518,9 +2017,9 @@ namespace DfoServer.Network.Handlers
                 $"members=[{string.Join(",", members.Select(
                     m => $"uid{m.UserId}@slot{m.SlotIndex}"))}] " +
                 $"recipients={members.Count} " +
-                $"info0x09={System.BitConverter.ToString(info0x09)}");
-            var infoPacket = GamePacketEnvelopeBuilder.Build(
-                0x00, 0x0009, info0x09);
+                $"info0x09={System.BitConverter.ToString(fullInfo0x09)}");
+            var fullInfoPacket = GamePacketEnvelopeBuilder.Build(
+                0x00, 0x0009, fullInfo0x09);
             var rtPacket = includeP2p
                 ? GamePacketEnvelopeBuilder.Build(
                     0x00,
@@ -1572,11 +2071,21 @@ namespace DfoServer.Network.Handlers
                 FileLogger.Log(
                     $"[{ProtocolName}] PARTY_IP_INFO(0x0B) party=" +
                     $"{party.PartyId} relay={relayMode} " +
-                    $"members={members.Count}");
+                    $"members={members.Count} endpoints=[" +
+                    string.Join(
+                        ",",
+                        members.Select(m =>
+                            $"{m.UserId}@{m.SlotIndex}=" +
+                            $"{(m.IpBytes != null ? string.Join(".", m.IpBytes) : "?")}" +
+                            $":{m.P2pPort}")) +
+                    "]");
             }
 
             var recipients =
-                new List<(PartyMember Member, EnhancedClientSession Session)>(
+                new List<(
+                    PartyMember Member,
+                    EnhancedClientSession Session,
+                    byte[] EndpointPacket)>(
                     members.Count);
             foreach (var member in members)
             {
@@ -1587,8 +2096,64 @@ namespace DfoServer.Network.Handlers
                 {
                     continue;
                 }
-                recipients.Add((member, session));
+                var endpointPacket = directIpPacket;
+                if (relayMode)
+                {
+                    var relayBody =
+                        PartyIpInfoBuilder.BuildForRelay(
+                            members,
+                            member.UserId,
+                            relayIpBytes,
+                            peer =>
+                                relaySnapshot.TryGetPort(
+                                    member.UserId,
+                                    peer,
+                                    out var port)
+                                    ? port
+                                    : 0);
+                    endpointPacket = GamePacketEnvelopeBuilder.Build(
+                        0x00,
+                        0x000B,
+                        relayBody);
+                }
+                recipients.Add((member, session, endpointPacket));
             }
+
+            // PARTY_INFO carries only UIDs. Before any roster refresh, make
+            // every recipient aware of every peer so all member objects can
+            // be created, including an existing follower and a fresh third
+            // or fourth member in another town/area.
+            var contextSends = new List<Task>();
+            var recipientsByUid = recipients.ToDictionary(
+                recipient => recipient.Member.UserId);
+            foreach (var pair in BuildPartyFormationContextPlan(members))
+            {
+                if (!recipientsByUid.TryGetValue(
+                        pair.RecipientUid,
+                        out var recipient)
+                    || !recipientsByUid.TryGetValue(
+                        pair.SourceUid,
+                        out var source))
+                {
+                    continue;
+                }
+
+                var contextPacket =
+                    BuildPartyFormationUserContextPacket(source.Session);
+                if (contextPacket == null)
+                    continue;
+                contextSends.Add(
+                    Game.Session.SessionDirectory.TrySendBestEffortAsync(
+                        cancellationToken =>
+                            recipient.Session.SendPacketAsync(
+                                contextPacket,
+                                cancellationToken),
+                        $"party={party.PartyId} phase=user-context " +
+                        $"recipient={pair.RecipientUid} " +
+                        $"source={pair.SourceUid}"));
+            }
+            if (contextSends.Count > 0)
+                await Task.WhenAll(contextSends);
 
             // Preserve the client-proven cross-recipient formation phases:
             // realtime to all -> acceptance ACK -> endpoints to all -> roster.
@@ -1614,46 +2179,28 @@ namespace DfoServer.Network.Handlers
                     await Task.WhenAll(realtimeSends);
             }
 
-            if (afterRealtime != null)
-                await afterRealtime();
-
             if (includeP2p)
             {
                 var endpointSends = new List<Task>(recipients.Count);
                 foreach (var recipient in recipients)
                 {
-                    var ipPacket = directIpPacket;
-                    if (relayMode)
-                    {
-                        var relayBody =
-                            PartyIpInfoBuilder.BuildForRelay(
-                                members,
-                                recipient.Member.UserId,
-                                relayIpBytes,
-                                peer =>
-                                    relaySnapshot.TryGetPort(
-                                        recipient.Member.UserId,
-                                        peer,
-                                        out var port)
-                                        ? port
-                                        : 0);
-                        ipPacket = GamePacketEnvelopeBuilder.Build(
-                            0x00, 0x000B, relayBody);
-                    }
-
                     endpointSends.Add(
                         Game.Session.SessionDirectory
                             .TrySendBestEffortAsync(
                                 cancellationToken =>
                                     recipient.Session.SendPacketAsync(
-                                        ipPacket,
+                                        recipient.EndpointPacket,
                                         cancellationToken),
-                                $"party={party.PartyId} phase=endpoints " +
+                                $"party={party.PartyId} " +
+                                "phase=endpoints-before-roster " +
                                 $"characterId={recipient.Member.CharacterId}"));
                 }
                 if (endpointSends.Count > 0)
                     await Task.WhenAll(endpointSends);
             }
+
+            if (afterRealtime != null)
+                await afterRealtime();
 
             var rosterSends = new List<Task>(recipients.Count);
             foreach (var recipient in recipients)
@@ -1663,13 +2210,108 @@ namespace DfoServer.Network.Handlers
                         .TrySendBestEffortAsync(
                             cancellationToken =>
                                 recipient.Session.SendPacketAsync(
-                                    infoPacket,
+                                    fullInfoPacket,
                                     cancellationToken),
                             $"party={party.PartyId} phase=roster " +
+                            $"type=0 " +
                             $"characterId={recipient.Member.CharacterId}"));
             }
             if (rosterSends.Count > 0)
                 await Task.WhenAll(rosterSends);
+
+            // The final type-0 roster has now created/replaced every member
+            // object. Reapply each recipient's exact bootstrap endpoint bytes
+            // so the binding lands on the final objects rather than a
+            // temporary pre-roster object.
+            if (includeP2p)
+            {
+                var endpointSends = new List<Task>(recipients.Count);
+                foreach (var recipient in recipients)
+                {
+                    endpointSends.Add(
+                        Game.Session.SessionDirectory.TrySendBestEffortAsync(
+                            cancellationToken =>
+                                recipient.Session.SendPacketAsync(
+                                    recipient.EndpointPacket,
+                                    cancellationToken),
+                            $"party={party.PartyId} " +
+                            "phase=endpoints-after-roster " +
+                            $"characterId={recipient.Member.CharacterId}"));
+                }
+                if (endpointSends.Count > 0)
+                    await Task.WhenAll(endpointSends);
+            }
+
+            if (includeP2p && rtPacket != null)
+            {
+                var postRosterRealtimeSends = new List<Task>(recipients.Count);
+                foreach (var recipient in recipients)
+                {
+                    postRosterRealtimeSends.Add(
+                        Game.Session.SessionDirectory
+                            .TrySendBestEffortAsync(
+                                cancellationToken =>
+                                    recipient.Session.SendPacketAsync(
+                                        rtPacket,
+                                        cancellationToken),
+                                $"party={party.PartyId} phase=realtime-after-roster " +
+                                $"characterId={recipient.Member.CharacterId}"));
+                }
+                await Task.WhenAll(postRosterRealtimeSends);
+            }
+        }
+
+        internal static byte[][] BuildDirectP2pProjectionPackets(
+            Party party)
+        {
+            if (party == null)
+                return Array.Empty<byte[]>();
+
+            return new[]
+            {
+                GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    0x000B,
+                    PartyIpInfoBuilder.Build(party)),
+                GamePacketEnvelopeBuilder.Build(
+                    0x00,
+                    0x0099,
+                    PartyRealtimeInfoBuilder.Build(party)),
+            };
+        }
+
+        internal static IReadOnlyList<(
+            ushort RecipientUid,
+            ushort SourceUid)> BuildPartyFormationContextPlan(
+                IReadOnlyList<PartyMember> members)
+        {
+            var plan = new List<(ushort, ushort)>();
+            if (members == null)
+                return plan;
+
+            foreach (var recipient in members)
+            {
+                foreach (var source in members)
+                {
+                    if (recipient.UserId != source.UserId)
+                        plan.Add((recipient.UserId, source.UserId));
+                }
+            }
+            return plan;
+        }
+
+        internal static byte[] BuildPartyFormationUserContextPacket(
+            EnhancedClientSession source)
+        {
+            if (source?.Player == null || source.Player.UserId == 0)
+                return null;
+
+            var body = UserInfoSubtype0Builder.BuildNotificationBody(
+                UnitedFriendSystem.BuildUserInfoRecord(source.Player));
+            return GamePacketEnvelopeBuilder.Build(
+                0x00,
+                (ushort)NotiPacketTypeA21.USERINFO,
+                body);
         }
 
         internal static bool TrySyncTestedRelayRoom(
@@ -1885,6 +2527,9 @@ namespace DfoServer.Network.Handlers
         {
             if (_sessions != null)
                 _sessions.SessionEnding -= OnSessionEndingAsync;
+            // Process-lifetime gate: shutdown may still have a town/list or
+            // SessionEnding callback in flight. Disposing it here can abort
+            // committed party cleanup for no practical resource benefit.
         }
 
         // 在线会话里按"角色名字节"逐字节匹配目标(避开 GBK/字符串编码歧义)。

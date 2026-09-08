@@ -5,6 +5,7 @@ using DfoServer.Infrastructure;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 
 namespace DfoServer.Game.Dungeon
 {
@@ -102,6 +103,20 @@ namespace DfoServer.Game.Dungeon
             GoldCost = (int)total;
             return true;
         }
+    }
+
+    internal readonly struct DungeonEntryCostCommitRequest
+    {
+        internal DungeonEntryCostCommitRequest(
+            InventoryLease lease,
+            DungeonEntryCostPlan plan)
+        {
+            Lease = lease;
+            Plan = plan;
+        }
+
+        internal InventoryLease Lease { get; }
+        internal DungeonEntryCostPlan Plan { get; }
     }
 
     internal sealed class DungeonEntryCostService
@@ -203,6 +218,270 @@ namespace DfoServer.Game.Dungeon
             InventoryLease lease,
             DungeonEntryCostPlan plan)
             => EvaluatePlan(lease, plan, commit: true);
+
+        internal bool TryCommitPlans(
+            IReadOnlyList<DungeonEntryCostCommitRequest> source,
+            out IReadOnlyList<EntryCostResult> results)
+        {
+            results = Array.Empty<EntryCostResult>();
+            if (source == null || source.Count == 0)
+                return false;
+
+            var states = source
+                .Select(request => new GroupCommitState(request))
+                .OrderBy(state => state.Request.Lease?.CharacterId ?? 0)
+                .ToArray();
+            if (states.Any(state => state.Request.Lease?.Inventory == null
+                                    || state.Request.Plan == null)
+                || states.Select(state => state.Request.Lease.CharacterId)
+                    .Distinct().Count() != states.Length)
+            {
+                return false;
+            }
+
+            var entered = new List<InventoryLease>(states.Length);
+            var committed = false;
+            string connectionString = null;
+            try
+            {
+                foreach (var state in states)
+                {
+                    var lease = state.Request.Lease;
+                    Monitor.Enter(lease.SyncRoot);
+                    entered.Add(lease);
+                    if (!InventoryContext.IsCurrentLease(
+                            lease,
+                            lease.SessionId,
+                            lease.CharacterId))
+                    {
+                        state.Result.Fail(
+                            "inventory lease is stale",
+                            EntryCostFailureKind.InvalidState);
+                        return false;
+                    }
+                    if (!TryResolvePlan(
+                            lease.Inventory,
+                            state.Request.Plan,
+                            state.Result,
+                            out _,
+                            out var consumedCounts,
+                            out var failureReason))
+                    {
+                        state.Result.Fail(
+                            failureReason,
+                            state.Result.FailureKind
+                                == EntryCostFailureKind.None
+                                ? EntryCostFailureKind.Unavailable
+                                : state.Result.FailureKind);
+                        return false;
+                    }
+                    state.ConsumedCounts = consumedCounts;
+                    state.Snapshot = EntryItemSnapshot.Capture(
+                        lease.Inventory,
+                        consumedCounts.Keys);
+                }
+
+                if (states.All(state => state.ConsumedCounts.Count == 0))
+                {
+                    foreach (var state in states)
+                        state.Result.Success = true;
+                    committed = true;
+                    results = ProjectGroupResults(source, states);
+                    return true;
+                }
+
+                connectionString = states[0].Request.Lease.Inventory.Database
+                    ?.ConnectionString;
+                if (string.IsNullOrWhiteSpace(connectionString)
+                    || states.Any(state => !string.Equals(
+                        state.Request.Lease.Inventory.Database?.ConnectionString,
+                        connectionString,
+                        StringComparison.OrdinalIgnoreCase)))
+                {
+                    return false;
+                }
+
+                using (var connection = states[0].Request.Lease.Inventory
+                           .Database.OpenConnection())
+                using (var transaction = connection.BeginTransaction())
+                {
+                    foreach (var state in states)
+                    {
+                        ApplyGroupCostLocked(state);
+                        FinalizeGroupResult(state);
+                    }
+                    var committedResults = ProjectGroupResults(source, states);
+                    foreach (var state in states)
+                    {
+                        if (!InventoryPersistenceService.SaveDirtyInTransaction(
+                                connection,
+                                transaction,
+                                state.Request.Lease))
+                        {
+                            throw new InvalidOperationException(
+                                $"entry cost persistence failed " +
+                                $"cid={state.Request.Lease.CharacterId}");
+                        }
+                    }
+                    transaction.Commit();
+                    committed = true;
+                    foreach (var state in states)
+                    {
+                        try
+                        {
+                            state.Request.Lease.Inventory.ClearDirtyState();
+                        }
+                        catch (Exception ex)
+                        {
+                            FileLogger.Log(
+                                $"[DungeonEntryCost] post-commit dirty-state " +
+                                $"cleanup failed cid=" +
+                                $"{state.Request.Lease.CharacterId}: " +
+                                ex.Message);
+                        }
+                    }
+                    results = committedResults;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[DungeonEntryCost] group transaction failed: " +
+                    ex.Message);
+                return false;
+            }
+            finally
+            {
+                if (!committed)
+                {
+                    foreach (var state in states)
+                        state.Snapshot?.Restore(state.Request.Lease.Inventory);
+                }
+                for (var index = entered.Count - 1; index >= 0; index--)
+                    Monitor.Exit(entered[index].SyncRoot);
+
+                if (!committed && !string.IsNullOrWhiteSpace(connectionString))
+                {
+                    foreach (var state in states)
+                    {
+                        try
+                        {
+                            InventoryRollbackRecoveryService
+                                .ReloadOnlineInventory(
+                                    connectionString,
+                                    state.Request.Lease);
+                        }
+                        catch (Exception ex)
+                        {
+                            FileLogger.Log(
+                                $"[DungeonEntryCost] group rollback reload " +
+                                $"failed cid={state.Request.Lease.CharacterId}: " +
+                                ex.Message);
+                        }
+                    }
+                }
+            }
+        }
+
+        private sealed class GroupCommitState
+        {
+            internal GroupCommitState(DungeonEntryCostCommitRequest request)
+            {
+                Request = request;
+            }
+
+            internal DungeonEntryCostCommitRequest Request { get; }
+            internal EntryCostResult Result { get; } = new EntryCostResult();
+            internal Dictionary<int, int> ConsumedCounts { get; set; } =
+                new Dictionary<int, int>();
+            internal EntryItemSnapshot Snapshot { get; set; }
+            internal List<InventoryMaterialConsumptionEntry> Consumed { get; } =
+                new List<InventoryMaterialConsumptionEntry>();
+        }
+
+        private static void ApplyGroupCostLocked(GroupCommitState state)
+        {
+            var inventory = state.Request.Lease.Inventory;
+            var requirements = state.ConsumedCounts
+                .Where(pair => pair.Key != 0)
+                .OrderBy(pair => pair.Key)
+                .Select(pair => new InventoryMaterialRequirement(
+                    pair.Key,
+                    pair.Value))
+                .ToList();
+            state.Result.GoldBefore = inventory.CountMainItem(0);
+            if (!InventoryMaterialConsumptionService.TryConsume(
+                    inventory,
+                    requirements,
+                    state.Consumed))
+            {
+                throw new InvalidOperationException(
+                    $"entry cost consumption failed " +
+                    $"cid={state.Request.Lease.CharacterId}");
+            }
+            if (state.ConsumedCounts.TryGetValue(0, out var goldCost)
+                && goldCost > 0)
+            {
+                if (!inventory.TryConsumeMainItem(
+                        0,
+                        goldCost,
+                        out var goldConsume)
+                    || !goldConsume.Success)
+                {
+                    throw new InvalidOperationException(
+                        $"entry gold consumption failed " +
+                        $"cid={state.Request.Lease.CharacterId}");
+                }
+                state.Consumed.Add(new InventoryMaterialConsumptionEntry
+                {
+                    SlotIndex = goldConsume.SlotIndex,
+                    ItemTemplateId = 0,
+                    Count = goldConsume.ConsumedCount,
+                });
+            }
+        }
+
+        private static void FinalizeGroupResult(GroupCommitState state)
+        {
+            var inventory = state.Request.Lease.Inventory;
+            foreach (var entry in state.Consumed)
+            {
+                if (entry.ItemTemplateId == 0)
+                {
+                    state.Result.GoldCost += entry.Count;
+                    continue;
+                }
+                state.Result.ConsumedItems.Add(new ItemConsumeUpdate
+                {
+                    ItemId = entry.ItemTemplateId,
+                    Count = entry.Count,
+                    SlotIndex = entry.SlotIndex,
+                    RemainingCount = ResolveRemainingCount(
+                        inventory,
+                        entry.SlotIndex),
+                });
+            }
+            state.Result.GoldAfter = inventory.CountMainItem(0);
+            state.Result.Success = true;
+        }
+
+        private static IReadOnlyList<EntryCostResult> ProjectGroupResults(
+            IReadOnlyList<DungeonEntryCostCommitRequest> source,
+            IReadOnlyList<GroupCommitState> states)
+        {
+            var byCharacterId = states.ToDictionary(
+                state => state.Request.Lease.CharacterId,
+                state => state.Result);
+            var projected = new EntryCostResult[source.Count];
+            for (var index = 0; index < source.Count; index++)
+            {
+                projected[index] = byCharacterId[
+                    source[index].Lease.CharacterId];
+            }
+            return projected;
+        }
 
         internal bool CheckHellQuestRequirement(
             int characterId,
