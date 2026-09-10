@@ -747,6 +747,44 @@ namespace DfoServer.SelfTests
                 && departureProjection[17] == 1
                 && departureProjection[18] == 2,
                 ref failures);
+            var dungeonLeavePlayer = new Game.Session.PlayerContext
+            {
+                UserId = 10038,
+                CurTownId = 1,
+                CurAreaId = 2,
+                CurPosX = 321,
+                CurPosY = 654,
+                CurDirection = 5,
+                CurAreaState = 0,
+            };
+            var dungeonLeaveSnap =
+                TownAreaNotificationBuilder.CreateRemoteDepartureSnapshot(
+                    dungeonLeavePlayer,
+                    1,
+                    2);
+            var movedPlayer = new Game.Session.PlayerContext
+            {
+                UserId = 10038,
+                CurTownId = 3,
+                CurAreaId = 1,
+                CurPosX = 10,
+                CurPosY = 20,
+                CurDirection = 5,
+                CurAreaState = 0,
+            };
+            var movedSnap =
+                TownAreaNotificationBuilder.CreateRemoteDepartureSnapshot(
+                    movedPlayer,
+                    1,
+                    2);
+            Check(
+                "dungeon leave USER_AREA uses a non-current town/area so the remote branch removes the actor",
+                dungeonLeaveSnap.UserId == 10038
+                && dungeonLeaveSnap.TownId == 0xFF
+                && dungeonLeaveSnap.AreaId == 0xFF
+                && movedSnap.TownId == 3
+                && movedSnap.AreaId == 1,
+                ref failures);
 
             party.TryAddMember(new PartyMember
             {

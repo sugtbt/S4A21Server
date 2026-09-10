@@ -52,23 +52,36 @@ namespace DfoServer.Network.Handlers
                     _visibilityPersistence.Save(accountId, characterId, blob, updatedBits);
                     visibilityChanged = updatedBits != tail.UserStateBits;
                     tail.UserStateBits = updatedBits;
-                    if (visibilityChanged && session?.Player != null)
+                    if (session?.Player != null)
                     {
                         session.Player.Subtype0Tail = tail;
-                        var packet = GamePacketEnvelopeBuilder.Build(
-                            0x00,
-                            (ushort)NotiPacketType.CHARAC_INVISIBLE_FALGS,
-                            CharacterVisibilityBodyBuilder.Build(session.Player.UserId, updatedBits));
-                        await session.SendPacketAsync(packet);
-                        if (_sessions != null && session.Player.CurrentRun == null)
+                        if (visibilityChanged)
                         {
-                            await _sessions.BroadcastToAreaAsync(
-                                session.Player.CurTownId,
-                                session.Player.CurAreaId,
+                            session.Player.AppearanceEntries = AppearanceService.LoadOnlineAppearanceFromInventory(
                                 characterId,
-                                packet,
-                                session.ListenerPort);
+                                session.Player.Job,
+                                session.Player.GrowType,
+                                database: _database);
+                            var packet = GamePacketEnvelopeBuilder.Build(
+                                0x00,
+                                (ushort)NotiPacketType.CHARAC_INVISIBLE_FALGS,
+                                CharacterVisibilityBodyBuilder.Build(session.Player.UserId, updatedBits));
+                            await session.SendPacketAsync(packet);
+                            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                                0x00,
+                                (ushort)NotiPacketType.USERINFO,
+                                AppearanceService.BuildNoti2Body(session.Player, _database)));
+                            if (_sessions != null && session.Player.CurrentRun == null)
+                            {
+                                await _sessions.BroadcastToAreaAsync(
+                                    session.Player.CurTownId,
+                                    session.Player.CurAreaId,
+                                    characterId,
+                                    packet,
+                                    session.ListenerPort);
+                            }
                         }
+
                     }
                 }
                 else
@@ -81,7 +94,7 @@ namespace DfoServer.Network.Handlers
                 _repo.SaveMainOption(accountId, blob);
             }
 
-            FileLogger.Log($"[GameProtocol] SAVE_GAME_OPTION_1: character={characterId} account={accountId} len={len} visibilityChanged={visibilityChanged}");
+            FileLogger.Log($"[GameProtocol] SAVE_GAME_OPTION_1: character={characterId} account={accountId} len={len} visibilityChanged={visibilityChanged} bits={(session?.Player?.Subtype0Tail?.UserStateBits)}");
             await LoginHandler.TryCompletePendingLoginSuccessAsync(session);
         }
 
@@ -160,8 +173,10 @@ namespace DfoServer.Network.Handlers
                 return;
             }
 
-            _characterStateRepository.SaveCharacterOption(characterId, body);
-            FileLogger.Log($"[GameProtocol] SAVE_CHARACTER_OPTION: character={characterId} account={accountId} len={body.Length}");
+            var bits = session?.Player?.Subtype0Tail?.UserStateBits ?? (byte)3;
+            var projected = AccountSettings.ProjectCharacterOptionBlob(body, bits);
+            _characterStateRepository.SaveCharacterOption(characterId, projected);
+            FileLogger.Log($"[GameProtocol] SAVE_CHARACTER_OPTION: character={characterId} account={accountId} len={projected.Length} bits={bits}");
         }
     }
 }

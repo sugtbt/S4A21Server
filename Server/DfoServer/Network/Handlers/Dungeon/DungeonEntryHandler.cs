@@ -2449,7 +2449,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                     return;
                 }
                 RegisterActiveParticipant(session, towerRun);
-                // 城镇残留白影：塔进本提交后离开城镇，向旧区域广播不含离开者的名册清残留白影。
+                // 城镇残留白影：塔进本提交后离开城镇，向旧区域发 USER_AREA 远程移除。
                 await NotifyTownAreaRosterDepartureAsync(session);
                 await SendEntryCostUpdates(
                     session,
@@ -4561,10 +4561,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                     && !expectedSelection.IsReturning);
         }
 
-        // 城镇残留白影修复(与切区域同一机制, 参照 86JP 已知协议验证, 见 TownAreaRosterDepartureNotifier):
-        // 进本提交后玩家离开城镇, 向旧区域(CurTownId/CurAreaId 仍是进本前城镇值)广播不含
-        // 离开者的权威名册, 移除其它玩家屏幕上冻结的城镇残影。CurrentRun 已置位 → 离开者被
-        // IsTownPresence 自然排除; 重复广播(如链式进本)名册不变, 幂等无害。
+        // 城镇残留白影修复(与切区域同一机制, 见 TownAreaRosterDepartureNotifier):
+        // 进本提交后玩家离开城镇, 向旧区域广播离开者 USER_AREA(0x0017) 远程移除。
+        // 不得广播 AREA_USERS(0x0018)：已在场客户端会 setDrawLoadingMode 并关掉界面。
         private async Task NotifyTownAreaRosterDepartureAsync(
             EnhancedClientSession session)
         {

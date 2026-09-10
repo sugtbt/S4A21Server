@@ -24,6 +24,7 @@ namespace DfoServer.Network.Handlers
         private readonly HonorLevelSyncService _honorLevel;
         private readonly SqliteSubtype0FieldsRepository _subtype0Repository;
         private readonly IGameDatabase _database;
+        private ISessionDirectory _sessions;
 
         public InventoryRefreshSender(
             SqliteSelectCharacterDataSource dataSource,
@@ -37,14 +38,34 @@ namespace DfoServer.Network.Handlers
             _subtype0Repository = new SqliteSubtype0FieldsRepository(_database);
         }
 
+        internal void BindSessions(ISessionDirectory sessions)
+        {
+            _sessions = sessions;
+        }
+
         public async Task SendNoti2AppearanceUpdate(EnhancedClientSession session)
         {
             var noti2Body = AppearanceService.UpdateAndBroadcast(
                 session.Player,
                 _characterRepository,
                 _database);
+            var packet = GamePacketEnvelopeBuilder.Build(0x00, 0x0002, noti2Body);
             FileLogger.Log($"[{ProtocolName}] NOTI 2 appearance update: {session.Player.AppearanceEntries.Length} entries, body={noti2Body.Length}B");
-            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0002, noti2Body));
+            await session.SendPacketAsync(packet);
+            if (_sessions == null
+                || session?.Player == null
+                || session.Player.CharacterId <= 0
+                || session.Player.CurrentRun != null)
+            {
+                return;
+            }
+
+            await _sessions.BroadcastToAreaAsync(
+                session.Player.CurTownId,
+                session.Player.CurAreaId,
+                session.Player.CharacterId,
+                packet,
+                session.ListenerPort);
         }
 
         public async Task SendUserInfoSubtype1Refresh(

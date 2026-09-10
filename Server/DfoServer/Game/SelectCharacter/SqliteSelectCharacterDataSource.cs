@@ -339,7 +339,22 @@ namespace DfoServer.Game.SelectCharacter
                 : (byte[])acctSettings.MainGameOption.Clone();
             initSnapshot.QuickchatBank0 = acctSettings?.QuickchatBank0;
             initSnapshot.QuickchatBank1 = acctSettings?.QuickchatBank1;
-            initSnapshot.HotkeyKeyType = acctSettings?.HotkeyKeyType ?? 0;
+            var hkSlots = initSnapshot.HotkeyConfigSlots.Count > 0
+                ? BuildHotkeyBlob(initSnapshot.HotkeyConfigSlots)
+                : Settings.CharacterKeyboardDefaults.BuildHotkeySlots((byte)(character?.Job ?? 0));
+            if (character != null && Settings.CharacterKeyboardDefaults.IsCreatorMage(character.Job)
+                && initSnapshot.HotkeyConfigSlots.Count == 0)
+            {
+                hkSlots = Settings.CharacterKeyboardDefaults.BuildHotkeySlots(character.Job);
+                _initFlagsRepository.SaveHotkeyConfig(characterId, hkSlots);
+            }
+            if (hkSlots != null && hkSlots.Length >= 2)
+            {
+                initSnapshot.HotkeyKeyType = character != null && Settings.CharacterKeyboardDefaults.IsCreatorMage(character.Job) ? (byte)1 : (acctSettings?.HotkeyKeyType ?? 0);
+                initSnapshot.HotkeyConfigSlots.Clear();
+                for (int i = 0; i + 1 < hkSlots.Length; i += 2)
+                    initSnapshot.HotkeyConfigSlots.Add(BitConverter.ToUInt16(hkSlots, i));
+            }
 
 
             initSnapshot.ShopCoinEventFlag = _dailyResetService.IsClaimed(characterId, ReviveCoin.ReviveCoinService.DailyClaimKey) ? (byte)1 : (byte)0;
@@ -417,9 +432,20 @@ namespace DfoServer.Game.SelectCharacter
 
                 if (characterRecord.Subtype0Tail != null)
                 {
-                    Settings.AccountSettings.TryApplyCharacterVisibilityBitsToOptions(
-                        initSnapshot.MainGameOptionBlob,
-                        characterRecord.Subtype0Tail.UserStateBits);
+                    if (initSnapshot.MainGameOptionBlob != null)
+                    {
+                        initSnapshot.MainGameOptionBlob =
+                            Settings.AccountSettings.CloneMainGameOptionForCharacter(
+                                initSnapshot.MainGameOptionBlob);
+                        Settings.AccountSettings.TryApplyCharacterVisibilityBitsToOptions(
+                            initSnapshot.MainGameOptionBlob,
+                            characterRecord.Subtype0Tail.UserStateBits);
+                    }
+
+                    initSnapshot.CharacterOptionBlob =
+                        Settings.AccountSettings.ProjectCharacterOptionBlob(
+                            initSnapshot.CharacterOptionBlob,
+                            characterRecord.Subtype0Tail.UserStateBits);
                 }
 
                 
@@ -570,6 +596,13 @@ namespace DfoServer.Game.SelectCharacter
             initSnapshot.AckTokenCera = wallet.TokenCera;
             initSnapshot.AckHappyTokenCera = wallet.HappyTokenCera;
             initSnapshot.LuckyStar = wallet.LuckyStar;
+        }
+
+        private static byte[] BuildHotkeyBlob(IReadOnlyList<ushort> slots)
+        {
+            var result = new byte[(slots?.Count ?? 0) * 2];
+            for (var i = 0; i < (slots?.Count ?? 0); i++) Buffer.BlockCopy(BitConverter.GetBytes(slots[i]), 0, result, i * 2, 2);
+            return result;
         }
 
         private static void SanitizeDarkKnightComboSkillInfo(SelectCharacterInitializationSnapshot initSnapshot)
@@ -730,6 +763,8 @@ ON CONFLICT(character_id) DO UPDATE SET manage_level=excluded.manage_level;";
             {
                 _inventoryLifecycle.SeedNewCharacterEquipment(characterId, accountId, initialEquip);
             }
+
+            _initFlagsRepository.SaveHotkeyConfig(characterId, Settings.CharacterKeyboardDefaults.BuildHotkeySlots(job));
 
             SeedNewCharacterStructuredData(characterId, job);
         }

@@ -340,6 +340,66 @@ namespace DfoServer.SelfTests
                     + UserInfoSubtype0Builder.A21AfterAliveMoodValueOffset) == 0,
                 ref failures);
 
+            var hiddenBitsUserInfo = UserInfoSubtype0Builder.BuildNotificationBody(
+                new CharacterRecord
+                {
+                    CharacterId = 7,
+                    Name = new byte[] { (byte)'a' },
+                    Subtype0Tail = new UserInfoMinimumTailSnapshot
+                    {
+                        UserStateBits = 0x01,
+                    },
+                });
+            var hiddenBitsAfterAliveOffset = hiddenBitsUserInfo.Length
+                - UserInfoSubtype0Builder.A21AfterAliveLength;
+            Check(
+                "A21 USERINFO0 64-byte tail projects character UserStateBits at +47",
+                hiddenBitsAfterAliveOffset >= 0
+                && hiddenBitsUserInfo[hiddenBitsAfterAliveOffset
+                    + UserInfoSubtype0Builder.A21AfterAliveUserStateBitsOffset] == 0x01,
+                ref failures);
+
+            var mappedOption = AccountSettings.CloneMainGameOptionForCharacter(null);
+            mappedOption[AccountSettings.VisibleGrowEffectOptionIndex * 2] = 0;
+            mappedOption[AccountSettings.FullAvatarOptionIndex * 2] = 1;
+            Check(
+                "A21 00C5 idx1/idx55 map onto UserStateBits bit1/bit3",
+                AccountSettings.TryApplyCharacterVisibilityOptions(mappedOption, 0x0B, out var mappedBits)
+                && mappedBits == 0x01,
+                ref failures);
+
+            var overlayOption = AccountSettings.CloneMainGameOptionForCharacter(null);
+            Check(
+                "A21 00AD overlay writes packed idx1/idx55 from UserStateBits bit1/bit3",
+                overlayOption.Length >= AccountSettings.PackedMainGameOptionLength
+                && AccountSettings.TryApplyCharacterVisibilityBitsToOptions(overlayOption, 0x08)
+                && overlayOption[AccountSettings.VisibleGrowEffectOptionIndex * 2] == 0
+                && overlayOption[AccountSettings.FullAvatarOptionIndex * 2] == 0,
+                ref failures);
+
+            var projectedOption = AccountSettings.ProjectCharacterOptionBlob(null, 0x08);
+            Check(
+                "A21 0187 projects XUI 109/126 and leaves 130 unset",
+                projectedOption != null
+                && projectedOption.Length == 4 + AccountSettings.CharacterOptionPayloadLength
+                && BitConverter.ToInt32(projectedOption, 0) == AccountSettings.CharacterOptionPayloadLength
+                && BitConverter.ToUInt16(projectedOption, 4 + AccountSettings.CharacterGrowEffectOptionId * 2) == 0
+                && BitConverter.ToUInt16(projectedOption, 4 + AccountSettings.CharacterGrowAvatarOptionId * 2) == 0xFFFF
+                && BitConverter.ToUInt16(projectedOption, 4 + AccountSettings.CharacterFullAvatarOptionId * 2) == 0,
+                ref failures);
+
+            var preserved = AccountSettings.NormalizeCharacterOptionBlob(null);
+            preserved[4 + 128 * 2] = 109;
+            preserved[4 + 128 * 2 + 1] = 0;
+            var merged = AccountSettings.ProjectCharacterOptionBlob(preserved, 0x02);
+            Check(
+                "A21 0187 projection keeps unrelated fields and does not alias 特效 onto 觉醒装扮 130",
+                BitConverter.ToUInt16(merged, 4 + 128 * 2) == 109
+                && BitConverter.ToUInt16(merged, 4 + AccountSettings.CharacterGrowEffectOptionId * 2) == 1
+                && BitConverter.ToUInt16(merged, 4 + AccountSettings.CharacterGrowAvatarOptionId * 2) == 0xFFFF
+                && BitConverter.ToUInt16(merged, 4 + AccountSettings.CharacterFullAvatarOptionId * 2) == 1,
+                ref failures);
+
             var setMoodUserInfo = UserInfoSubtype0Builder.BuildNotificationBody(
                 new CharacterRecord
                 {

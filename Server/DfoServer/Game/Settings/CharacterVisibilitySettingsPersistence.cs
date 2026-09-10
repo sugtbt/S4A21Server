@@ -37,6 +37,32 @@ namespace DfoServer.Game.Settings
                         transaction,
                         characterId,
                         userStateBits);
+
+                    byte[] existing = null;
+                    using (var load = connection.CreateCommand())
+                    {
+                        load.Transaction = transaction;
+                        load.CommandText =
+                            "SELECT character_option_blob FROM character_init_flags WHERE character_id=@cid";
+                        load.Parameters.AddWithValue("@cid", characterId);
+                        var value = load.ExecuteScalar();
+                        if (value != null && value != DBNull.Value)
+                            existing = (byte[])value;
+                    }
+
+                    var projected = AccountSettings.ProjectCharacterOptionBlob(existing, userStateBits);
+                    using (var save = connection.CreateCommand())
+                    {
+                        save.Transaction = transaction;
+                        save.CommandText = @"
+INSERT INTO character_init_flags (character_id, character_option_blob)
+VALUES (@cid, @body)
+ON CONFLICT(character_id) DO UPDATE SET character_option_blob=@body";
+                        save.Parameters.AddWithValue("@cid", characterId);
+                        save.Parameters.AddWithValue("@body", projected);
+                        save.ExecuteNonQuery();
+                    }
+
                     transaction.Commit();
                 }
             }

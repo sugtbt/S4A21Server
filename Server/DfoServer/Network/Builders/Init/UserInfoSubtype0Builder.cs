@@ -103,6 +103,7 @@ namespace DfoServer.Network.Builders
         internal const int A21AfterAliveExpertJobExpOffset = 24;
         internal const int A21AfterAliveProgressAOffset = 39;
         internal const int A21AfterAliveProgressBOffset = 43;
+        internal const int A21AfterAliveUserStateBitsOffset = 47;
         internal const int A21AfterAliveMoodValueOffset = 59;
         // SkillTreeIndex@61：按旧 104B 尾字段序（UserInfoMinimumTailSnapshot.FromBytes t[79]）
         // 与 64B blob 锚点的恒定 -18 平移推算（ExpertJobType 41→23、ProgressA 57→39、
@@ -144,6 +145,7 @@ namespace DfoServer.Network.Builders
                 body,
                 A21AfterAliveProgressBOffset,
                 sizeof(uint));
+            body[A21AfterAliveUserStateBitsOffset] = tail.UserStateBits;
             Buffer.BlockCopy(
                 BitConverter.GetBytes(tail.MoodValue),
                 0,

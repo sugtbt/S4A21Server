@@ -1,4 +1,5 @@
 using DfoServer.Game.Accounts;
+using DfoServer.Game.Appearance;
 using DfoServer.Game.CharacterData;
 using DfoServer.Game.Characters;
 using DfoServer.Game.Dungeon;
@@ -309,12 +310,9 @@ namespace DfoServer.Network.Handlers
 
             var selfSnapshot = TownAreaNotificationBuilder.CreateCurrentSnapshot(session.Player);
 
-            // A21 USER_AREA(0x0017) has a distinct remote-user branch when
-            // the packet town/area differs from the recipient's current area:
-            // it removes that user's scene projection without touching party
-            // slots. 0x0006 cannot be used here because its consumer also
-            // clears the matching party member slot; 0x0018 only updates
-            // objects already named in its roster and does not remove ghosts.
+            // A21 USER_AREA(0x0017) 远程分支：包内 town/area 与接收者当前区域不同时
+            // 只移除该 UID 场景投影，不碰队伍槽。不能用 0x0006：会清队伍槽。
+            // 不能用 0x0018：已在场客户端会 setDrawLoadingMode 并切到 TOWN 模块。
             if (_sessions != null
                 && session.Player.CharacterId > 0
                 && (previousTownId != gotoTownId
@@ -349,32 +347,15 @@ namespace DfoServer.Network.Handlers
             if (!CanContinueTownProjection(session, projectionGuard))
                 return;
 
-            // 离开旧区域: 向旧区域广播不含离开者的权威名册, 让残留白影按名册消失。
-            // 逻辑在共享 TownAreaRosterDepartureNotifier(参照 86JP 已知协议验证, 不用 USER_LEAVE,
-            // 见设计文档 §4.5), 与进本路径复用同一机制, 不复制。
-            if (previousTownId != gotoTownId
-                || previousAreaId != gotoAreaId)
-                await TownAreaRosterDepartureNotifier.NotifyOldAreaDepartureAsync(
-                    _sessions,
-                    session,
-                    previousTownId,
-                    previousAreaId);
-            if (!CanContinueTownProjection(session, projectionGuard))
-                return;
-
             PersistPosition(session, forceImmediate: true, source: "set_user_area");
         }
 
-        // 城镇残留白影修复已抽到共享 TownAreaRosterDepartureNotifier,
-        // 与进本路径(DungeonEntryHandler)复用同一机制, 见该类注释。
+        // 进本离开城镇的 USER_AREA 远程移除见 TownAreaRosterDepartureNotifier。
+        // 城镇切图已在上面向旧区域发过离开者 USER_AREA，不再重复。
 
-        // 同屏"插入他人"包的构造。脱壳客户端逆向确认(2026-07-06夜):右键组队邀请要求
-        // 目标客户端对象 vtable[+40] 返回的 type==4(sub_118C100=sub_118C080==4),否则报字符串311
-        // "对方不在城镇内"、连 REQUEST_PEER(0x000A) 都不发。df insert_user: 城镇分支(area[+0x68]==1)
-        // 发 0x0018、野外/副本分支发 0x0017 —— 0x17/0x18 编码"对象在野外 vs 城镇"。当前用 0x0017(野外)
-        // 插同屏他人 → 疑客户端建成野外对象(type≠4)→ 不可邀请。
-        // 真机抓包确认：0x0018 是接收端的完整区域名册，首项必须是接收者自己。
-        // 把单个“他人”作为 count=1 名册会替换本地角色，导致自己消失且无法移动。
+        // 同屏插入他人用 USER_AREA(0x0017)。A21 客户端 AREA_USERS(0x0018)
+        // 会 setDrawLoadingMode 并把模块切到 TOWN，只发给正在进该区域的本人。
+        // 已在场玩家只收到达者 USERINFO0 + USER_AREA；把 0x18 发给他人会关掉界面、丢掉特效。
         private bool CanChangeRaidArea(
             EnhancedClientSession session,
             byte targetTownId,
@@ -407,8 +388,10 @@ namespace DfoServer.Network.Handlers
             TownUserSnapshot snapshot)
             => BuildCoPresenceInsert(snapshot);
 
-        /// <summary>
-        /// 城镇同屏核心: 收集同区域全部会话, 给每个人下发含全体的 AREA_USERS(0x0018)。
+        /// 城镇同屏核心。
+        /// 到达者本人：AREA_USERS(0x0018) 进场景，再自己 USERINFO0，
+        /// 然后对每个已在场他人发 USERINFO0 + USER_AREA（与插入到达者相同）。
+        /// 已在场他人：只发到达者 USERINFO0 + USER_AREA，不得发 0x18。
         /// _sessions 为空(单人/未注入)时退化为只发自己 —— 与既有单机行为等价。
         /// </summary>
         private async Task BroadcastAreaRosterAsync(
@@ -438,37 +421,38 @@ namespace DfoServer.Network.Handlers
             foreach (var o in others)
                 roster.Add(TownAreaNotificationBuilder.CreateCurrentSnapshot(o.Player));
 
-            // 真机实测(逆向+抓包结论): 只发 0x17/0x18 客户端既不生成他人角色对象、也不主动拉外观。
-            // self 能渲染是因为进游戏时收了【完整外观】(USERINFO 0x0002 含形象)。故照"自身入场先有外观后有位置"
-            // 主动 PUSH: 给新人为【每个已在场玩家】先推一份 USERINFO(0x0002 外观)、再发 0x0017(定位/生成), 最后补 0x0018 名册。
-            // 给新人: 每个已在场玩家只推 subtype0(精简外观)+城镇定位。
-            // subtype1 是本地选角/PVP 初始化数据，推给城镇中的“他人”会让 A21
-            // 客户端把后到角色替换成本地角色，表现为自己消失且无法移动。
-            foreach (var o in others)
-            {
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0002,
-                    Game.Appearance.AppearanceService.BuildNoti2Body(
-                        o.Player,
-                        _database)));
-                if (!CanContinueTownProjection(session, projectionGuard))
-                    return;
-                var oSnap = TownAreaNotificationBuilder.CreateCurrentSnapshot(o.Player);
-                await session.SendPacketAsync(BuildCoPresenceInsert(oSnap));
-                if (!CanContinueTownProjection(session, projectionGuard))
-                    return;
-            }
+            // 到达者本人：0x18 进场景后先消费自己的 USERINFO0(+47)，
+            // 再按远程插入顺序发他人 USERINFO0 + USER_AREA。
+            // 14932：0x17(无 USERINFO) -> 0x18 -> 他人 USERINFO 看不到先到的人；
+            // 已在场玩家能看到后来者，是因为收的是 USERINFO0 + 0x17。
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0018,
                 TownAreaNotificationBuilder.BuildAreaUsers(townId, areaId, roster)));
             if (!CanContinueTownProjection(session, projectionGuard))
                 return;
 
-            // 给每个已在场玩家推【新人】的 subtype0 + 城镇定位。
             var selfAppearance = GamePacketEnvelopeBuilder.Build(
                 0x00,
                 0x0002,
-                Game.Appearance.AppearanceService.BuildNoti2Body(
-                    session.Player,
-                    _database));
+                AppearanceService.BuildNoti2Body(session.Player, _database));
+            await session.SendPacketAsync(selfAppearance);
+            if (!CanContinueTownProjection(session, projectionGuard))
+                return;
+
+            foreach (var o in others)
+            {
+                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0002,
+                    AppearanceService.BuildNoti2Body(
+                        o.Player,
+                        _database)));
+                if (!CanContinueTownProjection(session, projectionGuard))
+                    return;
+                await session.SendPacketAsync(
+                    BuildCoPresenceInsert(
+                        TownAreaNotificationBuilder.CreateCurrentSnapshot(o.Player)));
+                if (!CanContinueTownProjection(session, projectionGuard))
+                    return;
+            }
+
             var selfArea = BuildCoPresenceInsert(selfSnapshot);
             var peerProjections = new List<Task>(others.Count);
             foreach (var o in others)
@@ -476,28 +460,6 @@ namespace DfoServer.Network.Handlers
                 if (!CanContinueTownProjection(session, projectionGuard))
                     return;
 
-                // AREA_USERS 的首项必须是当前接收者自己。
-                var recipientRoster = new List<TownUserSnapshot>(others.Count + 1)
-                {
-                    TownAreaNotificationBuilder.CreateCurrentSnapshot(o.Player),
-                };
-                foreach (var peer in others)
-                {
-                    if (peer.Player.CharacterId != o.Player.CharacterId)
-                    {
-                        recipientRoster.Add(
-                            TownAreaNotificationBuilder.CreateCurrentSnapshot(
-                                peer.Player));
-                    }
-                }
-                recipientRoster.Add(selfSnapshot);
-                var recipientRosterPacket = GamePacketEnvelopeBuilder.Build(
-                    0x00,
-                    0x0018,
-                    TownAreaNotificationBuilder.BuildAreaUsers(
-                        townId,
-                        areaId,
-                        recipientRoster));
                 var recipient = o;
                 peerProjections.Add(SessionDirectory.TrySendBestEffortAsync(
                     async cancellationToken =>
@@ -517,17 +479,10 @@ namespace DfoServer.Network.Handlers
                         {
                             return;
                         }
+                        // 已在场玩家只插入到达者，不能跟 AREA_USERS：
+                        // 42596/46364 实机 0x18 会 setDrawLoadingMode 并切到 TOWN 模块。
                         await recipient.SendPacketAsync(
                             selfArea,
-                            cancellationToken);
-                        if (!CanContinueTownProjection(
-                                session,
-                                projectionGuard))
-                        {
-                            return;
-                        }
-                        await recipient.SendPacketAsync(
-                            recipientRosterPacket,
                             cancellationToken);
                     },
                     $"town-presence characterId=" +

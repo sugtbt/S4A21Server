@@ -20,6 +20,23 @@ namespace DfoServer.Network.Builders
             };
         }
 
+        /// A21 USER_AREA 远程分支：包内 town/area 与接收者当前区域不同时，
+        /// 只移除该 UID 的场景投影，不碰队伍槽。进本时 CurTown/CurArea 仍是旧城镇，
+        /// 必须改写成非当前区域，否则会变成同区域更新而不是移除。
+        public static TownUserSnapshot CreateRemoteDepartureSnapshot(
+            PlayerContext player,
+            byte oldTownId,
+            byte oldAreaId)
+        {
+            var snapshot = CreateCurrentSnapshot(player);
+            if (snapshot.TownId == oldTownId && snapshot.AreaId == oldAreaId)
+            {
+                snapshot.TownId = 0xFF;
+                snapshot.AreaId = 0xFF;
+            }
+            return snapshot;
+        }
+
         public static byte[] BuildUserArea(TownUserSnapshot snapshot)
         {
             var writer = new GamePacketWriter();
