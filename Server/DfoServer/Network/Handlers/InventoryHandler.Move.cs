@@ -322,7 +322,7 @@ namespace DfoServer.Network.Handlers
             var listType = (InventoryListType)body[0];
             byte category = body[1];
             byte condition = body.Length > 2 ? body[2] : (byte)0;
-            FileLogger.Log($"[{ProtocolName}] SORT_ITEM raw({body.Length}B): {BitConverter.ToString(body)}  listType={listType} category={category} condition={condition}(ignored)");
+            FileLogger.Log($"[{ProtocolName}] SORT_ITEM raw({body.Length}B): {BitConverter.ToString(body)}  listType={listType} category={category} condition={condition}");
 
             var (cid, _) = ResolveOwner(session);
             try
@@ -334,11 +334,12 @@ namespace DfoServer.Network.Handlers
                     lease,
                     listType,
                     category,
+                    condition,
                     out var sortResult,
                     out var persistenceFailed);
 
                 FileLogger.Log(
-                    $"[{ProtocolName}] SORT: commit({listType}, cat={category})={ok} "
+                    $"[{ProtocolName}] SORT: commit({listType}, cat={category}, cond={condition}, algo={sortResult?.Algorithm ?? 0})={ok} "
                     + $"mutated={sortResult?.Mutated ?? false} "
                     + $"affected={sortResult?.AffectedSlotCount ?? 0} "
                     + $"persistenceFailed={persistenceFailed}");

@@ -59,6 +59,14 @@ namespace DfoServer.Game.Accounts
             };
         }
 
+        // HONOR_LEVEL_INFO (0x0289) is the honor-level-up banner.
+        // USERINFO subtype0/1 still carry account honor for every character,
+        // including non-max-level alts that show honor UI and honor effects.
+        public static bool ShouldSendHonorLevelUpBanner(int characterLevel)
+        {
+            return characterLevel >= ExpTableProvider.MaxLevel;
+        }
+
         public static uint CalculateHonorExpGain(byte previousLevel, uint previousExp, uint gainedExp)
         {
             if (gainedExp == 0)

@@ -1,4 +1,5 @@
 using DfoServer.Game.Accounts;
+using DfoServer.Game.Dungeon;
 using DfoServer.Game.Skills;
 
 namespace DfoServer.Network.Builders
@@ -38,6 +39,11 @@ namespace DfoServer.Network.Builders
             // Keep the parameter for existing callers; A21 has no member
             // reward field between party EXP and the SP/TP block.
             _ = memberRewardExp;
+
+            // 0x0025 honor slots are consumed as a level-up banner. Alts still
+            // get account honor from USERINFO; only max-level EXP may carry it.
+            if (level < ExpTableProvider.MaxLevel)
+                honorLevel = null;
 
             var w = new GamePacketWriter();
             w.WriteByte(level);                         // +0x00 level

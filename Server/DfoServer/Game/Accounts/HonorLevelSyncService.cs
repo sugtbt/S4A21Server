@@ -52,6 +52,13 @@ namespace DfoServer.Game.Accounts
             if (accountId <= 0)
                 return;
 
+            var characterLevel = session?.Player?.Level ?? 0;
+            if (!HonorLevelDataProvider.ShouldSendHonorLevelUpBanner(characterLevel))
+            {
+                FileLogger.Log($"[{protocolName}] HONOR_LEVEL_INFO skipped {reason}: account={accountId} cid={session?.Player?.CharacterId ?? 0} level={characterLevel}");
+                return;
+            }
+
             summary = summary ?? LoadSummary(accountId);
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0289,
                 HonorLevelPacketBuilder.BuildInfoBody(summary)));

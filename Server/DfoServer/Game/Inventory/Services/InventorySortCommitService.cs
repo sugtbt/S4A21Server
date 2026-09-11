@@ -8,6 +8,21 @@ namespace DfoServer.Game.Inventory
             byte category,
             out InventorySortServiceResult result,
             out bool persistenceFailed)
+            => TryCommit(
+                lease,
+                listType,
+                category,
+                InventorySortCondition.Default,
+                out result,
+                out persistenceFailed);
+
+        internal static bool TryCommit(
+            InventoryLease lease,
+            InventoryListType listType,
+            byte category,
+            byte condition,
+            out InventorySortServiceResult result,
+            out bool persistenceFailed)
         {
             result = null;
             persistenceFailed = false;
@@ -40,6 +55,7 @@ namespace DfoServer.Game.Inventory
                         lease.Inventory,
                         listType,
                         category,
+                        condition,
                         out committedResult);
                     if (committedResult != null && expiredChanges.HasChanges)
                     {

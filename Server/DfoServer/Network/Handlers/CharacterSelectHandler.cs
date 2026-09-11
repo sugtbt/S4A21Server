@@ -717,7 +717,6 @@ namespace DfoServer.Network.Handlers
                 byte routingByte = _getUserInfoTemplate != null ? _getUserInfoTemplate.Pkt0RoutingByte7 : (byte)0;
                 await session.SendPacketAsync(BuildPacketWithRouting(0x00, 0x0002, characterList.Body, routingByte));
                 await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x01, 0x0286, new byte[] { 0x00, 0x04 }));
-                await SendHonorLevelInfoAsync(session, "get-userinfo-ready", characterList.Honor);
                 await _growthCapsule.SendExpProgressAsync(
                     session, "get-userinfo-ready", honor: characterList.Honor);
             }
@@ -1128,7 +1127,6 @@ namespace DfoServer.Network.Handlers
             var accountId = session.Account?.AccountId ?? 1;
             var characterList = BuildCharacterList(accountId);
             await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0002, characterList.Body));
-            await SendHonorLevelInfoAsync(session, "character-list-ready", characterList.Honor);
             FileLogger.Log($"[{ProtocolName}] Sent character list for account_id={accountId}");
         }
 
