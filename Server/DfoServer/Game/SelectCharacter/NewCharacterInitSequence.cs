@@ -26,7 +26,7 @@ namespace DfoServer.Game.SelectCharacter
 
             // A21 进号主序列：USERINFO0 -> 基础状态 -> USERINFO1 -> 城镇状态
             // -> 0005 -> ITEM_LIST -> 0245 -> 0465/021E。
-            Raw(0x01, 0x0004);                      
+            Raw(0x01, 0x0004);
             Raw(0x00, (ushort)NotiPacketTypeA21.USERINFO, 0);
             Raw(0x00, 0x0166, 0);                   
             Raw(0x00, 0x0166, 1);                   
@@ -54,7 +54,7 @@ namespace DfoServer.Game.SelectCharacter
             Raw(0x00, 0x021E);
             Raw(0x00, 0x0286);
             Raw(0x00, 0x00AD);
-            // 城镇对象创建后、HOTKEY 前再发一次 USERINFO0（更新路径）。
+            // 城镇对象创建后、HOTKEY 前再发一次 USERINFO0。
             Raw(0x00, (ushort)NotiPacketTypeA21.USERINFO, 3);
             Raw(0x00, 0x01C7);
             Raw(0x00, 0x006C);

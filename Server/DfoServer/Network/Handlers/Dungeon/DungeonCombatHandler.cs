@@ -246,6 +246,9 @@ namespace DfoServer.Network.Handlers.Dungeon
             return actorType >= 5 && actorType <= 8;
         }
 
+        internal static bool IsBossActorType(byte actorType) =>
+            actorType == 3 || actorType == 8;
+
         internal static bool ShouldClearDungeon(
             bool clearConditionMatched,
             bool reachedBossEndpoint,

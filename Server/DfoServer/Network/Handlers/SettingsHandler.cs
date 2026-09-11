@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Threading.Tasks;
 using DfoServer.Game.Appearance;
 using DfoServer.Game.CharacterData;
@@ -16,6 +17,7 @@ namespace DfoServer.Network.Handlers
         private readonly CharacterVisibilitySettingsPersistence _visibilityPersistence;
         private readonly Game.Session.ISessionDirectory _sessions;
         private readonly IGameDatabase _database;
+        private readonly ConcurrentDictionary<Guid, byte> _visibilityAfterCharacterOption = new ConcurrentDictionary<Guid, byte>();
 
         public SettingsHandler(
             Game.Session.ISessionDirectory sessions = null,
@@ -37,40 +39,38 @@ namespace DfoServer.Network.Handlers
 
             var blob = new byte[len];
             Buffer.BlockCopy(body, 4, blob, 0, len);
+            var characterPacked = AccountSettings.CloneMainGameOptionForCharacter(blob);
+            var accountPacked = AccountSettings.PackAccountMainGameOption(blob);
 
             var (characterId, accountId) = SessionOwnerResolver.Resolve(session);
 
             var visibilityChanged = false;
-            if (characterId > 0)
+            var applyCharacterBits = characterId > 0
+                && session != null
+                && _visibilityAfterCharacterOption.ContainsKey(session.SessionId);
+            if (applyCharacterBits)
             {
-                var tail = session?.Player?.Subtype0Tail ?? _subtype0FieldsRepository.Load(characterId);
+                var tail = session.Player?.Subtype0Tail ?? _subtype0FieldsRepository.Load(characterId);
                 if (tail != null && AccountSettings.TryApplyCharacterVisibilityOptions(
-                    blob,
+                    characterPacked,
                     tail.UserStateBits,
                     out var updatedBits))
                 {
-                    _visibilityPersistence.Save(accountId, characterId, blob, updatedBits);
+                    var projected = _visibilityPersistence.Save(accountId, characterId, accountPacked, updatedBits);
                     visibilityChanged = updatedBits != tail.UserStateBits;
                     tail.UserStateBits = updatedBits;
-                    if (session?.Player != null)
+                    _visibilityAfterCharacterOption.TryRemove(session.SessionId, out _);
+                    if (session.Player != null)
                     {
                         session.Player.Subtype0Tail = tail;
+                        // 角色位只取 01C0 之后的 00C5。觉醒装扮由 USERINFO0/+47 bit4 与 0x0165 生效。
                         if (visibilityChanged)
                         {
-                            session.Player.AppearanceEntries = AppearanceService.LoadOnlineAppearanceFromInventory(
-                                characterId,
-                                session.Player.Job,
-                                session.Player.GrowType,
-                                database: _database);
                             var packet = GamePacketEnvelopeBuilder.Build(
                                 0x00,
                                 (ushort)NotiPacketType.CHARAC_INVISIBLE_FALGS,
                                 CharacterVisibilityBodyBuilder.Build(session.Player.UserId, updatedBits));
                             await session.SendPacketAsync(packet);
-                            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
-                                0x00,
-                                (ushort)NotiPacketType.USERINFO,
-                                AppearanceService.BuildNoti2Body(session.Player, _database)));
                             if (_sessions != null && session.Player.CurrentRun == null)
                             {
                                 await _sessions.BroadcastToAreaAsync(
@@ -82,19 +82,31 @@ namespace DfoServer.Network.Handlers
                             }
                         }
 
+                        await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                            0x00,
+                            (ushort)NotiPacketType.USERINFO,
+                            AppearanceService.BuildNoti2Body(session.Player, _database)));
+                        if (projected != null)
+                        {
+                            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                                0x00,
+                                (ushort)NotiPacketType.CHARACTER_OPTION,
+                                projected));
+                        }
                     }
                 }
                 else
                 {
-                    _repo.SaveMainOption(accountId, blob);
+                    _repo.SaveMainOption(accountId, accountPacked);
+                    _visibilityAfterCharacterOption.TryRemove(session.SessionId, out _);
                 }
             }
             else
             {
-                _repo.SaveMainOption(accountId, blob);
+                _repo.SaveMainOption(accountId, accountPacked);
             }
 
-            FileLogger.Log($"[GameProtocol] SAVE_GAME_OPTION_1: character={characterId} account={accountId} len={len} visibilityChanged={visibilityChanged} bits={(session?.Player?.Subtype0Tail?.UserStateBits)}");
+            FileLogger.Log($"[GameProtocol] SAVE_GAME_OPTION_1: character={characterId} account={accountId} len={len} applyCharacterBits={applyCharacterBits} visibilityChanged={visibilityChanged} bits={(session?.Player?.Subtype0Tail?.UserStateBits)}");
             await LoginHandler.TryCompletePendingLoginSuccessAsync(session);
         }
 
@@ -176,6 +188,8 @@ namespace DfoServer.Network.Handlers
             var bits = session?.Player?.Subtype0Tail?.UserStateBits ?? (byte)3;
             var projected = AccountSettings.ProjectCharacterOptionBlob(body, bits);
             _characterStateRepository.SaveCharacterOption(characterId, projected);
+            if (session != null)
+                _visibilityAfterCharacterOption[session.SessionId] = 1;
             FileLogger.Log($"[GameProtocol] SAVE_CHARACTER_OPTION: character={characterId} account={accountId} len={projected.Length} bits={bits}");
         }
     }

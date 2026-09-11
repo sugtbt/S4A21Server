@@ -133,6 +133,12 @@ namespace DfoServer.Network.Handlers.Dungeon
                 return;
             }
 
+            FileLogger.Log(
+                $"[SpecialDungeonModule] boss summon accepted: " +
+                $"cid={session.Player.CharacterId} " +
+                $"dungeon={run.DungeonId} map={request.MapId} " +
+                $"monster={request.MonsterCode} state={request.StateId}");
+
             await Effects.RoutePlanAsync(
                 session,
                 run,

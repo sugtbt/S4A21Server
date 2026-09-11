@@ -5,16 +5,24 @@ namespace DfoServer.Game.Settings
     public sealed class AccountSettings
     {
         public const int FullAvatarOptionIndex = 55;
-        // 42596 实机：勾选「转职/觉醒特效」只改 00C5 idx1；USERINFO+47 特效显示跟 bit1。
+        // 00C5 idx1 <-> USERINFO0/+47 bit1：转职/觉醒特效。
         public const int VisibleGrowEffectOptionIndex = 1;
+        // 00C5 idx74 <-> USERINFO0/+47 bit4：觉醒装扮勾选。00AD 第一段保持 150B。
+        public const int VisibleGrowAvatarOptionIndex = 74;
         public const int CharacterGrowEffectOptionId = 109;
         public const int CharacterFullAvatarOptionId = 126;
+        public const int CharacterHonorOpacityOptionId = 127;
         public const int CharacterGrowAvatarOptionId = 130;
+        public const int PackedImageCategoryIndex = 3;
+        public const int PackedHonorOpacityIndex = 68;
         public const int CharacterOptionPayloadLength = 512;
         public const int PackedMainGameOptionLength = 150;
 
+        // USERINFO0/+47 与 0x0165：bit1=转职特效，bit3=隐藏全身时装，bit4=隐藏觉醒装扮。
+        // 选角 type=2 display_state_bits 用 bit0/bit1，与进角色 bit4 不是同一套。
         public const byte GrowEffectVisibleMask = 1 << 1;
         public const byte HideFullAvatarMask = 1 << 3;
+        public const byte HideGrowAvatarMask = 1 << 4;
 
         public byte[] MainGameOption { get; set; }
         public byte[] QuickchatBank0 { get; set; }
@@ -40,6 +48,14 @@ namespace DfoServer.Game.Settings
                 changed = true;
             }
 
+            if (TryReadOption(mainGameOption, VisibleGrowAvatarOptionIndex, out var growAvatarVisible))
+            {
+                updatedVisibleBits = growAvatarVisible
+                    ? (byte)(updatedVisibleBits & ~HideGrowAvatarMask)
+                    : (byte)(updatedVisibleBits | HideGrowAvatarMask);
+                changed = true;
+            }
+
             if (TryReadOption(mainGameOption, FullAvatarOptionIndex, out var fullAvatarVisible))
             {
                 updatedVisibleBits = fullAvatarVisible
@@ -54,8 +70,6 @@ namespace DfoServer.Game.Settings
         public static byte[] CloneMainGameOptionForCharacter(byte[] source)
         {
             var length = PackedMainGameOptionLength;
-            if (source != null && source.Length > length)
-                length = source.Length;
             if (length < (FullAvatarOptionIndex + 1) * 2)
                 length = (FullAvatarOptionIndex + 1) * 2;
 
@@ -63,6 +77,26 @@ namespace DfoServer.Game.Settings
             if (source != null && source.Length > 0)
                 Buffer.BlockCopy(source, 0, result, 0, Math.Min(source.Length, result.Length));
             return result;
+        }
+
+        public static byte[] PackAccountMainGameOption(byte[] source)
+        {
+            var packed = CloneMainGameOptionForCharacter(source);
+            ApplySelectScreenCharacterDefaults(packed);
+            return packed;
+        }
+
+        public static bool ApplySelectScreenCharacterDefaults(byte[] main)
+        {
+            // 选角特效/觉醒装扮走 type=2。00AD 只强制全身时装可见。
+            return TryWriteOption(main, FullAvatarOptionIndex, true);
+        }
+
+        public static byte[] BuildCharacterEnterGameOption(byte[] accountMain, byte visibleBits)
+        {
+            var packed = CloneMainGameOptionForCharacter(accountMain);
+            TryApplyCharacterVisibilityBitsToOptions(packed, visibleBits);
+            return packed;
         }
 
         public static bool TryApplyCharacterVisibilityBitsToOptions(
@@ -77,24 +111,29 @@ namespace DfoServer.Game.Settings
                 VisibleGrowEffectOptionIndex,
                 (visibleBits & GrowEffectVisibleMask) != 0);
             wrote = TryWriteOption(
-                    mainGameOption,
-                    FullAvatarOptionIndex,
-                    (visibleBits & HideFullAvatarMask) == 0)
-                || wrote;
+                mainGameOption,
+                VisibleGrowAvatarOptionIndex,
+                (visibleBits & HideGrowAvatarMask) == 0) || wrote;
+            wrote = TryWriteOption(
+                mainGameOption,
+                FullAvatarOptionIndex,
+                (visibleBits & HideFullAvatarMask) == 0) || wrote;
             return wrote;
         }
 
-        public static byte[] ProjectCharacterOptionBlob(byte[] saved, byte visibleBits)
+        public static byte[] ProjectCharacterOptionBlob(byte[] saved, byte visibleBits, byte[] packedMain = null)
         {
             var body = NormalizeCharacterOptionBlob(saved);
-            WriteCharacterOptionU16(
-                body,
-                CharacterGrowEffectOptionId,
-                (visibleBits & GrowEffectVisibleMask) != 0);
+            // 0187[126] 对应查看全身时装。不写 [109]/[130]；勾选走 00C5 idx1/idx74。
             WriteCharacterOptionU16(
                 body,
                 CharacterFullAvatarOptionId,
                 (visibleBits & HideFullAvatarMask) == 0);
+            if (packedMain != null)
+                WriteCharacterOptionRawU16(
+                    body,
+                    CharacterHonorOpacityOptionId,
+                    ReadU16(packedMain, PackedHonorOpacityIndex));
             return body;
         }
 
@@ -135,11 +174,24 @@ namespace DfoServer.Game.Settings
 
         private static void WriteCharacterOptionU16(byte[] body, int optionId, bool enabled)
         {
+            WriteCharacterOptionRawU16(body, optionId, enabled ? (ushort)1 : (ushort)0);
+        }
+
+        private static void WriteCharacterOptionRawU16(byte[] body, int optionId, ushort value)
+        {
             var offset = 4 + optionId * 2;
             if (body == null || body.Length < offset + 2)
                 return;
-            body[offset] = enabled ? (byte)1 : (byte)0;
-            body[offset + 1] = 0;
+            body[offset] = (byte)value;
+            body[offset + 1] = (byte)(value >> 8);
+        }
+
+        private static ushort ReadU16(byte[] blob, int index)
+        {
+            var offset = index * 2;
+            if (blob == null || blob.Length < offset + 2)
+                return 0;
+            return BitConverter.ToUInt16(blob, offset);
         }
 
         private static bool TryReadOption(byte[] mainGameOption, int optionIndex, out bool enabled)

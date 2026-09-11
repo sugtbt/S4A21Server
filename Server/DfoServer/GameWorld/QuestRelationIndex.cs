@@ -218,11 +218,21 @@ namespace DfoServer.GameWorld
             {
                 // Second awakening is available only after first awakening and
                 // must disappear as soon as the second high-nibble stage is
-                // persisted.
-                if (firstGrow <= 0 || secondGrow != 1)
+                // persisted. Quest 2681 (self-awakening) has jcq=3 and no
+                // [grow type]; Dark Knight / Creator keep firstGrow==0, so
+                // firstGrow==0 is allowed only when the quest does not pin a
+                // subclass.
+                if (secondGrow != 1)
                     return false;
-                if (quest.GrowType != -1 && quest.GrowType != firstGrow)
+                if (firstGrow <= 0)
+                {
+                    if (quest.GrowType != -1)
+                        return false;
+                }
+                else if (quest.GrowType != -1 && quest.GrowType != firstGrow)
+                {
                     return false;
+                }
             }
             else if (quest.GrowType != -1
                 && jobChangeQuest != 1
@@ -441,6 +451,7 @@ namespace DfoServer.GameWorld
                 || grade == "[normaly repeat]"
                 || grade == "[special daily]"
                 || grade == "[common unique]"
+                || grade == "[realization]"
                 || grade == "[system]";
 
         private static int ParseExposedValue(string value)

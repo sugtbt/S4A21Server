@@ -2016,6 +2016,94 @@ namespace DfoServer.SelfTests
                     growType: secondAwakeningSample.Quest.GrowType | 0x20),
                 ref failures);
 
+            var darkKnightSelfAwakening = QuestRelationIndex.ComputeAcceptableQuests(
+                characterLevel: 86,
+                characterJob: 9,
+                growType: 0,
+                clearedQuestIds: new HashSet<int> { 4484 },
+                clearedFlags: new Dictionary<int, int> { [4484] = 1 },
+                allowedCreatureKinds: new HashSet<int>());
+            var creatorSelfAwakening = QuestRelationIndex.ComputeAcceptableQuests(
+                characterLevel: 86,
+                characterJob: 10,
+                growType: 0,
+                clearedQuestIds: new HashSet<int> { 4484 },
+                clearedFlags: new Dictionary<int, int> { [4484] = 1 },
+                allowedCreatureKinds: new HashSet<int>());
+            var darkKnightSecondSelfAwakening = QuestRelationIndex.ComputeAcceptableQuests(
+                characterLevel: 86,
+                characterJob: 9,
+                growType: 0x10,
+                clearedQuestIds: new HashSet<int> { 4484, 4488, 2680 },
+                clearedFlags: new Dictionary<int, int>
+                {
+                    [4484] = 1,
+                    [4488] = 1,
+                    [2680] = 1,
+                },
+                allowedCreatureKinds: new HashSet<int>());
+            var creatorSecondSelfAwakening = QuestRelationIndex.ComputeAcceptableQuests(
+                characterLevel: 86,
+                characterJob: 10,
+                growType: 0x10,
+                clearedQuestIds: new HashSet<int> { 4484, 4488, 2680 },
+                clearedFlags: new Dictionary<int, int>
+                {
+                    [4484] = 1,
+                    [4488] = 1,
+                    [2680] = 1,
+                },
+                allowedCreatureKinds: new HashSet<int>());
+            Check(
+                "realization quests open self-awakening for subclassless jobs " +
+                "while second awakening waits for the first high nibble",
+                darkKnightSelfAwakening.Contains(2680)
+                    && creatorSelfAwakening.Contains(2680)
+                    && darkKnightSecondSelfAwakening.Contains(2681)
+                    && creatorSecondSelfAwakening.Contains(2681)
+                    && QuestRelationIndex.MeetsCharacterRestrictions(
+                        2680,
+                        characterLevel: 86,
+                        characterJob: 9,
+                        growType: 0)
+                    && QuestRelationIndex.MeetsCharacterRestrictions(
+                        2680,
+                        characterLevel: 86,
+                        characterJob: 10,
+                        growType: 0)
+                    && !QuestRelationIndex.MeetsCharacterRestrictions(
+                        2680,
+                        characterLevel: 86,
+                        characterJob: 0,
+                        growType: 0)
+                    && !QuestRelationIndex.MeetsCharacterRestrictions(
+                        2681,
+                        characterLevel: 86,
+                        characterJob: 9,
+                        growType: 0)
+                    && QuestRelationIndex.MeetsCharacterRestrictions(
+                        2681,
+                        characterLevel: 86,
+                        characterJob: 9,
+                        growType: 0x10)
+                    && QuestRelationIndex.MeetsCharacterRestrictions(
+                        2681,
+                        characterLevel: 86,
+                        characterJob: 10,
+                        growType: 0x10)
+                    && !QuestRelationIndex.MeetsCharacterRestrictions(
+                        2681,
+                        characterLevel: 86,
+                        characterJob: 9,
+                        growType: 0x20)
+                    && firstAwakeningSample != null
+                    && !QuestRelationIndex.MeetsCharacterRestrictions(
+                        firstAwakeningSample.QuestId,
+                        characterLevel: 50,
+                        characterJob: 1,
+                        growType: 0),
+                ref failures);
+
             var xilanQuest = QuestData.GetQuestFile(2404);
             var xilanMetadata = ItemMetadataResolver.Resolve(10100158);
             var xilanPrerequisite = QuestPrerequisiteCatalog.Get(2404);

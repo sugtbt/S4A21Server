@@ -339,10 +339,16 @@ namespace DfoServer.Game.SelectCharacter
                 : (byte[])acctSettings.MainGameOption.Clone();
             initSnapshot.QuickchatBank0 = acctSettings?.QuickchatBank0;
             initSnapshot.QuickchatBank1 = acctSettings?.QuickchatBank1;
+            // 普通职业无存档时不在这里填默认键位, 由 01C7 builder 按 PVF 投影且不写库。
+            // 缔造者键位体系不同, 无存档时仍在首次进号落下 PVF 默认布局。
+            initSnapshot.HotkeyKeyType = Settings.CharacterKeyboardDefaults.ResolveKeyType(
+                (byte)(character?.Job ?? 0),
+                acctSettings?.HotkeyKeyType ?? 0);
             var hkSlots = initSnapshot.HotkeyConfigSlots.Count > 0
                 ? BuildHotkeyBlob(initSnapshot.HotkeyConfigSlots)
-                : Settings.CharacterKeyboardDefaults.BuildHotkeySlots((byte)(character?.Job ?? 0));
-            if (character != null && Settings.CharacterKeyboardDefaults.IsCreatorMage(character.Job)
+                : null;
+            if (character != null
+                && Settings.CharacterKeyboardDefaults.IsCreatorMage(character.Job)
                 && initSnapshot.HotkeyConfigSlots.Count == 0)
             {
                 hkSlots = Settings.CharacterKeyboardDefaults.BuildHotkeySlots(character.Job);
@@ -350,7 +356,6 @@ namespace DfoServer.Game.SelectCharacter
             }
             if (hkSlots != null && hkSlots.Length >= 2)
             {
-                initSnapshot.HotkeyKeyType = character != null && Settings.CharacterKeyboardDefaults.IsCreatorMage(character.Job) ? (byte)1 : (acctSettings?.HotkeyKeyType ?? 0);
                 initSnapshot.HotkeyConfigSlots.Clear();
                 for (int i = 0; i + 1 < hkSlots.Length; i += 2)
                     initSnapshot.HotkeyConfigSlots.Add(BitConverter.ToUInt16(hkSlots, i));
@@ -435,11 +440,9 @@ namespace DfoServer.Game.SelectCharacter
                     if (initSnapshot.MainGameOptionBlob != null)
                     {
                         initSnapshot.MainGameOptionBlob =
-                            Settings.AccountSettings.CloneMainGameOptionForCharacter(
-                                initSnapshot.MainGameOptionBlob);
-                        Settings.AccountSettings.TryApplyCharacterVisibilityBitsToOptions(
-                            initSnapshot.MainGameOptionBlob,
-                            characterRecord.Subtype0Tail.UserStateBits);
+                            Settings.AccountSettings.BuildCharacterEnterGameOption(
+                                initSnapshot.MainGameOptionBlob,
+                                characterRecord.Subtype0Tail.UserStateBits);
                     }
 
                     initSnapshot.CharacterOptionBlob =
@@ -763,8 +766,6 @@ ON CONFLICT(character_id) DO UPDATE SET manage_level=excluded.manage_level;";
             {
                 _inventoryLifecycle.SeedNewCharacterEquipment(characterId, accountId, initialEquip);
             }
-
-            _initFlagsRepository.SaveHotkeyConfig(characterId, Settings.CharacterKeyboardDefaults.BuildHotkeySlots(job));
 
             SeedNewCharacterStructuredData(characterId, job);
         }

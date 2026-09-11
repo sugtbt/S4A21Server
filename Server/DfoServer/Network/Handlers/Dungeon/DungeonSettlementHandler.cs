@@ -2337,6 +2337,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                 roster,
                 out _);
 
+            if (factCreated)
+                await CullRemainingBlockingActorsOnClearAsync(session, run, clearFact);
+
             if (deferParticipantFanout)
                 return;
 
@@ -2860,6 +2863,139 @@ namespace DfoServer.Network.Handlers.Dungeon
                         $"[DungeonHandler] clear participant relay failed: " +
                         $"source={sourceCharacterId} member={participant.CharacterId} " +
                         $"event={clearFact.SourceEventId:N} error={ex.Message}");
+                }
+            }
+        }
+
+        // START_MAP actor type 9 walks the special passive object path and is
+        // never a blocking monster; the constant mirrors MonsterSumInfo.Type.
+        private const byte PassiveObjectActorType = 9;
+
+        // The A21 client self-destructs only type-0 leftovers on
+        // ENABLE_CLEAR_DUNGEON, so surviving blocking champions would keep
+        // standing in the cleared room. Ledger their deaths once at clear
+        // commit (idempotent per sequence) and notify the frozen roster with
+        // drop-less DIE_MONSTER; no experience or drops are granted, mirroring
+        // the client's killer=0xFFFF self-destruct reports.
+        private async Task CullRemainingBlockingActorsOnClearAsync(
+            EnhancedClientSession session,
+            DungeonRun run,
+            DungeonClearedFact clearFact)
+        {
+            if (session?.Player == null
+                || run == null
+                || clearFact == null
+                || clearFact.PresentationKind
+                    != DungeonClearPresentationKind.Standard
+                || run.Tower != null
+                || !run.TryCaptureCurrentRoomSnapshot(
+                    clearFact.Source.RoomIdentity,
+                    out var roomSnapshot)
+                || roomSnapshot.RoomState?.InstanceRoom == null
+                || roomSnapshot.RoomState.IsHellPartyRoom)
+            {
+                return;
+            }
+
+            var room = roomSnapshot.RoomState.InstanceRoom;
+            var monsters = room.Maze.Monsters;
+            if (monsters == null || monsters.Count == 0)
+                return;
+
+            var cullSource = clearFact.Source.ForAffectedPlayer(
+                run.CaptureIdentity(),
+                roomSnapshot.RoomIdentity.RoomInstanceId,
+                session.Player.CharacterId);
+            var killedSequenceIds = room.CaptureKilledActorSequenceIds();
+            var culledSequenceIds = new List<ushort>();
+            for (var index = 0; index < monsters.Count; index++)
+            {
+                var monster = monsters[index];
+                // Non-blocking rows cover conditional summon bosses and
+                // scripted actors; boss-type actors (including hostile APC
+                // bosses) are never culled so multi-boss rooms stay fightable.
+                // Dynamic actors are not part of Maze.Monsters.
+                if (!monster.IsBlocking
+                    || monster.Type == PassiveObjectActorType
+                    || DungeonCombatHandler.IsBossActorType(monster.Type))
+                {
+                    continue;
+                }
+
+                var sequenceValue = (int)room.FirstActorSequenceId + index;
+                if (sequenceValue <= 0 || sequenceValue > ushort.MaxValue)
+                    continue;
+
+                var sequenceId = (ushort)sequenceValue;
+                if (killedSequenceIds.Contains(sequenceId))
+                    continue;
+
+                var death = room.TryRecordActorDeath(
+                    cullSource,
+                    sequenceId,
+                    monster.Code,
+                    monster.Type,
+                    DungeonActorDeathKind.Defeated);
+                if (death.Accepted && death.Created)
+                    culledSequenceIds.Add(sequenceId);
+            }
+
+            if (culledSequenceIds.Count == 0)
+                return;
+
+            FileLogger.Log(
+                $"[DungeonHandler] clear room cull: " +
+                $"cid={session.Player.CharacterId} dungeon={run.DungeonId} " +
+                $"room=({run.RoomKey.X},{run.RoomKey.Y}) " +
+                $"culled={culledSequenceIds.Count} " +
+                $"event={clearFact.SourceEventId:N}");
+
+            var sessions = _svc.Sessions;
+            if (sessions == null)
+                return;
+
+            var frozenRoster = run.Instance.ParticipantEffects.GetRoster(
+                clearFact.SourceEventId,
+                DungeonParticipantEffectAudience.Instance);
+            foreach (var participant in frozenRoster)
+            {
+                if (!sessions.TryGet(participant.CharacterId, out var memberSession)
+                    || memberSession?.Player?.CurrentRun == null
+                    || memberSession.TcpClient == null
+                    || !memberSession.TcpClient.Connected)
+                {
+                    continue;
+                }
+
+                var memberRun = memberSession.Player.CurrentRun;
+                if (!ReferenceEquals(memberRun, participant.Run)
+                    || !memberRun.Matches(participant.RunIdentity))
+                {
+                    continue;
+                }
+
+                foreach (var sequenceId in culledSequenceIds)
+                {
+                    try
+                    {
+                        await memberSession.SendPacketAsync(
+                            GamePacketEnvelopeBuilder.Build(
+                                0x00,
+                                (ushort)NotiPacketTypeA21.DIE_MONSTER,
+                                DungeonNotificationBuilder.BuildMonsterDie(
+                                    sequenceId,
+                                    drops: null,
+                                    ownerActorId: 0)));
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLogger.Log(
+                            $"[DungeonHandler] clear room cull notify failed: " +
+                            $"member={participant.CharacterId} " +
+                            $"seq={sequenceId} " +
+                            $"event={clearFact.SourceEventId:N} " +
+                            $"error={ex.Message}");
+                    }
                 }
             }
         }

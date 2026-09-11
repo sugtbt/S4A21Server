@@ -590,14 +590,37 @@ namespace DfoServer.Network.Handlers.Dungeon
                 FileLogger.Log("[DungeonKill] HELLPARTY complete: tracked monsters cleared");
             }
 
+            var reachedBossEndpoint = false;
             if (appliesGeneralMechanisms && run.ClearCondition != null)
             {
-                var conditionType = IsBossActorType(killedMonsterType)
+                var isBossKill = DungeonCombatHandler.IsBossActorType(
+                    killedMonsterType);
+                var conditionType = isBossKill
                     ? 4
                     : killedMonsterType >= 5 ? 3 : 2;
+                // Boss death inside the boss room reaches the boss endpoint for
+                // the default clear rule; keep the hostile APC boss guard from
+                // the room clear path so mercenary APC boss rooms do not clear
+                // before that boss dies. A multi-boss room reaches the endpoint
+                // only once every blocking boss-type actor is dead.
+                if (isBossKill
+                    && IsCurrent(run, context.Envelope)
+                    && TryGetCurrentRoomState(run, out var bossKillRoomState)
+                    && run.BossMapPos != null
+                    && run.BossMapPos.Length >= 2
+                    && bossKillRoomState.Maze.X == run.BossMapPos[0]
+                    && bossKillRoomState.Maze.Y == run.BossMapPos[1])
+                {
+                    reachedBossEndpoint = bossKillRoomState.InstanceRoom == null
+                        || (!bossKillRoomState.InstanceRoom
+                                .HasPendingHostileApcBoss()
+                            && !HasOtherUndeadBlockingBoss(
+                                bossKillRoomState.InstanceRoom,
+                                context.SequenceId));
+                }
                 if (DungeonCombatHandler.ShouldClearDungeon(
                         run.ClearCondition.Check(conditionType, killedMonsterCode),
-                        reachedBossEndpoint: false,
+                        reachedBossEndpoint: reachedBossEndpoint,
                         run.IgnoreDefaultDungeonClear))
                 {
                     await _settlement.SubmitClearIntentAsync(
@@ -626,7 +649,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             }
 
             if (appliesGeneralMechanisms
-                && IsBossActorType(killedMonsterType)
+                && DungeonCombatHandler.IsBossActorType(killedMonsterType)
                 && run.Phase < DungeonRunPhase.Cleared)
             {
                 WriteUnclearedBossDiagnostic(
@@ -637,7 +660,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                     killedMonsterType,
                     roomCleared,
                     blockingCount,
-                    killedBlockingCount);
+                    killedBlockingCount,
+                    reachedBossEndpoint);
             }
 
             return true;
@@ -1363,7 +1387,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             for (var index = 0; index < snapshot.Monsters.Count; index++)
             {
                 var actor = snapshot.Monsters[index];
-                if (!IsBossActorType(actor.Type)
+                if (!DungeonCombatHandler.IsBossActorType(actor.Type)
                     || (hasExpectedActorCode && actor.Code != actorCode))
                     continue;
 
@@ -1447,8 +1471,40 @@ namespace DfoServer.Network.Handlers.Dungeon
                 && run.RoomKey.Y == run.MazeStartY;
         }
 
-        private static bool IsBossActorType(byte monsterType) =>
-            monsterType == 3 || monsterType == 8;
+        // A boss endpoint is reached only when every other blocking boss-type
+        // actor in the boss room is already dead; non-blocking dummy bosses
+        // and conditional summon rows never block the endpoint.
+        private static bool HasOtherUndeadBlockingBoss(
+            DungeonInstanceRoom room,
+            ushort excludedSequenceId)
+        {
+            var monsters = room.Maze.Monsters;
+            if (monsters == null)
+                return false;
+
+            var killedSequenceIds = room.CaptureKilledActorSequenceIds();
+            for (var index = 0; index < monsters.Count; index++)
+            {
+                var monster = monsters[index];
+                if (!DungeonCombatHandler.IsBossActorType(monster.Type)
+                    || !monster.IsBlocking)
+                {
+                    continue;
+                }
+
+                var sequenceValue = (int)room.FirstActorSequenceId + index;
+                if (sequenceValue <= 0 || sequenceValue > ushort.MaxValue)
+                    continue;
+
+                var sequenceId = (ushort)sequenceValue;
+                if (sequenceId == excludedSequenceId)
+                    continue;
+
+                if (!killedSequenceIds.Contains(sequenceId))
+                    return true;
+            }
+            return false;
+        }
 
         internal static uint CalculateNamedMonsterDisplayBonus(
             DungeonRun run,
@@ -1563,7 +1619,8 @@ namespace DfoServer.Network.Handlers.Dungeon
             byte monsterType,
             bool roomCleared,
             int blockingCount,
-            int killedBlockingCount)
+            int killedBlockingCount,
+            bool reachedBossEndpoint)
         {
             TryGetCurrentRoomState(run, out var room);
             var roomX = room?.Maze.X ?? -999;
@@ -1580,6 +1637,7 @@ namespace DfoServer.Network.Handlers.Dungeon
                 $"roomCleared={roomCleared} blocking={killedBlockingCount}/{blockingCount} " +
                 $"ccNull={run.ClearCondition == null} " +
                 $"ccCleared={run.ClearCondition?.IsCleared} " +
+                $"bossEndpoint={reachedBossEndpoint} " +
                 $"room=({roomX},{roomY}) boss=({bossX},{bossY}) " +
                 $"phase={run.Phase}");
         }

@@ -518,17 +518,43 @@ namespace DfoServer.Network.Handlers.Dungeon
                 $"kind={run.SpecialDungeon?.Kind.ToString() ?? "none"} " +
                 $"uid={request.UserId} bossSeq={request.BossSequence}");
 
-            if (!run.HasBossEntranceConditionalSummon
-                || run.Phase != DungeonRunPhase.InProgress
-                || !run.ConditionalBossSpawned
-                || request.BossSequence != SpecialDungeonNotifier.BossSummonRuntimeKey)
+            string rejectReason = null;
+            if (!run.HasBossEntranceConditionalSummon)
+                rejectReason = "no_condition_targets";
+            else if (run.Phase != DungeonRunPhase.InProgress)
+                rejectReason = $"phase={run.Phase}";
+            else if (!run.BossEntranceConditionComplete)
+                rejectReason = "condition_incomplete";
+            else if (run.Instance?.Mechanisms == null
+                || !run.Instance.Mechanisms.ConditionalBossSpawned)
+                rejectReason = "boss_not_spawned";
+            else if (request.BossSequence
+                != SpecialDungeonNotifier.BossSummonRuntimeKey)
+                rejectReason = "boss_seq_mismatch";
+            if (rejectReason != null)
             {
+                FileLogger.Log(
+                    $"[DungeonMechanism] BOSS_DIE_CHECK gate rejected: " +
+                    $"cid={session.Player.CharacterId} dungeon={run.DungeonId} " +
+                    $"reason={rejectReason} uid={request.UserId} " +
+                    $"bossSeq={request.BossSequence}");
                 return default;
             }
 
-            var bossCode = run.ConditionalBossCode;
+            // The entrance condition is copied to each participant run, but
+            // the accepted summon is an instance-level fact. Use that shared
+            // fact so a non-summoner can report the death without allowing a
+            // report before the summon request was accepted.
+            var bossCode = run.Instance.Mechanisms.ConditionalBossCode;
             if (bossCode <= 0)
+            {
+                FileLogger.Log(
+                    $"[DungeonMechanism] BOSS_DIE_CHECK gate rejected: " +
+                    $"cid={session.Player.CharacterId} dungeon={run.DungeonId} " +
+                    $"reason=boss_code_unresolved uid={request.UserId} " +
+                    $"bossSeq={request.BossSequence}");
                 return default;
+            }
 
             return new ClearRequest(
                 shouldClearDungeon: true,

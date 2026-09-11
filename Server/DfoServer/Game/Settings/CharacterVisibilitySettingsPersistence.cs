@@ -20,18 +20,24 @@ namespace DfoServer.Game.Settings
                 .ConnectionString;
         }
 
-        public void Save(int accountId, int characterId, byte[] mainGameOption, byte userStateBits)
+        public byte[] Save(int accountId, int characterId, byte[] mainGameOption, byte userStateBits)
         {
             using (var connection = new SqliteConnection(_connectionString))
             {
                 connection.Open();
                 using (var transaction = connection.BeginTransaction())
                 {
+                    var packed = mainGameOption;
+                    if (packed != null && packed.Length > AccountSettings.PackedMainGameOptionLength)
+                    {
+                        packed = new byte[AccountSettings.PackedMainGameOptionLength];
+                        Buffer.BlockCopy(mainGameOption, 0, packed, 0, packed.Length);
+                    }
                     AccountSettingsRepository.SaveMainOption(
                         connection,
                         transaction,
                         accountId,
-                        mainGameOption);
+                        packed);
                     SqliteSubtype0FieldsRepository.SaveUserStateBits(
                         connection,
                         transaction,
@@ -50,7 +56,7 @@ namespace DfoServer.Game.Settings
                             existing = (byte[])value;
                     }
 
-                    var projected = AccountSettings.ProjectCharacterOptionBlob(existing, userStateBits);
+                    var projected = AccountSettings.ProjectCharacterOptionBlob(existing, userStateBits, packed);
                     using (var save = connection.CreateCommand())
                     {
                         save.Transaction = transaction;
@@ -64,6 +70,7 @@ ON CONFLICT(character_id) DO UPDATE SET character_option_blob=@body";
                     }
 
                     transaction.Commit();
+                    return projected;
                 }
             }
         }

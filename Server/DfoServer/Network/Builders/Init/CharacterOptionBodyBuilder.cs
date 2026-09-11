@@ -12,7 +12,8 @@ namespace DfoServer.Network.Builders
         {
             var saved = snapshot?.InitializationSnapshot?.CharacterOptionBlob;
             var bits = snapshot?.CharacterRecord?.Subtype0Tail?.UserStateBits ?? (byte)3;
-            body = AccountSettings.ProjectCharacterOptionBlob(saved, bits);
+            var packed = snapshot?.InitializationSnapshot?.MainGameOptionBlob;
+            body = AccountSettings.ProjectCharacterOptionBlob(saved, bits, packed);
             return true;
         }
     }

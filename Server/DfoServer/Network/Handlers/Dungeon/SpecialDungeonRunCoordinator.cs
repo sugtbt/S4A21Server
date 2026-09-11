@@ -63,6 +63,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             run.IgnoreDefaultDungeonClear =
                 dungeonFile.IgnoreDefaultDungeonClear
                 || TimeSpiralDungeonCoordinator.IsDungeon(run.DungeonId);
+            run.Instance?.Mechanisms.ResetConditionalBossSpawn();
             run.BossEntranceConditionTargets.Clear();
             run.BossEntranceConditionalSummonCodes.Clear();
             run.BossEntranceConditionComplete = false;

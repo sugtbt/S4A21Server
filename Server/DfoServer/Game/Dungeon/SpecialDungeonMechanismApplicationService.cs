@@ -220,6 +220,13 @@ namespace DfoServer.Game.Dungeon
                     return Array.Empty<SpecialDungeonEffectIntent>();
                 }
 
+                if (run.Instance == null
+                    || !run.Instance.Mechanisms.TryRegisterConditionalBossSpawn(
+                        template.MonsterCode))
+                {
+                    return Array.Empty<SpecialDungeonEffectIntent>();
+                }
+
                 run.Mechanisms.ConditionalBossSpawned = true;
                 run.Mechanisms.ConditionalBossCode = template.MonsterCode;
                 var level = template.Level > 0

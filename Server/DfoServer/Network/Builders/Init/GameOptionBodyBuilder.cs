@@ -3,8 +3,6 @@ using System;
 
 namespace DfoServer.Network.Builders
 {
-    
-    
     public sealed class GameOptionBodyBuilder : IInitPacketBuilder
     {
         public ushort NotiType => 0x00AD;
@@ -12,7 +10,7 @@ namespace DfoServer.Network.Builders
         public bool TryBuild(SelectCharacterDataSnapshot snapshot, int occurrenceIndex, out byte[] body)
         {
             var init = snapshot.InitializationSnapshot;
-            // 账号无任何已保存设置时不下发 00AD，由客户端使用本地默认。
+            // 账号无已保存设置时不下发 00AD，由客户端使用本地默认。
             if (init.MainGameOptionBlob == null
                 && init.QuickchatBank0 == null
                 && init.QuickchatBank1 == null)

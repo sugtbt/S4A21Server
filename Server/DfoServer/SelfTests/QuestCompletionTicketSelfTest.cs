@@ -26,6 +26,7 @@ namespace DfoServer.SelfTests
 
             VerifyPvfDefinitions(ref failures);
             VerifyLevelHelpers(ref failures);
+            VerifyAwakeningTicketMatching(ref failures);
             VerifyAchievementTicketLevelFilter(ref failures);
             VerifyGradeTicket(SideTicketItemId, "side", "epic", ref failures);
             VerifyGradeTicket(EpicTicketItemId, "epic", "side", ref failures);
@@ -136,6 +137,57 @@ namespace DfoServer.SelfTests
                 ReleaseLease(sessionId, characterId, lease);
                 TryDeleteDatabase(tempDbPath);
             }
+        }
+
+        private static void VerifyAwakeningTicketMatching(ref int failures)
+        {
+            Check(
+                "first awakening ticket matches awakening-reward quests only",
+                QuestCompletionTicketService.IsFirstAwakeningRewardQuest(
+                    new QuestFile
+                    {
+                        RewardType = "[awakening type]",
+                        RewardIntData = "1",
+                    })
+                && !QuestCompletionTicketService.IsFirstAwakeningRewardQuest(
+                    new QuestFile
+                    {
+                        RewardType = "[awakening type]",
+                        RewardIntData = "2",
+                    })
+                && !QuestCompletionTicketService.IsFirstAwakeningRewardQuest(
+                    new QuestFile
+                    {
+                        RewardType = "[item]",
+                        RewardIntData = "1",
+                    })
+                && !QuestCompletionTicketService.IsFirstAwakeningRewardQuest(
+                    new QuestFile
+                    {
+                        RewardType = "[awakening type]",
+                        RewardIntData = "1 1",
+                    }),
+                ref failures);
+
+            // Quest 2680 (第一次自我觉醒) carries no [job change quest] tag;
+            // its awakening flows through the [awakening type] reward only.
+            var selfAwakening = QuestData.GetQuestFile(2680);
+            Check(
+                "PVF self-awakening quest 2680 matches the first awakening ticket",
+                selfAwakening != null
+                    && selfAwakening.JobChangeQuestValue == 0
+                    && QuestCompletionTicketService
+                        .IsFirstAwakeningRewardQuest(selfAwakening),
+                ref failures);
+
+            var secondSelfAwakening = QuestData.GetQuestFile(2681);
+            Check(
+                "PVF self-awakening quest 2681 stays on the second awakening ticket",
+                secondSelfAwakening != null
+                    && secondSelfAwakening.JobChangeQuestValue == 3
+                    && !QuestCompletionTicketService
+                        .IsFirstAwakeningRewardQuest(secondSelfAwakening),
+                ref failures);
         }
 
         private static void VerifyLevelHelpers(ref int failures)

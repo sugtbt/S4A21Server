@@ -10,9 +10,54 @@ namespace DfoServer.Game.Dungeon
         private TournamentDungeonRuntime _tournament;
         private BloodAltarDungeonRuntime _bloodAltar;
         private DungeonBossRouteRuntime _bossRoute;
+        private bool _conditionalBossSpawned;
+        private int _conditionalBossCode;
 
         internal DungeonDynamicActorRegistry DynamicActors { get; } =
             new DungeonDynamicActorRegistry();
+
+        internal bool ConditionalBossSpawned
+        {
+            get
+            {
+                lock (_syncRoot)
+                    return _conditionalBossSpawned;
+            }
+        }
+
+        internal int ConditionalBossCode
+        {
+            get
+            {
+                lock (_syncRoot)
+                    return _conditionalBossCode;
+            }
+        }
+
+        internal bool TryRegisterConditionalBossSpawn(int bossCode)
+        {
+            if (bossCode <= 0)
+                return false;
+
+            lock (_syncRoot)
+            {
+                if (_conditionalBossSpawned)
+                    return false;
+
+                _conditionalBossSpawned = true;
+                _conditionalBossCode = bossCode;
+                return true;
+            }
+        }
+
+        internal void ResetConditionalBossSpawn()
+        {
+            lock (_syncRoot)
+            {
+                _conditionalBossSpawned = false;
+                _conditionalBossCode = 0;
+            }
+        }
 
         internal TournamentDungeonRuntime Tournament
         {

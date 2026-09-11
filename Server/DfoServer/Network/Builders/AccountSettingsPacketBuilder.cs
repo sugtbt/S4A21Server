@@ -8,8 +8,6 @@ namespace DfoServer.Network.Builders
     /// 无任何已保存设置的账号不下发对应包，由客户端使用本地默认。
     public static class AccountSettingsPacketBuilder
     {
-        // A21 进入选角前只发送账号当前的 00AD。无保存记录的账号不下发，由客户端使用本地默认。
-        // FullAvatar(idx55) 必须开启，否则客户端会隐藏完整身体外观。
         public static byte[] BuildSelectScreenGameOption(
             AccountSettings settings,
             out byte[] persistedMain)
@@ -19,27 +17,13 @@ namespace DfoServer.Network.Builders
             if (source == null)
                 return null;
 
-            var main = new byte[source.Length];
-            Buffer.BlockCopy(source, 0, main, 0, source.Length);
-            persistedMain = EnsureFullAvatarVisible(main) ? main : null;
+            var main = AccountSettings.CloneMainGameOptionForCharacter(source);
+            persistedMain = AccountSettings.ApplySelectScreenCharacterDefaults(main) ? main : null;
 
             return BuildGameOptionBody(
                 main,
                 settings.QuickchatBank0 ?? Array.Empty<byte>(),
                 settings.QuickchatBank1 ?? Array.Empty<byte>());
-        }
-
-        internal static bool EnsureFullAvatarVisible(byte[] main)
-        {
-            var offset = AccountSettings.FullAvatarOptionIndex * 2;
-            if (main == null || main.Length < offset + 2)
-                return false;
-            if (main[offset] == 1 && main[offset + 1] == 0)
-                return false;
-
-            main[offset] = 1;
-            main[offset + 1] = 0;
-            return true;
         }
 
         public static byte[] BuildGameOptionBody(byte[] main, byte[] quick0, byte[] quick1)

@@ -109,17 +109,19 @@ namespace DfoServer.SelfTests
                 && BitConverter.ToUInt32(dimensionGateBody, 4) == 2,
                 ref failures);
 
-            // 模拟一条已保存的账号主选项（idx55 FullAvatar 关闭，应被强制修补）。
-            var hiddenAvatar = new byte[(AccountSettings.FullAvatarOptionIndex + 12) * 2];
+            // 模拟一条已保存的账号主选项（角色级 idx1/idx74/idx55 关闭）。
+            // 选角界面必须默认全开；进角色后再按角色 bits 覆盖。
+            var hiddenAvatar = new byte[AccountSettings.PackedMainGameOptionLength];
             for (var i = 0; i + 1 < hiddenAvatar.Length; i += 2)
                 hiddenAvatar[i] = 1;
-            var fullAvatarOffset = AccountSettings.FullAvatarOptionIndex * 2;
-            hiddenAvatar[fullAvatarOffset] = 0;
-            hiddenAvatar[fullAvatarOffset + 1] = 0;
+            hiddenAvatar[AccountSettings.VisibleGrowEffectOptionIndex * 2] = 0;
+            hiddenAvatar[AccountSettings.VisibleGrowAvatarOptionIndex * 2] = 0;
+            hiddenAvatar[AccountSettings.FullAvatarOptionIndex * 2] = 0;
+            hiddenAvatar[AccountSettings.FullAvatarOptionIndex * 2 + 1] = 0;
             var option = AccountSettingsPacketBuilder.BuildSelectScreenGameOption(
                 new AccountSettings { MainGameOption = hiddenAvatar },
                 out var persistedMain);
-            var mainLength = hiddenAvatar.Length;
+            var mainLength = AccountSettings.PackedMainGameOptionLength;
             Check(
                 "A21 select-screen 00AD keeps three length-prefixed banks",
                 option.Length == mainLength + 12
@@ -128,10 +130,26 @@ namespace DfoServer.SelfTests
                 && BitConverter.ToInt32(option, 8 + mainLength) == 0,
                 ref failures);
             Check(
-                "A21 select-screen forces FullAvatar visible",
+                "A21 select-screen 00AD only forces 全身时装 and keeps idx1/idx74",
                 persistedMain != null
-                && persistedMain[fullAvatarOffset] == 1
-                && persistedMain[fullAvatarOffset + 1] == 0,
+                && persistedMain[AccountSettings.VisibleGrowEffectOptionIndex * 2] == 0
+                && persistedMain[AccountSettings.VisibleGrowAvatarOptionIndex * 2] == 0
+                && persistedMain[AccountSettings.FullAvatarOptionIndex * 2] == 1
+                && persistedMain[AccountSettings.FullAvatarOptionIndex * 2 + 1] == 0,
+                ref failures);
+            var packedAccount = AccountSettings.PackAccountMainGameOption(hiddenAvatar);
+            Check(
+                "A21 account 00C5 persist keeps idx1/idx74 and only forces 全身时装",
+                packedAccount[AccountSettings.VisibleGrowEffectOptionIndex * 2] == 0
+                && packedAccount[AccountSettings.VisibleGrowAvatarOptionIndex * 2] == 0
+                && packedAccount[AccountSettings.FullAvatarOptionIndex * 2] == 1,
+                ref failures);
+            Check(
+                "A21 character bits are applied from unstripped 00C5 not the account defaults",
+                AccountSettings.TryApplyCharacterVisibilityOptions(hiddenAvatar, 0x03, out var fromRaw)
+                && fromRaw == 0x19
+                && AccountSettings.TryApplyCharacterVisibilityOptions(packedAccount, 0x00, out var fromPacked)
+                && fromPacked == 0x10,
                 ref failures);
 
             var emptyOption = AccountSettingsPacketBuilder.BuildSelectScreenGameOption(
@@ -361,42 +379,75 @@ namespace DfoServer.SelfTests
 
             var mappedOption = AccountSettings.CloneMainGameOptionForCharacter(null);
             mappedOption[AccountSettings.VisibleGrowEffectOptionIndex * 2] = 0;
+            mappedOption[AccountSettings.VisibleGrowAvatarOptionIndex * 2] = 1;
             mappedOption[AccountSettings.FullAvatarOptionIndex * 2] = 1;
             Check(
-                "A21 00C5 idx1/idx55 map onto UserStateBits bit1/bit3",
+                "A21 00C5 idx1/idx74/idx55 map onto UserStateBits bit1/bit4/bit3",
                 AccountSettings.TryApplyCharacterVisibilityOptions(mappedOption, 0x0B, out var mappedBits)
                 && mappedBits == 0x01,
                 ref failures);
 
+            var growAvatarOff = AccountSettings.CloneMainGameOptionForCharacter(null);
+            growAvatarOff[AccountSettings.VisibleGrowEffectOptionIndex * 2] = 1;
+            growAvatarOff[AccountSettings.VisibleGrowAvatarOptionIndex * 2] = 0;
+            growAvatarOff[AccountSettings.FullAvatarOptionIndex * 2] = 1;
+            Check(
+                "A21 00C5 idx74 sets UserStateBits bit4 to hide 觉醒装扮",
+                AccountSettings.TryApplyCharacterVisibilityOptions(growAvatarOff, 0x03, out var growAvatarBits)
+                && growAvatarBits == 0x13,
+                ref failures);
+
             var overlayOption = AccountSettings.CloneMainGameOptionForCharacter(null);
             Check(
-                "A21 00AD overlay writes packed idx1/idx55 from UserStateBits bit1/bit3",
-                overlayOption.Length >= AccountSettings.PackedMainGameOptionLength
+                "A21 packed 00C5 overlay writes idx1/idx74/idx55",
+                overlayOption.Length == AccountSettings.PackedMainGameOptionLength
                 && AccountSettings.TryApplyCharacterVisibilityBitsToOptions(overlayOption, 0x08)
                 && overlayOption[AccountSettings.VisibleGrowEffectOptionIndex * 2] == 0
+                && overlayOption[AccountSettings.VisibleGrowAvatarOptionIndex * 2] == 1
                 && overlayOption[AccountSettings.FullAvatarOptionIndex * 2] == 0,
+                ref failures);
+
+            var enterOption = AccountSettings.BuildCharacterEnterGameOption(null, 0x01);
+            Check(
+                "A21 character 00AD stays 150B and keeps idx74 on when hide-bit4 is clear",
+                enterOption != null
+                && enterOption.Length == AccountSettings.PackedMainGameOptionLength
+                && enterOption[AccountSettings.VisibleGrowAvatarOptionIndex * 2] == 1
+                && enterOption.Length < AccountSettings.CharacterGrowAvatarOptionId * 2 + 2,
+                ref failures);
+            var packedHonor = AccountSettings.CloneMainGameOptionForCharacter(null);
+            packedHonor[AccountSettings.PackedHonorOpacityIndex * 2] = 27;
+            packedHonor[AccountSettings.PackedImageCategoryIndex * 2] = 2;
+            var enterOff = AccountSettings.BuildCharacterEnterGameOption(packedHonor, AccountSettings.HideGrowAvatarMask);
+            Check(
+                "A21 character 00AD idx74 clears when hide-bit4 is set and keeps packed honor idx68",
+                enterOff.Length == AccountSettings.PackedMainGameOptionLength
+                && enterOff[AccountSettings.VisibleGrowAvatarOptionIndex * 2] == 0
+                && enterOff[AccountSettings.PackedHonorOpacityIndex * 2] == 27,
                 ref failures);
 
             var projectedOption = AccountSettings.ProjectCharacterOptionBlob(null, 0x08);
             Check(
-                "A21 0187 projects XUI 109/126 and leaves 130 unset",
+                "A21 0187 projects XUI 126 and does not force 130/127",
                 projectedOption != null
                 && projectedOption.Length == 4 + AccountSettings.CharacterOptionPayloadLength
                 && BitConverter.ToInt32(projectedOption, 0) == AccountSettings.CharacterOptionPayloadLength
-                && BitConverter.ToUInt16(projectedOption, 4 + AccountSettings.CharacterGrowEffectOptionId * 2) == 0
+                && BitConverter.ToUInt16(projectedOption, 4 + AccountSettings.CharacterGrowEffectOptionId * 2) == 0xFFFF
                 && BitConverter.ToUInt16(projectedOption, 4 + AccountSettings.CharacterGrowAvatarOptionId * 2) == 0xFFFF
-                && BitConverter.ToUInt16(projectedOption, 4 + AccountSettings.CharacterFullAvatarOptionId * 2) == 0,
+                && BitConverter.ToUInt16(projectedOption, 4 + AccountSettings.CharacterFullAvatarOptionId * 2) == 0
+                && BitConverter.ToUInt16(projectedOption, 4 + AccountSettings.CharacterHonorOpacityOptionId * 2) == 0xFFFF,
                 ref failures);
 
             var preserved = AccountSettings.NormalizeCharacterOptionBlob(null);
-            preserved[4 + 128 * 2] = 109;
+            preserved[4 + 128 * 2] = 36;
             preserved[4 + 128 * 2 + 1] = 0;
-            var merged = AccountSettings.ProjectCharacterOptionBlob(preserved, 0x02);
+            var merged = AccountSettings.ProjectCharacterOptionBlob(preserved, 0x02, packedHonor);
             Check(
-                "A21 0187 projection keeps unrelated fields and does not alias 特效 onto 觉醒装扮 130",
-                BitConverter.ToUInt16(merged, 4 + 128 * 2) == 109
-                && BitConverter.ToUInt16(merged, 4 + AccountSettings.CharacterGrowEffectOptionId * 2) == 1
+                "A21 0187 copies honor opacity from 00C5 idx68 and does not alias 特效 onto 109/130",
+                BitConverter.ToUInt16(merged, 4 + 128 * 2) == 36
+                && BitConverter.ToUInt16(merged, 4 + AccountSettings.CharacterGrowEffectOptionId * 2) == 0xFFFF
                 && BitConverter.ToUInt16(merged, 4 + AccountSettings.CharacterGrowAvatarOptionId * 2) == 0xFFFF
+                && BitConverter.ToUInt16(merged, 4 + AccountSettings.CharacterHonorOpacityOptionId * 2) == 27
                 && BitConverter.ToUInt16(merged, 4 + AccountSettings.CharacterFullAvatarOptionId * 2) == 1,
                 ref failures);
 
@@ -635,6 +686,17 @@ INSERT INTO characters(character_id, account_id, name, job) VALUES(9612, 9611, '
                 && BitConverter.ToUInt16(roster, 18) == 0,
                 ref failures);
 
+            var rosterTail = new GamePacketWriter();
+            UserInfoType2RosterTailBuilder.WriteA21(rosterTail, 0);
+            var rosterTailBytes = rosterTail.ToArray();
+            Check(
+                "A21 type=2 roster tail defaults display_state_bits on for select-screen 特效/觉醒装扮",
+                rosterTailBytes.Length > UserInfoType2RosterTailBuilder.A21DisplayStateBitsOffset
+                && rosterTailBytes[UserInfoType2RosterTailBuilder.A21DisplayStateBitsOffset]
+                    == UserInfoType2RosterTailBuilder.SelectScreenDisplayStateBits
+                && rosterTailBytes[UserInfoType2RosterTailBuilder.A21DisplayStateBitsOffset + 3] == 0xFF,
+                ref failures);
+
             var hotkeyIndex = initSequence.FindIndex(entry =>
                 entry.Kind == SelectCharacterPacketTemplateKind.Raw
                 && entry.Command == 0x00
@@ -677,6 +739,71 @@ INSERT INTO characters(character_id, account_id, name, job) VALUES(9612, 9611, '
                     townUserInfo0.Length
                     - UserInfoSubtype0Builder.A21AfterAliveLength
                     + UserInfoSubtype0Builder.A21AfterAliveMoodValueOffset) == 6,
+                ref failures);
+
+            // 01C7 恒发: 无存档角色必须下发 PVF 默认键位, 否则客户端沿用上一个选取角色的键位。
+            var hotkeyBuilder = new HotkeyConfigBodyBuilder();
+            Check(
+                "A21 HOTKEY 0x01C7 sends PVF defaults for a character without saved keys",
+                hotkeyBuilder.TryBuild(
+                    new SelectCharacterDataSnapshot
+                    {
+                        CharacterRecord = new CharacterRecord
+                        {
+                            CharacterId = 9,
+                            Name = new byte[] { (byte)'a' },
+                            Job = 1,
+                        },
+                    },
+                    0,
+                    out var defaultHotkeyBody)
+                && defaultHotkeyBody != null
+                && defaultHotkeyBody.Length >= 5
+                && BitConverter.ToInt32(defaultHotkeyBody, 1) == defaultHotkeyBody.Length - 5
+                && BitConverter.ToInt32(defaultHotkeyBody, 1) > 0,
+                ref failures);
+            Check(
+                "A21 HOTKEY 0x01C7 projects a fresh creator at keyType 1 with a consistent body",
+                hotkeyBuilder.TryBuild(
+                    new SelectCharacterDataSnapshot
+                    {
+                        CharacterRecord = new CharacterRecord
+                        {
+                            CharacterId = 9,
+                            Name = new byte[] { (byte)'a' },
+                            Job = 10,
+                        },
+                    },
+                    0,
+                    out var creatorHotkeyBody)
+                && creatorHotkeyBody != null
+                && creatorHotkeyBody[0] == 1
+                && BitConverter.ToInt32(creatorHotkeyBody, 1) > 0
+                && creatorHotkeyBody.Length == 5 + BitConverter.ToInt32(creatorHotkeyBody, 1),
+                ref failures);
+            Check(
+                "A21 HOTKEY 0x01C7 still projects saved per-character keys",
+                hotkeyBuilder.TryBuild(
+                    new SelectCharacterDataSnapshot
+                    {
+                        CharacterRecord = new CharacterRecord
+                        {
+                            CharacterId = 9,
+                            Name = new byte[] { (byte)'a' },
+                            Job = 1,
+                        },
+                        InitializationSnapshot = new SelectCharacterInitializationSnapshot
+                        {
+                            HotkeyKeyType = 2,
+                            HotkeyConfigSlots = { 0x1234 },
+                        },
+                    },
+                    0,
+                    out var savedHotkeyBody)
+                && savedHotkeyBody != null
+                && savedHotkeyBody[0] == 2
+                && BitConverter.ToInt32(savedHotkeyBody, 1) == 2
+                && BitConverter.ToUInt16(savedHotkeyBody, 5) == 0x1234,
                 ref failures);
 
             var singleRecordLength = roster.Length - 18;
