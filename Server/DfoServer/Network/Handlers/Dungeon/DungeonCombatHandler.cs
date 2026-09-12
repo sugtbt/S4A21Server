@@ -19,6 +19,14 @@ using DungeonData = DfoServer.GameWorld.Dungeon;
 
 namespace DfoServer.Network.Handlers.Dungeon
 {
+    internal enum DungeonCharacterDeathFlow
+    {
+        Scripted = 0,
+        DeathTower = 1,
+        Tournament = 2,
+        PartyWipe = 3,
+    }
+
     internal sealed class DungeonCombatHandler
     {
         // 成长之契约经验加成从 PVF premiumlist_new.etc 读取(PremiumEffectProvider)。
@@ -274,13 +282,25 @@ namespace DfoServer.Network.Handlers.Dungeon
                     "character-death-clear",
                     sourceActorId: session.Player.UserId)
                 : null;
-            if (scriptedDeath.SuppressRespawn)
-                DungeonRunLifecycle.CancelDeathRespawn(session);
-            else if (deathRun != null
-                     && _svc.Tournaments.IsTournamentRun(deathRun))
-                ScheduleDeathRespawn(session);
-            else
-                await SchedulePartyWipeIfNeededAsync(deathRun);
+            var deathRunIdentity = deathRun?.CaptureIdentity() ?? default;
+            var deathFlow = ResolveCharacterDeathFlow(
+                scriptedDeath.SuppressRespawn,
+                deathRun?.Tower != null,
+                deathRun != null
+                    && _svc.Tournaments.IsTournamentRun(deathRun));
+            switch (deathFlow)
+            {
+                case DungeonCharacterDeathFlow.Scripted:
+                case DungeonCharacterDeathFlow.DeathTower:
+                    DungeonRunLifecycle.CancelDeathRespawn(deathRun);
+                    break;
+                case DungeonCharacterDeathFlow.Tournament:
+                    ScheduleDeathRespawn(session);
+                    break;
+                default:
+                    await SchedulePartyWipeIfNeededAsync(deathRun);
+                    break;
+            }
 
             // NOTI 32 (wire 0x0020) DIE_STATE: u16 actorId + u8 dieType(0=death) + u8 flag
             await BroadcastParticipantLifeStateAsync(
@@ -289,6 +309,13 @@ namespace DfoServer.Network.Handlers.Dungeon
                 BuildParticipantLifeStateBody(
                     session.Player.UserId,
                     state: 0x00));
+
+            if (deathFlow == DungeonCharacterDeathFlow.DeathTower)
+            {
+                await _svc.DeathTower.HandleTowerCharacterDeathAsync(
+                    session,
+                    deathRunIdentity);
+            }
 
             if (deathEvent != null
                 && session.Player.IsCurrentDungeonRun(deathEvent.RunIdentity))
@@ -300,6 +327,20 @@ namespace DfoServer.Network.Handlers.Dungeon
                         scriptedDeath.ClearRequest.ClearReason,
                         scriptedDeath.ClearRequest.BossCode));
             }
+        }
+
+        internal static DungeonCharacterDeathFlow ResolveCharacterDeathFlow(
+            bool suppressRespawn,
+            bool isDeathTower,
+            bool isTournament)
+        {
+            if (suppressRespawn)
+                return DungeonCharacterDeathFlow.Scripted;
+            if (isDeathTower)
+                return DungeonCharacterDeathFlow.DeathTower;
+            if (isTournament)
+                return DungeonCharacterDeathFlow.Tournament;
+            return DungeonCharacterDeathFlow.PartyWipe;
         }
 
         internal async Task HandleDeathRespawn(EnhancedClientSession session, GamePacketHeader header, byte[] body)

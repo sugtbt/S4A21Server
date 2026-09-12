@@ -49,7 +49,11 @@ namespace DfoServer.Network.Handlers.Dungeon
             byte[] body)
         {
             var run = session?.Player?.CurrentRun;
-            if (run == null)
+            if (run?.Tower != null)
+            {
+                await HandleDeathTowerFinishLoadingAsync(session, run);
+            }
+            else if (run == null)
             {
                 await _town.Handle_ENUM_CMDPACKET_FINISH_LOADING(
                     session,
@@ -62,6 +66,37 @@ namespace DfoServer.Network.Handlers.Dungeon
             }
 
             await _raid.HandleDungeonLoadedAsync(session);
+        }
+
+        private async Task HandleDeathTowerFinishLoadingAsync(
+            EnhancedClientSession session,
+            DungeonRun run)
+        {
+            var identity = run.CaptureIdentity();
+            var tower = run.Tower;
+            var stage = tower?.CurrentStage ?? -1;
+            if (session?.Player == null
+                || tower == null
+                || !identity.IsValid
+                || !ReferenceEquals(session.Player.CurrentRun, run)
+                || !session.Player.IsCurrentDungeonRun(identity)
+                || !ReferenceEquals(run.Tower, tower)
+                || !tower.TryConsumeStageLoadingRelease(identity, stage))
+            {
+                FileLogger.Log(
+                    "[DeathTower] FINISH_LOADING ignored stale/duplicate: " +
+                    $"cid={session?.Player?.CharacterId ?? 0} " +
+                    $"run={identity.RunId}/{identity.RunGeneration} " +
+                    $"stage={stage}");
+                return;
+            }
+
+            await _town.SendFinishLoadingCompletionAsync(session);
+            FileLogger.Log(
+                "[DeathTower] SENT FINISH_LOADING release after client ready: " +
+                $"cid={session.Player.CharacterId} " +
+                $"run={identity.RunId}/{identity.RunGeneration} " +
+                $"stage={stage}");
         }
 
         internal async Task HandleGiveupGameAsync(

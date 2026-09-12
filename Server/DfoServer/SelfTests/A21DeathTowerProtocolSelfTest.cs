@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using DfoServer.Game.DeathTower;
+using DfoServer.Game.Dungeon;
 using DfoServer.Network.Builders;
+using DfoServer.Network.Handlers.Dungeon;
 
 namespace DfoServer.SelfTests
 {
@@ -13,7 +15,7 @@ namespace DfoServer.SelfTests
             var failures = 0;
             var config = new DeathTowerData.TowerConfig(
                 11000,
-                new[] { 30001 },
+                new[] { 30001, 30002, 30003 },
                 60,
                 10,
                 itemDropsEnabled: true,
@@ -81,6 +83,9 @@ namespace DfoServer.SelfTests
                 && ReadUInt32(body, 40) == 2,
                 ref failures);
 
+            VerifyStageLoadingReleaseState(config, ref failures);
+            VerifyCharacterDeathRouting(ref failures);
+
             Console.WriteLine(
                 failures == 0
                     ? "A21_DEATH_TOWER_PROTOCOL selftest passed."
@@ -93,6 +98,109 @@ namespace DfoServer.SelfTests
 
         private static uint ReadUInt32(byte[] data, int offset)
             => BitConverter.ToUInt32(data, offset);
+
+        private static void VerifyStageLoadingReleaseState(
+            DeathTowerData.TowerConfig config,
+            ref int failures)
+        {
+            var tower = new DeathTowerSession(config);
+            var run = new DungeonRunIdentity(
+                partyDungeonInstanceId: 71,
+                runId: 81,
+                runGeneration: 1);
+            var staleGeneration = new DungeonRunIdentity(
+                partyDungeonInstanceId: 71,
+                runId: 81,
+                runGeneration: 2);
+
+            Check(
+                "entry stage has no deferred loading release",
+                !tower.HasPendingStageLoadingRelease(run, 0),
+                ref failures);
+
+            tower.SetFighting();
+            Check(
+                "first advance reaches the second floor",
+                tower.TryAdvanceStage() && tower.CurrentStage == 1,
+                ref failures);
+            Check(
+                "second floor defers one loading release for the current run",
+                tower.TryDeferStageLoadingRelease(run, tower.CurrentStage)
+                    && tower.HasPendingStageLoadingRelease(
+                        run,
+                        tower.CurrentStage),
+                ref failures);
+            Check(
+                "duplicate defer cannot replace the pending floor",
+                !tower.TryDeferStageLoadingRelease(run, tower.CurrentStage),
+                ref failures);
+            Check(
+                "stale generation cannot consume the current floor release",
+                !tower.TryConsumeStageLoadingRelease(
+                    staleGeneration,
+                    tower.CurrentStage),
+                ref failures);
+            Check(
+                "current floor release is consumed exactly once",
+                tower.TryConsumeStageLoadingRelease(run, tower.CurrentStage)
+                    && !tower.TryConsumeStageLoadingRelease(
+                        run,
+                        tower.CurrentStage),
+                ref failures);
+
+            tower.SetFighting();
+            Check(
+                "next advance can establish a new floor release",
+                tower.TryAdvanceStage()
+                    && tower.CurrentStage == 2
+                    && tower.TryDeferStageLoadingRelease(
+                        run,
+                        tower.CurrentStage),
+                ref failures);
+            Check(
+                "old floor cannot consume the new floor release",
+                !tower.TryConsumeStageLoadingRelease(run, 1)
+                    && tower.TryConsumeStageLoadingRelease(
+                        run,
+                        tower.CurrentStage),
+                ref failures);
+        }
+
+        private static void VerifyCharacterDeathRouting(ref int failures)
+        {
+            Check(
+                "scripted fatal endpoint keeps precedence over tower settlement",
+                DungeonCombatHandler.ResolveCharacterDeathFlow(
+                    suppressRespawn: true,
+                    isDeathTower: true,
+                    isTournament: true)
+                    == DungeonCharacterDeathFlow.Scripted,
+                ref failures);
+            Check(
+                "death tower death bypasses tournament respawn and party wipe",
+                DungeonCombatHandler.ResolveCharacterDeathFlow(
+                    suppressRespawn: false,
+                    isDeathTower: true,
+                    isTournament: true)
+                    == DungeonCharacterDeathFlow.DeathTower,
+                ref failures);
+            Check(
+                "tournament death retains its respawn flow",
+                DungeonCombatHandler.ResolveCharacterDeathFlow(
+                    suppressRespawn: false,
+                    isDeathTower: false,
+                    isTournament: true)
+                    == DungeonCharacterDeathFlow.Tournament,
+                ref failures);
+            Check(
+                "ordinary dungeon death retains party wipe handling",
+                DungeonCombatHandler.ResolveCharacterDeathFlow(
+                    suppressRespawn: false,
+                    isDeathTower: false,
+                    isTournament: false)
+                    == DungeonCharacterDeathFlow.PartyWipe,
+                ref failures);
+        }
 
         private static void Check(string name, bool condition, ref int failures)
         {

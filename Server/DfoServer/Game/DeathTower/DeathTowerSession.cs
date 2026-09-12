@@ -16,7 +16,10 @@ namespace DfoServer.Game.DeathTower
         private readonly Dictionary<DeathTowerInventoryEndpoint, TowerInventoryItem> _inventoryItems =
             new Dictionary<DeathTowerInventoryEndpoint, TowerInventoryItem>();
         private readonly HashSet<int> _seenItemIds = new HashSet<int>();
+        private readonly object _stageLoadingReleaseSyncRoot = new object();
         private DnfLcg _stageLcg;
+        private DungeonRunIdentity _pendingStageLoadingRun;
+        private int _pendingStageLoadingStage = -1;
 
         public DeathTowerData.TowerConfig Config { get; }
         public int CurrentStage { get; private set; }
@@ -401,6 +404,81 @@ namespace DfoServer.Game.DeathTower
 
         public void SetCleared() { State = 2; }
 
+        internal bool HasPendingStageLoadingRelease(
+            DungeonRunIdentity runIdentity,
+            int stage)
+        {
+            if (!runIdentity.IsValid || stage <= 0)
+                return false;
+
+            lock (_stageLoadingReleaseSyncRoot)
+            {
+                return _pendingStageLoadingRun.IsValid
+                    && _pendingStageLoadingRun.Equals(runIdentity)
+                    && _pendingStageLoadingStage == stage;
+            }
+        }
+
+        internal bool TryDeferStageLoadingRelease(
+            DungeonRunIdentity runIdentity,
+            int stage)
+        {
+            if (!runIdentity.IsValid || stage <= 0 || stage != CurrentStage)
+                return false;
+
+            lock (_stageLoadingReleaseSyncRoot)
+            {
+                if (_pendingStageLoadingRun.IsValid)
+                    return false;
+
+                _pendingStageLoadingRun = runIdentity;
+                _pendingStageLoadingStage = stage;
+                return true;
+            }
+        }
+
+        internal bool TryConsumeStageLoadingRelease(
+            DungeonRunIdentity runIdentity,
+            int stage)
+        {
+            if (!runIdentity.IsValid || stage <= 0)
+                return false;
+
+            lock (_stageLoadingReleaseSyncRoot)
+            {
+                if (!_pendingStageLoadingRun.IsValid
+                    || !_pendingStageLoadingRun.Equals(runIdentity)
+                    || _pendingStageLoadingStage != stage)
+                {
+                    return false;
+                }
+
+                ClearPendingStageLoadingReleaseLocked();
+                return true;
+            }
+        }
+
+        internal bool TryCancelStageLoadingRelease(
+            DungeonRunIdentity runIdentity,
+            int stage)
+        {
+            if (!runIdentity.IsValid || stage <= 0)
+                return false;
+
+            lock (_stageLoadingReleaseSyncRoot)
+            {
+                if (!_pendingStageLoadingRun.IsValid
+                    || !_pendingStageLoadingRun.Equals(runIdentity)
+                    || _pendingStageLoadingStage != stage)
+                {
+                    return false;
+                }
+
+                ClearPendingStageLoadingReleaseLocked();
+                return true;
+            }
+        }
+
         // 允许从 state>=1 推进(state==1: 86JP可能不发0x009F(2)直接MOVE_MAP; state==2: 正常流程)
         // state==0(init, 未开始战斗)不允许推进。
         public bool TryAdvanceStage()
@@ -424,6 +502,12 @@ namespace DfoServer.Game.DeathTower
             _stageItemsByMonster.Clear();
             _groundItems.Clear();
             _deadMonsters.Clear();
+        }
+
+        private void ClearPendingStageLoadingReleaseLocked()
+        {
+            _pendingStageLoadingRun = default;
+            _pendingStageLoadingStage = -1;
         }
 
         private bool TryAddInventoryItem(
