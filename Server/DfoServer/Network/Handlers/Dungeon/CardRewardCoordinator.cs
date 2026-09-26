@@ -879,7 +879,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             }
         }
 
-        private static IReadOnlyList<DungeonParticipantRosterEntry>
+        internal static IReadOnlyList<DungeonParticipantRosterEntry>
             CaptureCardRewardRoster(DungeonRun run)
             => run.Instance.ParticipantEffects.GetRoster(
                 run.GetSettlementSourceEventId(),

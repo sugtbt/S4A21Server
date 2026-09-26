@@ -25,6 +25,7 @@ namespace DfoServer.Network.Handlers.Pets
         private const string ProtocolName = "GameProtocol";
         private const string ClockTickName = "pet-creature-runtime";
         private const string DeathTimerNamePrefix = "pet-creature-death:";
+        private const string SatietySyncTimerNamePrefix = "pet-creature-satiety-sync:";
         private const double TownSatietyRecoveryIntervalSeconds = 360.0;
         internal static readonly TimeSpan DeathCommitRetryDelay =
             TimeSpan.FromSeconds(5);
@@ -100,6 +101,8 @@ namespace DfoServer.Network.Handlers.Pets
                     current = PetCreatureSatietyService.LoadEquippedCreatureSatiety(lease.Inventory);
                 SetSessionCreatureAliveState(session, current.CreatureKey > 0 && current.Before > 0 ? (byte)1 : (byte)0);
                 FileLogger.Log($"[{ProtocolName}] PetCreatureSatiety: begin dungeon source={source} cid={session.Player.CharacterId} dungeon={dungeonId} key={current.CreatureKey} satiety={current.Before} foodRate={current.FoodConsumeRatePercent}% multiplier={current.FoodConsumeMultiplier:0.###}");
+                if (current.CreatureKey > 0 && current.Before > 0)
+                    ScheduleSatietyStateSync(session, current.CreatureKey);
                 ScheduleDungeonDeathCheck(session, $"{source}:begin", now);
             }
             catch (Exception ex)
@@ -280,11 +283,16 @@ namespace DfoServer.Network.Handlers.Pets
             ScheduleDungeonDeathCheck(session, source, now);
         }
 
-        internal static void HandlePetSatietyChangedAfterFeed(EnhancedClientSession session, int creatureKey, int satietyAfter, string source)
+        // 返回值: 本次喂食是否救活了"刚饿死"的出战宠物(喂食前 LastDeathCreatureKey 登记的就是它)。
+        // 调用方据此补发 REVIVAL_CREATURE(0x006B), 否则客户端收到 DIED 后不会重新显示宠物。
+        internal static bool HandlePetSatietyChangedAfterFeed(EnhancedClientSession session, int creatureKey, int satietyAfter, string source)
         {
             if (!HasCharacter(session))
-                return;
+                return false;
 
+            var reviveDeadPet = creatureKey > 0
+                && satietyAfter > 0
+                && session.Player.PetCreatureLastDeathCreatureKey == creatureKey;
             SetSessionCreatureAliveState(session, creatureKey > 0 && satietyAfter > 0 ? (byte)1 : (byte)0);
             if (session.Player.CurrentRun != null && creatureKey > 0 && satietyAfter > 0)
             {
@@ -293,8 +301,13 @@ namespace DfoServer.Network.Handlers.Pets
                 session.Player.PetCreatureLastDeathCreatureKey = 0;
                 ScheduleDungeonDeathCheck(session, source, session.Player.PetCreatureSatietyDungeonStartUtc);
             }
+            else if (reviveDeadPet)
+            {
+                session.Player.PetCreatureLastDeathCreatureKey = 0;
+            }
 
-            FileLogger.Log($"[{ProtocolName}] PetCreatureSatiety: feed applied source={source} cid={session.Player.CharacterId} key={creatureKey} satiety={satietyAfter}");
+            FileLogger.Log($"[{ProtocolName}] PetCreatureSatiety: feed applied source={source} cid={session.Player.CharacterId} key={creatureKey} satiety={satietyAfter} reviveDeadPet={reviveDeadPet}");
+            return reviveDeadPet;
         }
 
         internal static async Task GrantRoomClearExperienceOnceAsync(
@@ -453,7 +466,9 @@ namespace DfoServer.Network.Handlers.Pets
                 var run = session.Player.CurrentRun;
                 if (run != null)
                 {
-                    PersistDungeonElapsed(session, "clock", utcNow, continueTiming: true);
+                    var update = PersistDungeonElapsed(session, "clock", utcNow, continueTiming: true);
+                    if (update.Changed && update.CreatureKey > 0 && update.After > 0)
+                        ScheduleSatietyStateSync(session, update.CreatureKey);
                     return;
                 }
 
@@ -638,22 +653,23 @@ namespace DfoServer.Network.Handlers.Pets
             }
         }
 
-        private static void PersistDungeonElapsed(
+        private static PetCreatureSatietyUpdate PersistDungeonElapsed(
             EnhancedClientSession session,
             string source,
             DateTime now,
             bool continueTiming)
         {
+            var characterId = session.Player.CharacterId;
             var startUtc = session.Player.PetCreatureSatietyDungeonStartUtc;
             if (startUtc == DateTime.MinValue)
-                return;
+                return PetCreatureSatietyUpdate.Noop(characterId);
 
             var dungeonId = session.Player.PetCreatureSatietyDungeonId;
 
             try
             {
                 if (!TryGetInventoryLease(session, out var lease))
-                    return;
+                    return PetCreatureSatietyUpdate.Noop(characterId);
 
                 if (!PetCreatureSatietyCommitService.TryCommitDungeonElapsed(
                         lease,
@@ -661,14 +677,14 @@ namespace DfoServer.Network.Handlers.Pets
                         now,
                         out var update))
                 {
-                    return;
+                    return PetCreatureSatietyUpdate.Noop(characterId);
                 }
 
                 if (update.CreatureKey > 0 && update.StateChanged && update.After <= 0)
                 {
                     // 巡检直接算出饱食度耗尽: 同步提交已完成, 这里同步登记死亡状态, DIED 通知异步派发。
                     HandleCommittedDungeonDeath(session, source, update, dungeonId);
-                    return;
+                    return update;
                 }
 
                 if (!continueTiming)
@@ -684,10 +700,12 @@ namespace DfoServer.Network.Handlers.Pets
                 SetSessionCreatureAliveState(session, update.CreatureKey > 0 && update.After > 0 ? (byte)1 : (byte)0);
 
                 FileLogger.Log($"[{ProtocolName}] PetCreatureSatiety: dungeon persist source={source} cid={session.Player.CharacterId} dungeon={dungeonId} key={update.CreatureKey} elapsed={update.ElapsedSeconds:0.0}s foodRate={update.FoodConsumeRatePercent}% multiplier={update.FoodConsumeMultiplier:0.###} consumed={update.ConsumedSatiety} satiety={update.Before}->{update.After} changed={update.Changed}");
+                return update;
             }
             catch (Exception ex)
             {
                 FileLogger.Log($"[{ProtocolName}] PetCreatureSatiety: dungeon persist failed source={source} cid={session.Player.CharacterId} dungeon={dungeonId}: {ex.Message}");
+                return PetCreatureSatietyUpdate.Noop(characterId);
             }
         }
 
@@ -862,6 +880,51 @@ namespace DfoServer.Network.Handlers.Pets
         private static string BuildDeathNotifyTimerName(EnhancedClientSession session)
             => "pet-creature-death-notify:" + session.SessionId.ToString("N");
 
+        private static string BuildSatietySyncTimerName(EnhancedClientSession session)
+            => SatietySyncTimerNamePrefix + session.SessionId.ToString("N");
+
+        // 副本内分钟巡检结算或进图锚定时, 经同名 one-shot 异步下发 0x0067 state 包
+        // 锚定客户端饱食度显示; 同名调度替换旧调度, 天然节流。回调执行时重新校验角色与副本状态。
+        // 0x0067 body 为 int32 creatureKey + int32 stomach（与复活路径 SendPetCreatureStateAsync 一致）;
+        // 不得使用 CreatureListBodyBuilder 富格式 entry——客户端按 int32 读 stomach, 富格式的
+        // modeFlag/exp 字节会混入高位导致显示钳到 100（2026-09-25 实机验证）。
+        private static void ScheduleSatietyStateSync(EnhancedClientSession session, int creatureKey)
+        {
+            if (session == null || creatureKey <= 0)
+                return;
+
+            ClockService.Instance.ScheduleOneShotAsync(
+                BuildSatietySyncTimerName(session),
+                DateTime.UtcNow,
+                async utcNow =>
+                {
+                    if (!HasCharacter(session) || session.Player.CurrentRun == null)
+                        return;
+
+                    if (!TryGetInventoryLease(session, out var lease))
+                        return;
+
+                    byte stomach;
+                    lock (lease.SyncRoot)
+                    {
+                        var detail = lease.Inventory.CreatureDetails.GetDetail(creatureKey);
+                        if (detail == null)
+                            return;
+
+                        stomach = detail.Stomach;
+                    }
+
+                    try
+                    {
+                        await SendPetCreatureStateAsync(session, creatureKey, stomach);
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLogger.Log($"[{ProtocolName}] PetCreatureSatietySync: state sync failed cid={session.Player.CharacterId} key={creatureKey}: {ex.Message}");
+                    }
+                });
+        }
+
         private static async Task TryRevivePetCreatureOnTownReturnAsync(
             EnhancedClientSession session,
             string source,
@@ -905,9 +968,7 @@ namespace DfoServer.Network.Handlers.Pets
 
             try
             {
-                var revival = new GamePacketWriter();
-                revival.WriteUInt16(session.Player.UserId);
-                await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x006B, revival.ToArray()));
+                await SendPetCreatureRevivalAsync(session);
             }
             catch (Exception ex)
             {
@@ -987,7 +1048,7 @@ namespace DfoServer.Network.Handlers.Pets
             FileLogger.Log($"[{ProtocolName}] PetCreatureEvolution: EVOLUTE_CREATURE cid={sender.CharacterId} uid={eventUniqueId} baseUid={sender.Player.UserId} sceneUid={sender.Player.DungeonSceneUniqueId} creature={evolution.CurrentCreatureId}->{evolution.EvolvedCreatureId} param={evolution.EvolvedCreatureParam} item=0x{evolution.PreviousItemTemplateId:X8}->0x{evolution.EvolvedItemTemplateId:X8}");
         }
 
-        private static Task SendPetCreatureStateAsync(
+        internal static Task SendPetCreatureStateAsync(
             EnhancedClientSession session,
             int creatureKey,
             int stateValue)
@@ -996,6 +1057,15 @@ namespace DfoServer.Network.Handlers.Pets
             state.WriteInt32(creatureKey);
             state.WriteInt32(stateValue);
             return session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x0067, state.ToArray()));
+        }
+
+        // REVIVAL_CREATURE(0x006B) body = uint16 userId, 与 DIED_CREATURE(0x0064) 同构;
+        // 真实回城复活与副本内喂食救活刚饿死的出战宠物共用此发包。
+        internal static Task SendPetCreatureRevivalAsync(EnhancedClientSession session)
+        {
+            var revival = new GamePacketWriter();
+            revival.WriteUInt16(session.Player.UserId);
+            return session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(0x00, 0x006B, revival.ToArray()));
         }
 
         private static void SetSessionCreatureAliveState(EnhancedClientSession session, byte value)

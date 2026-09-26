@@ -7,6 +7,22 @@ using DfoServer.Network;
 
 namespace DfoServer.Network.Builders
 {
+    // Free-card content projected into one 0x0023 card seat. The default
+    // value renders the seat as the empty placeholder.
+    public readonly struct ClearRewardFreeCardSeat
+    {
+        public ClearRewardFreeCardSeat(int gold, int itemId, int itemCount)
+        {
+            Gold = gold;
+            ItemId = itemId;
+            ItemCount = itemCount;
+        }
+
+        public int Gold { get; }
+        public int ItemId { get; }
+        public int ItemCount { get; }
+    }
+
     public static class DungeonNotificationBuilder
     {
         // A21 sub_115CF80 reads 23 consecutive fixed reward values starting at
@@ -23,6 +39,7 @@ namespace DfoServer.Network.Builders
         public const int BossExperienceOffset = 151;
         public const int ObjectExperienceCountOffset = 155;
         public const int ObjectExperienceEntriesOffset = 159;
+        public const int CardSeatCount = 8;
         public const byte NoBossMapMarkerCoordinate = 0xFF;
         public const byte EplpRechallengeReadyResult = 9;
 
@@ -450,6 +467,7 @@ namespace DfoServer.Network.Builders
             int monsterEquipmentExp = 0,
             uint monsterExp = 0, int bossExp = 0, int championExp = 0, int superChampionExp = 0,
             int freeCardGold = 0, int freeCardItemId = 0, int freeCardItemCount = 0,
+            IReadOnlyList<ClearRewardFreeCardSeat> freeCardSeats = null,
             int paidCardCost = 0,
             IReadOnlyList<DungeonObjectExperienceEntry> objectExperienceEntries = null)
         {
@@ -531,22 +549,51 @@ namespace DfoServer.Network.Builders
             // === CARD/BUFF/TAIL (A21 fixed 115B when no bonus item) ===
             w.WriteByte(0);                    // reserved before free-card data
 
-            byte freeCnt = (byte)(freeCardItemId > 0 ? 2 : 1);
-            w.WriteByte(freeCnt);
-            w.WriteInt32(0);                    // free-card item id
-            w.WriteInt32(freeCardGold);
-            if (freeCardItemId > 0)
+            // Eight count-prefixed card seats, one per party slot. The A21
+            // client reads every teammate's free card from the seat matching
+            // that member's party slot, so each occupied seat carries that
+            // member's own (gold, item) content and seats without content
+            // keep the empty placeholder. An occupied seat with an item is
+            // 8B longer, which shifts the tail for all clients the same way;
+            // the seats must be built as one loop.
+            var seatContents = new ClearRewardFreeCardSeat[CardSeatCount];
+            if (freeCardSeats != null)
             {
-                w.WriteInt32(freeCardItemId);
-                w.WriteInt32(freeCardItemCount);
+                for (var i = 0;
+                     i < seatContents.Length && i < freeCardSeats.Count;
+                     i++)
+                {
+                    seatContents[i] = freeCardSeats[i];
+                }
+            }
+            else if (freeCardGold != 0 || freeCardItemId != 0)
+            {
+                seatContents[0] = new ClearRewardFreeCardSeat(
+                    freeCardGold,
+                    freeCardItemId,
+                    freeCardItemCount);
             }
 
-            // Seven fixed 9B card-seat entries: flag + item id + count.
-            for (var i = 0; i < 7; i++)
+            for (var seat = 0; seat < seatContents.Length; seat++)
             {
-                w.WriteByte(1);
-                w.WriteInt32(0);
-                w.WriteInt32(0);
+                var content = seatContents[seat];
+                if (content.Gold == 0 && content.ItemId == 0)
+                {
+                    w.WriteByte(1);
+                    w.WriteInt32(0);
+                    w.WriteInt32(0);
+                    continue;
+                }
+
+                byte freeCnt = (byte)(content.ItemId > 0 ? 2 : 1);
+                w.WriteByte(freeCnt);
+                w.WriteInt32(0);                // free-card item id
+                w.WriteInt32(content.Gold);
+                if (content.ItemId > 0)
+                {
+                    w.WriteInt32(content.ItemId);
+                    w.WriteInt32(content.ItemCount);
+                }
             }
 
             w.WriteInt32(Math.Max(0, paidCardCost));

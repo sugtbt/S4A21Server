@@ -173,6 +173,7 @@ namespace DfoServer.Network.Handlers.Dungeon
             _application.TryCreateParticipantRewards(
                 run,
                 partySlot,
+                session.Player.CharacterId,
                 out var rewards);
             if (rewards == null)
                 return;

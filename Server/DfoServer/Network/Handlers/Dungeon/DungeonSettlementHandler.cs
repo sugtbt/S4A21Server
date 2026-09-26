@@ -610,9 +610,9 @@ namespace DfoServer.Network.Handlers.Dungeon
                                         settlement.ChampionTotalExp),
                                     superChampionExp: ToInt32Saturated(
                                         settlement.SuperChampionTotalExp),
-                                    freeCardGold: settlement.FreeGold.GoldAmount,
-                                    freeCardItemId: settlement.FreeItem.ItemId,
-                                    freeCardItemCount: settlement.FreeItem.StackCount,
+                                    freeCardSeats: BuildClearRewardFreeCardSeats(
+                                        run,
+                                        settlement),
                                     paidCardCost: settlement.PaidCardCost,
                                     objectExperienceEntries:
                                         settlement.ObjectExperienceEntries)))))
@@ -808,6 +808,59 @@ namespace DfoServer.Network.Handlers.Dungeon
                 run.TryAcknowledgePendingSettlementPresentation(
                     presentationRankPoint);
             }
+        }
+
+        // 0x0023 carries the whole party's free cards: each participant's
+        // frozen (gold, item) is projected into the seat matching that
+        // member's entry party slot, so every client renders teammates'
+        // clear cards, not only its own. A participant whose settlement
+        // runtime is not ready yet (clear commit still in flight or the
+        // member disconnected) keeps the empty seat placeholder instead of
+        // blocking the projection.
+        internal static IReadOnlyList<ClearRewardFreeCardSeat>
+            BuildClearRewardFreeCardSeats(
+                DungeonRun run,
+                DungeonSettlementRuntime ownSettlement,
+                IReadOnlyList<DungeonParticipantRosterEntry> roster = null)
+        {
+            var seats = new ClearRewardFreeCardSeat[
+                DungeonNotificationBuilder.CardSeatCount];
+            if (run == null || ownSettlement == null)
+                return seats;
+
+            var ownSlot = run.EntryPartySlotIndex;
+            if (ownSlot >= seats.Length)
+                ownSlot = 0;
+            seats[ownSlot] = new ClearRewardFreeCardSeat(
+                ownSettlement.FreeGold.GoldAmount,
+                ownSettlement.FreeItem.ItemId,
+                ownSettlement.FreeItem.StackCount);
+
+            if (roster == null)
+                roster = CardRewardCoordinator.CaptureCardRewardRoster(run);
+            if (roster.Count == 0)
+                return seats;
+            foreach (var participant in roster)
+            {
+                var peerRun = participant?.Run;
+                if (peerRun == null || ReferenceEquals(peerRun, run))
+                    continue;
+                var partySlot = peerRun.EntryPartySlotIndex;
+                if (partySlot >= seats.Length || partySlot == ownSlot)
+                    continue;
+                DungeonSettlementRuntime peerSettlement;
+                lock (peerRun.SyncRoot)
+                {
+                    peerSettlement = peerRun.SettlementRuntime;
+                }
+                if (peerSettlement == null)
+                    continue;
+                seats[partySlot] = new ClearRewardFreeCardSeat(
+                    peerSettlement.FreeGold.GoldAmount,
+                    peerSettlement.FreeItem.ItemId,
+                    peerSettlement.FreeItem.StackCount);
+            }
+            return seats;
         }
 
         private async Task<bool> PrepareSettlementFromClearAsync(
@@ -1307,7 +1360,17 @@ namespace DfoServer.Network.Handlers.Dungeon
                     partyMemberCount,
                     partyEventBonusRate: 0.0);
 
-            var lcg = run.RoomLcg ?? new DnfLcg(run.Seed);
+            // Card rewards roll on a dedicated per-participant stream. The
+            // shared run.RoomLcg is left untouched: party members freeze the
+            // same room seed, so consuming it here would deal identical
+            // cards to the whole party, and advancing it would perturb the
+            // room drop stream it still serves.
+            var lcg = new DnfLcg(
+                DropService.DeriveParticipantCardSeed(
+                    run.Seed,
+                    run.PartyDungeonInstanceId,
+                    run.CurrentRoomInstanceId,
+                    session.Player?.CharacterId ?? 0));
             var characterJob = session.Player != null ? session.Player.Job : -1;
             var characterGrowType = session.Player != null
                 ? session.Player.GrowType

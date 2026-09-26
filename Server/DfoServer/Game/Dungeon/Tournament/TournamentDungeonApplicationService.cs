@@ -153,6 +153,7 @@ namespace DfoServer.Game.Dungeon.Tournament
         internal bool TryCreateParticipantRewards(
             DungeonRun run,
             int partySlot,
+            int characterId,
             out TournamentParticipantRewardState state)
         {
             state = null;
@@ -172,7 +173,17 @@ namespace DfoServer.Game.Dungeon.Tournament
                     return false;
                 }
 
-                var lcg = run.RoomLcg ?? new DnfLcg(run.Seed);
+                // Tournament teams can field up to two human party members,
+                // so reward cards roll on the same per-participant card
+                // stream as ordinary settlement instead of the shared room
+                // LCG, which would duplicate one member's cards for the
+                // whole team.
+                var lcg = new DnfLcg(
+                    DropService.DeriveParticipantCardSeed(
+                        run.Seed,
+                        run.PartyDungeonInstanceId,
+                        run.CurrentRoomInstanceId,
+                        characterId));
                 if (!TryCreateRewardCards(
                         run,
                         runtime,
@@ -191,7 +202,6 @@ namespace DfoServer.Game.Dungeon.Tournament
                     runtime.CompletedRounds,
                     runtime.IsChampion);
                 run.Settlement.Tournament = state;
-                run.RoomLcg = lcg;
                 return true;
             }
         }

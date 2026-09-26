@@ -1266,6 +1266,160 @@ namespace DfoServer.SelfTests
                     CardRewardSide.Free,
                     cardIndex: 3),
                 ref failures);
+            // 0x0023 CLEAR_DUNGEON_REWARD: the free-card seat block is an
+            // 8-seat array indexed by party slot and carries every party
+            // member's frozen free card, so each client renders the whole
+            // team's clear cards. Seats are count-prefixed and variable
+            // length: an occupied seat with an item is 17B, with gold only
+            // 9B, without content the 9B empty placeholder. With no
+            // object-experience entries the block starts right after the
+            // reserved byte at ObjectExperienceEntriesOffset.
+            const int FreeCardLeaderGold = 3431;
+            const int FreeCardFollowerItem = 100140106;
+            const int FreeCardFollowerGold = 777;
+            var soloClearReward = DungeonNotificationBuilder.BuildClearDungeonReward(
+                clearBaseExp: 1786,
+                freeCardGold: FreeCardLeaderGold,
+                freeCardItemId: FreeCardFollowerItem,
+                freeCardItemCount: 1,
+                paidCardCost: 580);
+            const int CardSeatBlockOffset =
+                DungeonNotificationBuilder.ObjectExperienceEntriesOffset + 1;
+            var paidCardCostOffset = CardSeatBlockOffset + 17 + 9 + 6 * 9;
+            Check(
+                "solo 0x0023 keeps the free card in seat 0 with the pre-fix wire bytes",
+                soloClearReward.Length == 282
+                && BitConverter.ToString(soloClearReward) ==
+                    "FA-06-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-"
+                    + "00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-"
+                    + "00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-"
+                    + "00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-"
+                    + "00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-"
+                    + "00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-"
+                    + "00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-"
+                    + "00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-"
+                    + "02-00-00-00-00-67-0D-00-00-4A-04-F8-05-01-00-00-00-01-00-00-"
+                    + "00-00-00-00-00-00-01-00-00-00-00-00-00-00-00-01-00-00-00-00-"
+                    + "00-00-00-00-01-00-00-00-00-00-00-00-00-01-00-00-00-00-00-00-"
+                    + "00-00-01-00-00-00-00-00-00-00-00-01-00-00-00-00-00-00-00-00-"
+                    + "44-02-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-"
+                    + "00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-"
+                    + "00-00",
+                ref failures);
+            // cardLeaderRun/cardFollowerRun come from the card layout block
+            // above; freeze a free card into each settlement runtime like
+            // BuildSettlementRuntime would, then project the party-wide
+            // seats through the settlement handler.
+            cardLeaderRun.SettlementRuntime.FreeGold =
+                new ClearRewardGenerator.CardReward
+                {
+                    IsGold = true,
+                    GoldAmount = FreeCardLeaderGold,
+                };
+            cardLeaderRun.SettlementRuntime.FreeItem =
+                new ClearRewardGenerator.CardReward
+                {
+                    ItemId = FreeCardFollowerItem,
+                    StackCount = 1,
+                };
+            cardFollowerRun.SettlementRuntime.FreeGold =
+                new ClearRewardGenerator.CardReward
+                {
+                    IsGold = true,
+                    GoldAmount = FreeCardFollowerGold,
+                };
+            var leaderViewSeats =
+                DungeonSettlementHandler.BuildClearRewardFreeCardSeats(
+                    cardLeaderRun,
+                    cardLeaderRun.SettlementRuntime,
+                    cardRoster);
+            var followerViewSeats =
+                DungeonSettlementHandler.BuildClearRewardFreeCardSeats(
+                    cardFollowerRun,
+                    cardFollowerRun.SettlementRuntime,
+                    cardRoster);
+            var partyClearReward = DungeonNotificationBuilder.BuildClearDungeonReward(
+                clearBaseExp: 1786,
+                freeCardSeats: leaderViewSeats,
+                paidCardCost: 580);
+            Check(
+                "party 0x0023 projects every teammate free card into its party-slot seat",
+                leaderViewSeats.Count == DungeonNotificationBuilder.CardSeatCount
+                && leaderViewSeats[0].Gold == FreeCardLeaderGold
+                && leaderViewSeats[0].ItemId == FreeCardFollowerItem
+                && leaderViewSeats[0].ItemCount == 1
+                && leaderViewSeats[1].Gold == FreeCardFollowerGold
+                && leaderViewSeats[1].ItemId == 0
+                && leaderViewSeats[1].ItemCount == 0
+                && leaderViewSeats[2].Gold == 0
+                && leaderViewSeats[2].ItemId == 0
+                && partyClearReward.Length == 282
+                && partyClearReward[CardSeatBlockOffset] == 2
+                && BitConverter.ToInt32(partyClearReward, CardSeatBlockOffset + 5)
+                    == FreeCardLeaderGold
+                && BitConverter.ToInt32(partyClearReward, CardSeatBlockOffset + 9)
+                    == FreeCardFollowerItem
+                && partyClearReward[CardSeatBlockOffset + 17] == 1
+                && BitConverter.ToInt32(
+                    partyClearReward,
+                    CardSeatBlockOffset + 17 + 5) == FreeCardFollowerGold
+                && BitConverter.ToInt32(partyClearReward, paidCardCostOffset) == 580,
+                ref failures);
+            Check(
+                "party 0x0023 free-card seats stay identical across receivers",
+                followerViewSeats.Count == leaderViewSeats.Count
+                && followerViewSeats[0].Gold == leaderViewSeats[0].Gold
+                && followerViewSeats[0].ItemId == leaderViewSeats[0].ItemId
+                && followerViewSeats[0].ItemCount == leaderViewSeats[0].ItemCount
+                && followerViewSeats[1].Gold == leaderViewSeats[1].Gold
+                && followerViewSeats[1].ItemId == leaderViewSeats[1].ItemId
+                && followerViewSeats[1].ItemCount == leaderViewSeats[1].ItemCount
+                && DungeonNotificationBuilder.BuildClearDungeonReward(
+                    clearBaseExp: 1786,
+                    freeCardSeats: followerViewSeats,
+                    paidCardCost: 580).AsSpan().SequenceEqual(partyClearReward),
+                ref failures);
+            var cardMissingRun = new DungeonRun(
+                cardInstance,
+                runId: 803,
+                runGeneration: 1,
+                DungeonRunState.Active)
+            {
+                EntryPartySlotIndex = 2,
+            };
+            var degradedRoster = new List<DungeonParticipantRosterEntry>(cardRoster)
+            {
+                new DungeonParticipantRosterEntry(
+                    characterId: 10040,
+                    participantUserId: 10040,
+                    run: cardMissingRun,
+                    runIdentity: cardMissingRun.CaptureIdentity(),
+                    roomIdentity: cardRoom,
+                    attachmentGeneration: 1),
+            };
+            var degradedSeats =
+                DungeonSettlementHandler.BuildClearRewardFreeCardSeats(
+                    cardLeaderRun,
+                    cardLeaderRun.SettlementRuntime,
+                    degradedRoster);
+            var degradedClearReward = DungeonNotificationBuilder.BuildClearDungeonReward(
+                clearBaseExp: 1786,
+                freeCardSeats: degradedSeats,
+                paidCardCost: 580);
+            Check(
+                "party 0x0023 leaves the seat empty when a teammate settlement is not ready",
+                degradedSeats[2].Gold == 0
+                && degradedSeats[2].ItemId == 0
+                && degradedSeats[2].ItemCount == 0
+                && degradedSeats[3].Gold == 0
+                && degradedSeats[3].ItemId == 0
+                && degradedClearReward.Length == partyClearReward.Length
+                && BitConverter.ToInt32(degradedClearReward, CardSeatBlockOffset + 5)
+                    == FreeCardLeaderGold
+                && BitConverter.ToInt32(
+                    degradedClearReward,
+                    CardSeatBlockOffset + 17 + 5) == FreeCardFollowerGold,
+                ref failures);
             var dungeonUserState = EnterSelectDungeonStateBuilder.BuildUserState(
                 new ushort[] { 10038, 10039 },
                 0x01);
@@ -2047,6 +2201,33 @@ namespace DfoServer.SelfTests
                     roomInstanceId: 12,
                     characterId: 10038)
                 && sharedRoomLcg.Seed == sharedRoomSeed,
+                ref failures);
+            var leaderCardSeed = DropService.DeriveParticipantCardSeed(
+                sharedRoomSeed,
+                partyDungeonInstanceId: 7,
+                roomInstanceId: 11,
+                characterId: 10038);
+            var followerCardSeed = DropService.DeriveParticipantCardSeed(
+                sharedRoomSeed,
+                partyDungeonInstanceId: 7,
+                roomInstanceId: 11,
+                characterId: 10039);
+            Check(
+                "party members receive stable independent card-reward streams",
+                leaderCardSeed
+                    == DropService.DeriveParticipantCardSeed(
+                        sharedRoomSeed,
+                        partyDungeonInstanceId: 7,
+                        roomInstanceId: 11,
+                        characterId: 10038)
+                && leaderCardSeed != followerCardSeed
+                && leaderCardSeed != DropService.DeriveParticipantCardSeed(
+                    sharedRoomSeed,
+                    partyDungeonInstanceId: 7,
+                    roomInstanceId: 12,
+                    characterId: 10038)
+                && leaderCardSeed != leaderDropSeed
+                && followerCardSeed != followerDropSeed,
                 ref failures);
 
             var lifeInstance = new DungeonInstance(2, 0);

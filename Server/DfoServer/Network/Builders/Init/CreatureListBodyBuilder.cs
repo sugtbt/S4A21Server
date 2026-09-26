@@ -7,13 +7,6 @@ namespace DfoServer.Network.Builders
     {
         public ushort NotiType => 0x0069;
 
-        internal static byte[] BuildCreatureStateBody(CreatureItemEntrySnapshot entry)
-        {
-            var writer = new GamePacketWriter();
-            WriteCreatureEntry(writer, entry);
-            return writer.ToArray();
-        }
-
         public bool TryBuild(SelectCharacterDataSnapshot snapshot, int occurrenceIndex, out byte[] body)
         {
             var list = snapshot.InitializationSnapshot.CreatureItemList;
