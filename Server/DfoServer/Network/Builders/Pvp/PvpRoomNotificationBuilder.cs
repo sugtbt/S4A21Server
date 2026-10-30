@@ -131,18 +131,6 @@ namespace DfoServer.Network.Builders.Pvp
                     "PvP room is not ready for settlement output");
             }
 
-            var combatantCount = 0;
-            for (var seat = 0;
-                 seat < FreeDuelRoom.SeatCount;
-                 seat++)
-            {
-                if (room.IsOccupiedSeat(seat) &&
-                    !room.IsObserverSeat(seat))
-                {
-                    combatantCount++;
-                }
-            }
-
             var writer = new GamePacketWriter();
             // A21 1170310 resolves this value through room vtable+60: winner seat.
             var recipient = records[room.GetSeatCharacterId(recipientSeat)];
@@ -150,22 +138,16 @@ namespace DfoServer.Network.Builders.Pvp
             writer.WriteInt32(0); // free-duel win point
             writer.WriteByte(recipient.Record.Grade);
             writer.WriteInt32(recipient.ExperienceChange);
-            writer.WriteByte((byte)combatantCount);
-            for (var seat = 0;
-                 seat < FreeDuelRoom.SeatCount;
-                 seat++)
+            // The native result reader still references departed match actors.
+            // Membership may shrink; the match's result roster must not.
+            writer.WriteByte((byte)room.MatchParticipants.Count);
+            foreach (var participant in room.MatchParticipants)
             {
-                if (!room.IsOccupiedSeat(seat) ||
-                    room.IsObserverSeat(seat))
-                {
-                    continue;
-                }
-
-                var record = records[room.GetSeatCharacterId(seat)].Record;
-                writer.WriteUInt16(room.GetSeatUserId(seat));
+                var record = records[participant.CharacterId].Record;
+                writer.WriteUInt16(participant.UserId);
                 // 1170310 -> 25DE910 stores this at result entry +4;
                 // 25DD770 draws it in the kill-count column.
-                writer.WriteInt32(room.GetKillCount(seat));
+                writer.WriteInt32(room.GetKillCount(participant.Seat));
                 writer.WriteByte(record.Grade);
                 writer.WriteInt32(record.Experience);
                 writer.WriteInt32(record.RankPoint);

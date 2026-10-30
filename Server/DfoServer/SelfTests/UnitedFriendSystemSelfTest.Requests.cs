@@ -107,6 +107,8 @@ namespace DfoServer.SelfTests
             ((Dictionary<string, HashSet<string>>)GetStatic("Friends")).Clear();
             Check("reload preserves exactly one directed edge", UnitedFriendSystem.IsFriend("甲", "乙") && !UnitedFriendSystem.IsFriend("乙", "甲"));
 
+            await RunPvpFriendDepartureTest();
+
             Execute("ALTER TABLE united_friend_relations RENAME TO unavailable_friends;");
             SetStatic("_loaded", false);
             ((Dictionary<string, HashSet<string>>)GetStatic("Friends")).Clear();
