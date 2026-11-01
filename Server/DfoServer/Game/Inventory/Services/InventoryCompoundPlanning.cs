@@ -28,6 +28,8 @@ namespace DfoServer.Game.Inventory
             inventory.ClearDirtyState();
             if (source.PendingHappyTokenCeraGrant > 0)
                 inventory.TryQueueHappyTokenCeraGrant(source.PendingHappyTokenCeraGrant);
+            if (source.PendingTokenCeraGrant > 0)
+                inventory.TryQueueTokenCeraGrant(source.PendingTokenCeraGrant);
             return inventory;
         }
 

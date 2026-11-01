@@ -284,7 +284,7 @@ namespace DfoServer.Game.Inventory
 
         private static bool HasDirtyData(InventoryService inventory)
         {
-            if (inventory.PendingHappyTokenCeraGrant > 0)
+            if (inventory.PendingHappyTokenCeraGrant > 0 || inventory.PendingTokenCeraGrant > 0)
                 return true;
             if (inventory.DirtyMainVirtualCountSlots.Count > 0 || inventory.DirtyListParams.Count > 0)
                 return true;
@@ -319,6 +319,17 @@ namespace DfoServer.Game.Inventory
             SqliteTransaction transaction,
             InventoryService inventory)
         {
+            if (inventory.PendingTokenCeraGrant > 0)
+            {
+                // 代币券 vouchers (PVF trade_point.stk) become account currency here,
+                // inside the same transaction that saves the bag.
+                CurrencyService.GrantTokenCera(
+                    connection,
+                    transaction,
+                    inventory.CharacterId,
+                    inventory.PendingTokenCeraGrant);
+            }
+
             if (inventory.PendingHappyTokenCeraGrant <= 0)
                 return;
 

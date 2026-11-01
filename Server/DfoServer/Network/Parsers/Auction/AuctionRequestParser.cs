@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Immutable;
+using DfoServer.Game.Auction;
 
 namespace DfoServer.Network.Parsers.Auction
 {
@@ -14,6 +15,44 @@ namespace DfoServer.Network.Parsers.Auction
         public static bool TryParse(CmdPacketTypeA21 command, ReadOnlySpan<byte> body, out AuctionRequest request)
         {
             request = null;
+
+            // ---- Gold consignment (金币寄售) --------------------------------
+            // Independent feature reusing the same opcodes with shorter bodies.
+            // Recognised before the ordinary selector gate because the consignment
+            // sender emits a leading 1 instead of the ordinary selector 0.
+            if (!body.IsEmpty && body[0] == 0x01)
+            {
+                switch (command)
+                {
+                    case CmdPacketTypeA21.AUCTION_ASK_AVERAGE_PRICE
+                        when body.Length == GoldConsignmentWire.AveragePriceBodyLength:
+                        request = new GoldConsignAveragePriceRequest(U32(body, 1), body[5]);
+                        return true;
+                    case CmdPacketTypeA21.AUCTION_REGIST_ITEM
+                        when body.Length == GoldConsignmentWire.RegisterBodyLength:
+                        request = new GoldConsignRegisterRequest(U32(body, 4), U32(body, 8), U32(body, 12),
+                            U32(body, 16), U32(body, 20), U32(body, 24));
+                        return true;
+                    // Gold "搜索" tab. Captured 14-byte body:
+                    //   01 | 00000000 | 00 | 1F | 01(count) | A59C(u16) | 7DEB2800(key)
+                    // = the item-auction search minus its 8 trailing footer bytes, with
+                    // the gold marker as key[0].
+                    case CmdPacketTypeA21.AUCTION_SEARCH_BY_ITEMKEY
+                        when body.Length == GoldConsignmentWire.SearchBodyLength:
+                        request = new GoldConsignSearchRequest(U32(body, 10));
+                        return true;
+                    // Consignment PURCHASE ("购买"). Captured 17-byte body:
+                    //   01 | price 1000 | listingId 16 | 0 | itemId 2681725
+                    // Shorter than the item-auction bidding body (31B), same selector-1
+                    // convention, so it must be recognised before the ordinary gate.
+                    case CmdPacketTypeA21.AUCTION_BIDDING
+                        when body.Length == GoldConsignmentWire.PurchaseBodyLength:
+                        request = new GoldConsignPurchaseRequest(
+                            U32(body, 1), U32(body, 5), U32(body, 9), U32(body, 13));
+                        return true;
+                }
+            }
+
             // APIECE has no selector. All other supported senders write ordinary selector zero.
             if (command != CmdPacketTypeA21.AUCTION_BUY_ITEM_APIECE && (body.IsEmpty || body[0] != 0))
                 return false;

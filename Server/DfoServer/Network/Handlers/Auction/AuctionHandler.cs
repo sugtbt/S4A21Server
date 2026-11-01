@@ -11,6 +11,7 @@ using DfoServer.Game.Auction.Storage;
 using DfoServer.Game.Inventory;
 using DfoServer.Game.Session;
 using DfoServer.Infrastructure;
+using DfoServer.Network.Builders;
 using DfoServer.Network.Builders.Auction;
 using DfoServer.Network.Parsers.Auction;
 using Microsoft.Data.Sqlite;
@@ -27,13 +28,21 @@ internal sealed class AuctionHandler
 
     internal void Clear(EnhancedClientSession session) { if (session != null) states.Remove(session); }
 
-    internal Task SendService(EnhancedClientSession session)
+    // Client handler 0x01189FB0 reads `u8 serviceType, u8 state` and requires
+    // serviceType == 1 to open the window:  cmp byte[ebp-1],1 / jne closed-branch.
+    // The legacy body {0, state} therefore always took the "service closed"
+    // branch (dstr 0xa490/0xa491), which is what players saw as
+    // "金币寄售系统暂时关闭".
+    internal async Task SendService(EnhancedClientSession session)
     {
-        if (!Current(session, out var lease)) return Task.CompletedTask;
-        return session.TrySendPacketAsync(GamePacketEnvelopeBuilder.Build(0,
-            (ushort)NotiPacketTypeA21.AUCTION_NOTIFY_AUCTION_SERVICE,
-            AuctionOrdinaryBodyBuilder.Service(runtime.EntryEnabled)), default,
-            () => Current(session, out var current) && ReferenceEquals(current, lease));
+        if (!Current(session, out var lease)) return;
+        var enabled = AuctionServiceNotificationBuilder.GoldConsignEnabled
+            || runtime.EntryEnabled;
+        foreach (var packet in AuctionServiceNotificationBuilder.BuildPackets(enabled))
+        {
+            await session.TrySendPacketAsync(packet, default,
+                () => Current(session, out var current) && ReferenceEquals(current, lease));
+        }
     }
 
     internal async Task Handle(EnhancedClientSession session, GamePacketHeader header, byte[] body)
@@ -61,6 +70,113 @@ internal sealed class AuctionHandler
             {
                 try
                 {
+                    // ---- Gold consignment (金币寄售) ---------------------------
+                    // Independent of the ordinary auction entry gate below: the
+                    // consignment board must work even when AUCTION_ENABLED=0.
+                    if (body != null && AuctionRequestParser.TryParse(command, body, out var consignRequest)
+                        && consignRequest is GoldConsignAveragePriceRequest or GoldConsignRegisterRequest)
+                    {
+                        // Release escrow for listings whose persisted expiry has passed
+                        // before answering, so a returning player sees a settled board.
+                        // Driven by expires_at_unix, so it survives restarts.
+                        GoldConsignment.SettleExpired(lease, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                        // NOTE: GoldConsignment returns the BODY ONLY (2-3 bytes) and must
+                        // go through Reply()/Frame() to become a real packet. Returning the
+                        // raw body put "00 CE 00" on the wire, which the client cannot
+                        // parse, so pressing the listing button appeared to do nothing.
+                        if (consignRequest is GoldConsignAveragePriceRequest priceRequest)
+                        {
+                            // 官方规则：选定金币值后显示「近期交易价格」作为参考，所以这里
+                            // 返回该档位的近期成交均价，而不是一个全局固定值。
+                            return Reply(command,
+                                AuctionOrdinaryBodyBuilder.GoldConsignPriceReference(
+                                    GoldConsignment.ResolveReferencePrice(
+                                        lease, priceRequest.ItemKey,
+                                        DateTimeOffset.UtcNow.ToUnixTimeSeconds())));
+                        }
+                        var walletBeforeList = ReadWallet(lease);
+                        var listBody = GoldConsignment.Place(lease, command,
+                            (GoldConsignRegisterRequest)consignRequest);
+                        // Escrow debits the wallet server-side only, so push the new
+                        // balance or the bag keeps showing the pre-listing amount.
+                        return ReplyWithWalletRefresh(session, lease, command, listBody, walletBeforeList);
+                    }
+                    // ---- Gold consignment purchase (0x00B9) ----------------------
+                    // The 购买 button on the 金币搜索 board sends the bidding opcode with a
+                    // 17-byte consignment body:
+                    //   01 | price(4) | listingId(4) | reserved(4) | ladderItem(4)
+                    // Answered before the entry gate. Falls through when the id is not a
+                    // purchasable consignment row.
+                    if (body != null
+                        && AuctionRequestParser.TryParse(command, body, out var goldBuy)
+                        && goldBuy is GoldConsignPurchaseRequest purchaseRequest)
+                    {
+                        var walletBeforeBuy = ReadWallet(lease);
+                        var buyBody = GoldConsignment.TryPurchase(lease, command, purchaseRequest);
+                        if (buyBody != null)
+                        {
+                            // The buyer spent 点券 and gained gold. Push BOTH: the slot
+                            // refresh carries the gold, and NOTIPACKET_CERA (0x0035) is the
+                            // only packet that updates the client's 点券/代币券 readout.
+                            var packets = new List<byte[]>(ReplyWithWalletRefresh(
+                                session, lease, command, buyBody, walletBeforeBuy));
+                            var cera = TryBuildCeraUpdate(lease);
+                            if (cera != null) packets.Add(cera);
+                            return packets;
+                        }
+                    }
+                    // ---- Gold consignment cancel (0x00B8) ------------------------
+                    // Same 9-byte body as the ordinary cancel but with selector 1:
+                    //   01 | listingId:u64
+                    // The ordinary auction's selector-0 invariant must stay intact, so this
+                    // is detected here by reading body[0] instead of loosening the parser
+                    // (doing that broke AuctionProtocolSelfTest's selector boundary).
+                    // Falls through when the id is not a consignment listing of this
+                    // character.
+                    if (command == CmdPacketTypeA21.AUCTION_REGIST_CANCEL
+                        && body != null
+                        && body.Length == GoldConsignmentWire.CancelBodyLength
+                        && body[0] == 0x01)
+                    {
+                        var listingId = (long)BitConverter.ToUInt64(body, 1);
+                        var walletBeforeCancel = ReadWallet(lease);
+                        var cancelBody = GoldConsignment.TryCancel(lease, command, listingId);
+                        if (cancelBody != null)
+                        {
+                            // Refund also changes the wallet server-side only.
+                            return ReplyWithWalletRefresh(
+                                session, lease, command, cancelBody, walletBeforeCancel);
+                        }
+                    }
+                    // ---- Gold consignment search (0x00BA) ------------------------
+                    // The "金币搜索" tab sends the 14-byte consignment body. Other
+                    // players must see consigned gold here, so answer before the entry
+                    // gate. Falls through when the board is empty.
+                    if (body != null && AuctionRequestParser.TryParse(command, body, out var goldSearch)
+                        && goldSearch is GoldConsignSearchRequest searchRequest)
+                    {
+                        GoldConsignment.SettleExpired(lease, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                        // searchRequest.Marker is the ladder step the player picked, and
+                        // the board must show only that step. An empty result still has to
+                        // be a valid consignment reply (selector 1 + zero count), otherwise
+                        // the client falls back to the ordinary search and shows nothing.
+                        var board = GoldConsignment.TryBuildSearchReply(
+                            lease, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), searchRequest.Marker);
+                        return Reply(command, board ?? Network.Builders.Auction
+                            .GoldConsignmentSearchBuilder.EmptyBody());
+                    }
+                    // ---- Gold consignment listings (0x00BC) ---------------------
+                    // The consignment board shares 0x00BC with the ordinary auction but
+                    // must work when AUCTION_ENABLED=0, so it is answered before the
+                    // entry gate below. Falls through untouched when the seller has no
+                    // consignment rows.
+                    if (command == CmdPacketTypeA21.AUCTION_MY_REGISTED_ITEM_INFO)
+                    {
+                        var consignBody = GoldConsignment.TryBuildListingsReply(
+                            lease, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                        if (consignBody != null && consignBody.Length > 0)
+                            return Reply(command, consignBody);
+                    }
                     if (!runtime.EntryEnabled)
                     {
                         rejection?.Write(MutationRejectStage.Availability, "EntryDisabled");
@@ -469,4 +585,96 @@ internal sealed class AuctionHandler
     private static IReadOnlyList<byte[]> Reply(CmdPacketTypeA21 command, byte[] body) => new[] { Frame(command, body) };
     private static IReadOnlyList<byte[]> Failure(CmdPacketTypeA21 command, bool busy = false)
         => Reply(command, AuctionMutationReplyBuilder.Failure(command, busy));
+
+    /// <summary>Current online gold count, or 0 when the wallet slot is absent.</summary>
+    private static int ReadWallet(InventoryLease lease)
+        => lease?.Inventory?.GetMainVirtualCount(
+            InventoryService.MainVirtualCurrencySlotStart)?.Count ?? 0;
+
+    /// <summary>
+    /// Builds NOTIPACKET_CERA (0x0035) with the account's current
+    /// (cera, tokenCera, happyTokenCera). This is the only packet that refreshes the
+    /// client's 点券/代币券 readout; crediting or debiting the DB alone leaves the
+    /// on-screen numbers stale. Returns null when the balances cannot be read.
+    /// </summary>
+    private static byte[] TryBuildCeraUpdate(InventoryLease lease)
+    {
+        var database = lease?.Inventory?.Database;
+        if (database == null) return null;
+        try
+        {
+            var (cera, token, happy) = database.Read(connection =>
+            {
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText =
+                    "SELECT cera, token_cera, happy_token_cera FROM accounts "
+                    + "WHERE account_id = @aid;";
+                cmd.Parameters.AddWithValue("@aid", lease.AccountId);
+                using var reader = cmd.ExecuteReader();
+                if (!reader.Read()) return (0, 0, 0);
+                return (reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2));
+            });
+            return GamePacketEnvelopeBuilder.Build(0x00, (ushort)NotiPacketTypeA21.CERA,
+                CeraUpdateBuilder.Build(cera, token, happy));
+        }
+        catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException
+            || ex is OverflowException || ex is IOException || ex is SqliteException)
+        {
+            FileLogger.Log($"[GoldConsign] cera update build failed cid={lease.CharacterId}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Sends the mutation ACK and, when the gold wallet actually changed, a
+    /// slot-level 0x000E UPDATE_ITEM_LIST for the currency slot.
+    ///
+    /// Gold escrow/refund only touches the online model and SQL; nothing pushed the
+    /// new balance, so the bag UI kept showing the old number until some other
+    /// action re-synced it (that is why cancelling appeared to "fix" the display).
+    /// Re-sending only slot 0 keeps this to one small entry instead of a full list.
+    /// </summary>
+    private IReadOnlyList<byte[]> ReplyWithWalletRefresh(
+        EnhancedClientSession session,
+        InventoryLease lease,
+        CmdPacketTypeA21 command,
+        byte[] body,
+        int walletBefore)
+    {
+        var ack = Frame(command, body);
+        // body[0] == 1 means success; a rejection must not push a stale/identical update.
+        if (body == null || body.Length == 0 || body[0] != 1) return new[] { ack };
+
+        byte[] update = null;
+        try
+        {
+            lock (lease.SyncRoot)
+            {
+                if (Current(session, out var owned) && ReferenceEquals(owned, lease)
+                    && InventoryContext.IsCurrentLease(lease, session.SessionId, session.Player.CharacterId))
+                {
+                    var after = lease.Inventory.GetMainVirtualCount(
+                        InventoryService.MainVirtualCurrencySlotStart)?.Count ?? 0;
+                    if (after != walletBefore)
+                    {
+                        update = GamePacketEnvelopeBuilder.Build(
+                            0x00,
+                            (ushort)NotiPacketTypeA21.UPDATE_ITEM_LIST,
+                            ItemListUpdateBuilder.BuildItemSpaceUpdateBody(
+                                lease.Inventory,
+                                InventoryListType.Main,
+                                new[] { InventoryService.MainVirtualCurrencySlotStart }));
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException
+            || ex is OverflowException || ex is IOException || ex is SqliteException)
+        {
+            // The ACK is authoritative; a failed refresh must not break the mutation.
+            FileLogger.Log($"[GoldConsign] wallet refresh failed cid={lease.CharacterId}: {ex.Message}");
+        }
+
+        return update == null ? new[] { ack } : new[] { ack, update };
+    }
 }

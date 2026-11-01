@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using DfoServer.Game.Auction;
 
 namespace DfoServer.Network.Builders.Auction
 {
@@ -66,5 +67,36 @@ namespace DfoServer.Network.Builders.Auction
         }
 
         public static byte[] Service(bool enabled) => new byte[] { 0, enabled ? (byte)1 : (byte)0 };
+
+        /// <summary>
+        /// Gold consignment price reference. The consignment board has no order
+        /// book of its own yet, and the client keeps the buyout input disabled
+        /// while the reference reads zero, so we return a well-formed success
+        /// body carrying an operator-supplied suggested price.
+        /// Layout matches <see cref="AveragePriceSuccess"/> (58 bytes):
+        ///   [0] = 1, [2..6) suggested scalar, [6..10) unknown, then 6x(u32) and 6x(u32).
+        /// The single level/quantity pair mirrors the suggestion so the UI has one
+        /// coherent row; the remaining five stay zero (no further sales recorded).
+        /// </summary>
+        public static byte[] GoldConsignPriceReference(uint suggestedPrice)
+        {
+            Span<uint> prices = stackalloc uint[6];
+            Span<uint> quantities = stackalloc uint[6];
+            if (suggestedPrice > 0)
+            {
+                prices[0] = suggestedPrice;
+                quantities[0] = 1;
+            }
+            var body = AveragePriceSuccess(suggestedPrice, 0, prices, quantities);
+            // Body layout is consumed with a leading result byte already eaten by
+            // the client dispatcher (project rule: dispatcher consumes body[0]).
+            // Native handler 0x0112CBB0 therefore reads:
+            //    ReadU8  -> body[1]  -> `cmp al,1`  => 1: ctrlId 8, else ctrlId 7
+            //    ReadU32 -> body[2..6) suggested scalar
+            // The ctrlId selector is body[1], NOT body[0]; writing body[0] has no
+            // effect on it. Operator-selectable for A/B comparison.
+            body[1] = GoldConsignmentWire.PriceSelectorByte;
+            return body;
+        }
     }
 }

@@ -633,8 +633,14 @@ namespace DfoServer.Game.Inventory
             if (inventory == null)
                 return Fail(result, InventoryRewardGrantError.InvalidInventory);
             if (entry?.SpecialOutcome == null
-                || entry.SpecialOutcome.Kind != SpecialRewardKind.HappyTokenCera
-                || !inventory.TryQueueHappyTokenCeraGrant(entry.GrantedCount))
+                || (entry.SpecialOutcome.Kind != SpecialRewardKind.HappyTokenCera
+                    && entry.SpecialOutcome.Kind != SpecialRewardKind.TokenCera))
+                return Fail(result, InventoryRewardGrantError.VirtualApplyFailed);
+
+            var queued = entry.SpecialOutcome.Kind == SpecialRewardKind.TokenCera
+                ? inventory.TryQueueTokenCeraGrant(entry.GrantedCount)
+                : inventory.TryQueueHappyTokenCeraGrant(entry.GrantedCount);
+            if (!queued)
                 return Fail(result, InventoryRewardGrantError.VirtualApplyFailed);
 
             return Complete(result);
@@ -759,7 +765,10 @@ namespace DfoServer.Game.Inventory
                 return false;
             }
 
-            if (!planningInventory.TryQueueHappyTokenCeraGrant(outcome.Count))
+            var queued = outcome.Kind == SpecialRewardKind.TokenCera
+                ? planningInventory.TryQueueTokenCeraGrant(outcome.Count)
+                : planningInventory.TryQueueHappyTokenCeraGrant(outcome.Count);
+            if (!queued)
             {
                 error = InventoryRewardGrantError.VirtualApplyFailed;
                 return false;
@@ -965,6 +974,8 @@ namespace DfoServer.Game.Inventory
             inventory.ClearDirtyState();
             if (source.PendingHappyTokenCeraGrant > 0)
                 inventory.TryQueueHappyTokenCeraGrant(source.PendingHappyTokenCeraGrant);
+            if (source.PendingTokenCeraGrant > 0)
+                inventory.TryQueueTokenCeraGrant(source.PendingTokenCeraGrant);
             return inventory;
         }
 

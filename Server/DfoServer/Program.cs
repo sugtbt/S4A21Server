@@ -110,6 +110,7 @@ namespace DfoServer
             ("--selftest-lottery-item", SelfTests.LotteryItemSelfTest.Run),
             ("--selftest-magic-box-protocol", SelfTests.MagicBoxProtocolSelfTest.Run),
             ("--selftest-gold-limit", SelfTests.GoldLimitSelfTest.Run),
+            ("--selftest-gold-consign", SelfTests.GoldConsignmentSelfTest.Run),
             ("--selftest-friends", SelfTests.UnitedFriendSystemSelfTest.Run),
             ("--selftest-a21-one-to-one-chat", SelfTests.A21OneToOneChatSelfTest.Run),
             ("--selftest-a21-item-hyperlink-chat", SelfTests.A21ItemHyperlinkChatSelfTest.Run),

@@ -67,6 +67,7 @@ namespace DfoServer.Game.Inventory
             new Dictionary<InventoryListType, ushort>();
         private readonly HashSet<InventoryListType> _dirtyListParams = new HashSet<InventoryListType>();
         private int _pendingHappyTokenCeraGrant;
+        private int _pendingTokenCeraGrant;
 
         private readonly List<(InventoryListType FromListType, short FromSlotIndex,
             InventoryListType ToListType, short ToSlotIndex)> _pendingGrowthMigrations
@@ -149,6 +150,9 @@ namespace DfoServer.Game.Inventory
         public IReadOnlyCollection<InventoryListType> DirtyListParams => _dirtyListParams;
 
         public int PendingHappyTokenCeraGrant => _pendingHappyTokenCeraGrant;
+
+        /// <summary>代币券 queued for this commit; flushed with accounts.token_cera.</summary>
+        public int PendingTokenCeraGrant => _pendingTokenCeraGrant;
 
         public byte AuraSkinFlag { get; private set; }
 
@@ -581,12 +585,32 @@ namespace DfoServer.Game.Inventory
             _pendingHappyTokenCeraGrant = Math.Max(0, count);
         }
 
+        /// <summary>Queues 代币券 for the next commit (accounts.token_cera).</summary>
+        public bool TryQueueTokenCeraGrant(int count)
+        {
+            if (count <= 0)
+                return false;
+
+            var updated = (long)_pendingTokenCeraGrant + count;
+            if (updated > int.MaxValue)
+                return false;
+
+            _pendingTokenCeraGrant = (int)updated;
+            return true;
+        }
+
+        internal void RestorePendingTokenCeraGrant(int count)
+        {
+            _pendingTokenCeraGrant = Math.Max(0, count);
+        }
+
         public void ClearDirtyState()
         {
             _dirtySlots.Clear();
             _dirtyMainVirtualSlots.Clear();
             _dirtyListParams.Clear();
             _pendingHappyTokenCeraGrant = 0;
+            _pendingTokenCeraGrant = 0;
             _pendingGrowthMigrations.Clear();
             AvatarDetails.ClearDirtyState();
             CreatureDetails.ClearDirtyState();

@@ -289,6 +289,45 @@ INSERT INTO characters (character_id, account_id, name, level) VALUES (959001, 9
                         ref failures);
                 }
 
+                // 代币券凭证邮件：附件会转换成账户货币，gold 字段只用于邮件窗口底部显示。
+                // 客户端「全部接收」会先按附件 claimObjectId 领一次，再按 messageId 领金币；
+                // 两次都不能发放金币，且邮件必须被标记成完全领取，否则会残留在邮箱里。
+                {
+                    const int voucherAmount = 950;
+                    var voucherMail = SendVoucherMail(
+                        mailbox, characterId, accountId, voucherAmount);
+                    Check("代币券凭证邮件创建成功", voucherMail.Success, ref failures);
+                    if (voucherMail.Success)
+                    {
+                        var goldBefore = lease.Inventory
+                            .GetMainVirtualCount(InventoryService.MainVirtualCurrencySlotStart)?.Count ?? 0;
+                        var tokenBefore = ReadAccountTokenCera(database, accountId);
+                        var voucherAttachment = mailbox.LoadInbox(characterId, 20)
+                            .Single(x => x.MessageId == voucherMail.MessageId).Attachments.Single();
+
+                        var claimAttachment = mailbox.ClaimMail(characterId,
+                            MailboxRepository.AttachmentClaimFlag + voucherAttachment.AttachmentId, lease);
+                        Check("领取代币券凭证成功", claimAttachment.Success, ref failures);
+                        Check("凭证转换成账户代币券",
+                            ReadAccountTokenCera(database, accountId) == tokenBefore + voucherAmount,
+                            ref failures);
+                        Check("领取凭证不发放金币",
+                            (lease.Inventory.GetMainVirtualCount(
+                                InventoryService.MainVirtualCurrencySlotStart)?.Count ?? 0) == goldBefore,
+                            ref failures);
+
+                        // 第二步：客户端会再按 messageId 领「金币」。这一步绝不能发钱。
+                        mailbox.ClaimMail(characterId, voucherMail.MessageId, lease);
+                        Check("再按 messageId 领取不会发放金币",
+                            (lease.Inventory.GetMainVirtualCount(
+                                InventoryService.MainVirtualCurrencySlotStart)?.Count ?? 0) == goldBefore,
+                            ref failures);
+                        Check("凭证邮件领取后可从邮箱删除（gold 已标记为已领）",
+                            mailbox.DeleteMail(characterId, voucherMail.MessageId).Success,
+                            ref failures);
+                    }
+                }
+
                 var originalGem = lease.Inventory.GetItem(InventoryListType.GuildMedal, 50).Copy();
                 var carryLimit = ItemMetadataResolver.Resolve(originalGem.ItemId).StackLimit;
                 Check("guardian gem fixture has a PVF carry limit", carryLimit > 0, ref failures);
@@ -384,6 +423,57 @@ WHEN NEW.list_type = 38 BEGIN SELECT RAISE(ABORT, 'mailbox-medal-selftest'); END
                 try { Directory.Delete(tempDir, recursive: true); }
                 catch (Exception ex) { Console.WriteLine("[WARN] medal/gem mail temp cleanup: " + ex.Message); }
             }
+        }
+
+        /// <summary>
+        /// 造一封「代币券凭证」邮件。附件 2681762 会被 SpecialRewardRouter 转换成
+        /// accounts.token_cera；gold 只用于邮件窗口底部「代币券 N」的显示。
+        /// </summary>
+        private static MailboxSendResult SendVoucherMail(
+            MailboxService mailbox, int characterId, int accountId, int amount)
+        {
+            var core = new ItemCore
+            {
+                ItemKind = ItemMetadataResolver.TryResolveItemKind(2681762, out var kind)
+                    ? kind
+                    : ItemCore.KindMaterial,
+                ItemId = 2681762,
+                Value = amount
+            };
+            return mailbox.SendSystemMail(new MailboxSendRequest
+            {
+                SenderCharacterId = characterId,
+                SenderAccountId = accountId,
+                SenderName = "金币寄售",
+                ReceiverCharacterId = characterId,
+                ReceiverAccountId = accountId,
+                Title = "金币寄售",
+                Text = "voucher claim selftest",
+                MailType = 1,
+                Gold = amount,
+                Unlimited = true,
+                IdempotencyKey = "voucher-selftest:" + Guid.NewGuid().ToString("N"),
+                Attachments = new[]
+                {
+                    new MailboxSendAttachmentRequest
+                    {
+                        ItemType = 0,
+                        ItemId = 2681762,
+                        ItemCount = amount,
+                        ItemCoreData = core.ToBytes()
+                    }
+                }
+            });
+        }
+
+        private static int ReadAccountTokenCera(GameDatabase database, int accountId)
+        {
+            using var connection = database.OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT token_cera FROM accounts WHERE account_id=@aid;";
+            command.Parameters.AddWithValue("@aid", accountId);
+            var value = command.ExecuteScalar();
+            return value == null || value == DBNull.Value ? 0 : Convert.ToInt32(value);
         }
 
         private static MailboxSendResult SendGuildMail(MailboxService mailbox, int characterId, int[] itemIds)
