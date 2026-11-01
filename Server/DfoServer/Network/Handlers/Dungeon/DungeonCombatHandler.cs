@@ -98,6 +98,8 @@ namespace DfoServer.Network.Handlers.Dungeon
                     session.Player.CharacterId,
                     "passive-object-destroyed",
                     sourceActorCode: objectCode);
+                IReadOnlyList<DungeonParticipantRosterEntry> passiveDeathRoster
+                    = null;
                 if (run.TryCaptureCurrentRoomSnapshot(
                         passiveObjectEvent.RoomIdentity,
                         out var roomSnapshot)
@@ -121,11 +123,18 @@ namespace DfoServer.Network.Handlers.Dungeon
 
                         passiveObjectEvent = death.Fact.Source;
                         objectCode = death.Fact.ActorCode;
+                        // 在任何 await 之前捕获死亡时点的参战名册（值快照），
+                        // 之后的扇出只使用该快照，不回查注册表/组队。
+                        passiveDeathRoster = _svc.InstanceRegistry
+                            .CaptureParticipantRoster(
+                                passiveObjectEvent.RoomIdentity,
+                                partyId: 0);
                     }
                 }
 
                 FileLogger.Log(
                     $"[DungeonHandler] DIE_MONSTER: passive object " +
+                    $"cid={session.Player.CharacterId} " +
                     $"code={objectCode} source={passiveObjectSource}");
                 await DungeonActorQuestSync.SyncAsync(
                     session,
@@ -156,6 +165,17 @@ namespace DfoServer.Network.Handlers.Dungeon
                     await _svc.QuestDrops.CheckPassiveObjectDrop(
                         session,
                         run,
+                        passiveObjectEvent,
+                        objectCode);
+                }
+
+                if (session.Player.IsCurrentDungeonRun(runIdentity)
+                    && passiveDeathRoster != null)
+                {
+                    await FanoutPassiveObjectDeathAsync(
+                        session,
+                        run,
+                        passiveDeathRoster,
                         passiveObjectEvent,
                         objectCode);
                 }
@@ -193,6 +213,113 @@ namespace DfoServer.Network.Handlers.Dungeon
                 return false;
 
             return passiveMarker || matchesFrozenMap;
+        }
+
+        // 地图自带被动对象死亡：向死亡时点名册中的其他参战队员逐人投影事件，
+        // 各自执行任务进度同步与任务物品掉落判定（与杀怪 RelayToFrozenRosterAsync
+        // 语义对齐；队员此前完全拿不到这类任务物品）。
+        // 过滤只做身份/在线/run 一致性，不做任务相关预过滤；
+        // Tower 仅限制掉落，与上报者路径保持一致。
+        // 已知边界：队员侧单点失败不重试；Detached 队员通常因无在线连接被过滤，
+        // 没有杀怪路径那样的断线重放（participant effect 恢复只覆盖 MonsterKill）。
+        internal async Task FanoutPassiveObjectDeathAsync(
+            EnhancedClientSession sourceSession,
+            DungeonRun sourceRun,
+            IReadOnlyList<DungeonParticipantRosterEntry> roster,
+            DungeonEventEnvelope canonicalEvent,
+            int objectCode)
+        {
+            if (sourceSession?.Player == null || sourceRun == null)
+                return;
+
+            var sourceCharacterId = sourceSession.Player.CharacterId;
+            var tasks = new List<Task>();
+            foreach (var entry in roster)
+            {
+                if (entry == null
+                    || entry.CharacterId == sourceCharacterId)
+                {
+                    continue;
+                }
+                if (!_svc.Sessions.TryGet(entry.CharacterId, out var memberSession)
+                    || memberSession?.Player?.CurrentRun == null
+                    || memberSession.TcpClient == null
+                    || !memberSession.TcpClient.Connected)
+                {
+                    continue;
+                }
+
+                var memberRun = memberSession.Player.CurrentRun;
+                if (!IsFanoutMemberCurrent(memberRun, entry))
+                {
+                    continue;
+                }
+
+                var memberEvent = canonicalEvent.ForAffectedPlayer(
+                    entry.RunIdentity,
+                    entry.RoomIdentity.RoomInstanceId,
+                    entry.CharacterId);
+                var memberIdentity = memberRun.CaptureIdentity();
+                tasks.Add(FanoutMemberAsync(
+                    memberSession,
+                    memberRun,
+                    memberIdentity,
+                    memberEvent,
+                    objectCode));
+            }
+
+            if (tasks.Count > 0)
+                await Task.WhenAll(tasks);
+        }
+
+        // 单队员扇出资格（纯函数，供扇出循环与自测直接断言）：
+        // run 引用、run 身份与房间身份三者一致才算当前队员。
+        internal static bool IsFanoutMemberCurrent(
+            DungeonRun memberRun,
+            DungeonParticipantRosterEntry entry)
+            => entry != null
+                && memberRun != null
+                && ReferenceEquals(memberRun, entry.Run)
+                && memberRun.Matches(entry.RunIdentity)
+                && memberRun.Matches(entry.RoomIdentity);
+
+        // 单队员扇出：异常独立捕获并留痕，不影响其他队员与上报者链路。
+        private async Task FanoutMemberAsync(
+            EnhancedClientSession memberSession,
+            DungeonRun memberRun,
+            DungeonRunIdentity memberIdentity,
+            DungeonEventEnvelope memberEvent,
+            int objectCode)
+        {
+            try
+            {
+                await DungeonActorQuestSync.SyncAsync(
+                    memberSession,
+                    objectCode,
+                    actorType: 9,
+                    memberEvent);
+                if (!memberSession.Player
+                        .IsCurrentDungeonRun(memberIdentity))
+                {
+                    return;
+                }
+
+                if (memberRun.Tower == null)
+                {
+                    await _svc.QuestDrops.CheckPassiveObjectDrop(
+                        memberSession,
+                        memberRun,
+                        memberEvent,
+                        objectCode);
+                }
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log(
+                    $"[GameProtocol] PASSIVE_QUEST_DROP fanout failed " +
+                    $"cid={memberSession.Player?.CharacterId ?? 0} " +
+                    $"object={objectCode} error={ex.Message}");
+            }
         }
 
         internal async Task HandleBossDieCheck(

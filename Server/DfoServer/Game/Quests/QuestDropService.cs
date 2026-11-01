@@ -422,6 +422,24 @@ namespace DfoServer.Game.Quests
                 && committed.TriggerChanges.Count <= 0)
                 return Task.CompletedTask;
 
+            if (sourceName == "passive")
+            {
+                // 被动物体任务掉落逐次留痕：组队扇出后用于区分
+                // "服务端没发" 与 "客户端没显示"。
+                foreach (var entry in committed.Grants.Entries)
+                {
+                    if (entry?.Request == null)
+                        continue;
+
+                    FileLogger.Log(
+                        $"[GameProtocol] PASSIVE_QUEST_DROP cid={characterId} " +
+                        $"object={sourceCode} item={entry.Request.ItemTemplateId} " +
+                        $"count={entry.Request.Count} " +
+                        $"sourceCid={source.SourcePlayerId} " +
+                        $"event={source.SourceEventId:N}");
+                }
+            }
+
             // Coalesce client projections only after online inventory and quest
             // state settle.  Seeking-item progress is committed in the same
             // transaction as the item grant, so the corresponding trigger must
@@ -434,12 +452,16 @@ namespace DfoServer.Game.Quests
             return Task.CompletedTask;
         }
 
+        // 显式排空某会话的待发批量通知（自测驱动 100ms 合并窗口用，
+        // 不依赖 ClockService 全局定时器）。
+        internal Task FlushPendingNotificationsAsync(EnhancedClientSession session)
+            => _notificationBatcher.FlushPendingAsync(session);
+
         internal QuestDropCommitResult CommitAutomaticDrops(
             InventoryLease lease,
             Guid sessionId,
             int characterId,
-            Guid sourceEventId,
-            QuestRunSnapshot snapshot,
+            Guid sourceEventId,            QuestRunSnapshot snapshot,
             IReadOnlyList<QuestDropCandidate> candidates,
             Func<bool> isStillCurrent,
             bool questAssistantActive = false)

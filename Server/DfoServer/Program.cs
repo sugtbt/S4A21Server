@@ -99,6 +99,7 @@ namespace DfoServer
             ("--selftest-quest-completion-ticket", SelfTests.QuestCompletionTicketSelfTest.Run),
             ("--selftest-anton-raid-phase-quest", SelfTests.AntonRaidPhaseQuestSelfTest.Run),
             ("--selftest-quest-progress-batch", SelfTests.QuestProgressBatchSelfTest.Run),
+            ("--selftest-passive-object-quest-drop-fanout", SelfTests.PassiveObjectQuestDropFanoutSelfTest.Run),
             ("--selftest-quest-chain-availability", SelfTests.QuestChainAvailabilitySelfTest.Run),
             ("--selftest-quest-question-branch", SelfTests.QuestQuestionBranchSelfTest.Run),
             ("--selftest-level-up-ticket", SelfTests.LevelUpTicketSelfTest.Run),
