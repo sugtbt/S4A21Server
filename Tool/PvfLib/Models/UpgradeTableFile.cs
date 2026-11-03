@@ -13,6 +13,8 @@ namespace PvfLib
         public int NoticeLevel { get; set; } = -1;
         public List<int> LevelValues { get; set; } = new List<int>();
         public List<double> CostWeightsByRarity { get; set; } = new List<double>();
+        public List<double> CostWeightsByGuildFlagRarity { get; set; } = new List<double>();
+        public List<int> PayBackByGuildFlagRarity { get; set; } = new List<int>();
         public List<double> StatWeightsByRarity { get; set; } = new List<double>();
         public List<double> TypeWeights { get; set; } = new List<double>();
         public List<int> Costs { get; set; } = new List<int>();
@@ -62,6 +64,12 @@ namespace PvfLib
                         break;
                     case "cost weights by rarity":
                         file.CostWeightsByRarity = ParseDoubleList(node, content);
+                        break;
+                    case "cost weights by guild flag rarity":
+                        file.CostWeightsByGuildFlagRarity = ParseDoubleList(node, content);
+                        break;
+                    case "pay back by guild flag rarity":
+                        file.PayBackByGuildFlagRarity = ParseIntList(node, content);
                         break;
                     case "stat weights by rarity":
                         file.StatWeightsByRarity = ParseDoubleList(node, content);

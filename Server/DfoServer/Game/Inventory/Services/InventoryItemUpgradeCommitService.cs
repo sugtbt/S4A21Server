@@ -26,7 +26,7 @@ namespace DfoServer.Game.Inventory
                 {
                     if (expectedTarget != null)
                     {
-                        var current = lease.Inventory.GetItem(InventoryListType.Main, command.TargetSlotIndex);
+                        var current = lease.Inventory.GetItem(command.TargetListType, command.TargetSlotIndex);
                         if (current == null || !current.ToBytes().AsSpan().SequenceEqual(expectedTarget.ToBytes()))
                             return false;
                     }
