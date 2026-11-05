@@ -29,6 +29,9 @@ namespace DfoServer.Game.Quests
         // 两者不同时，由网络适配层在 ACCEPT ACK 后投影一次 SET_TRIGGER。
         public QuestSetTriggerResult PostAcceptTriggerProjection;
         public List<QuestEventItemGrant> EventItems = new List<QuestEventItemGrant>();
+        // 本事务实际写库的 activation。调用方需要把「接取后」的这条事实并入
+        // 当前副本快照, 不能用接取前的对象(activation 会不一致)。
+        public QuestActivationId ActivationId;
 
         public bool Success => ErrorCode == 0;
 

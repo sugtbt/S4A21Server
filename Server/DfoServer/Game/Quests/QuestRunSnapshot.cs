@@ -54,6 +54,21 @@ namespace DfoServer.Game.Quests
         public bool TryGet(ushort questId, out QuestRunSnapshotEntry entry) =>
             _entries.TryGetValue(questId, out entry);
 
+        // 进本后新接取的任务只把这一条并入本局快照, 不重建整份白名单:
+        // 已发生的事件不会被追溯消费, 上一局/其他任务的条目也不会被带进来。
+        // 同一 questId 的旧 activation 会被覆盖, 旧局事件因此无法推进新任务。
+        public QuestRunSnapshot WithQuest(ActiveQuest quest)
+        {
+            if (quest == null || quest.QuestId == 0)
+                return this;
+
+            var entries = new Dictionary<ushort, QuestRunSnapshotEntry>(_entries)
+            {
+                [quest.QuestId] = new QuestRunSnapshotEntry(quest),
+            };
+            return new QuestRunSnapshot(entries);
+        }
+
         public static QuestRunSnapshot Capture(IReadOnlyList<ActiveQuest> activeQuests)
         {
             if (activeQuests == null || activeQuests.Count == 0)
