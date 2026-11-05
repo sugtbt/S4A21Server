@@ -26,6 +26,14 @@ namespace DfoServer.Game.Inventory
             if (inventory == null)
                 return false;
 
+            var isMedal = command.TargetListType == InventoryListType.GuildMedal;
+            if ((command.TargetListType != InventoryListType.Main && !isMedal)
+                || (isMedal && (command.Method != ItemUpgradeMethod.Reinforce
+                    || command.Mode != ItemUpgradeMode.Reinforce
+                    || command.TargetSlotIndex < 0 || command.TargetSlotIndex > 48
+                    || command.OptionalTicketSlotIndex != -1)))
+                return false;
+
             // 幸运券(method=5)的强化/增幅模式写在材料格的道具里，
             // 必须在 table/mode/amplify 校验之前先把 Mode 纠正过来。
             if (command.Method == ItemUpgradeMethod.LuckyEnchantDeed)
@@ -50,9 +58,9 @@ namespace DfoServer.Game.Inventory
                 return false;
             }
 
-            var target = inventory.GetItem(InventoryListType.Main, command.TargetSlotIndex);
+            var target = inventory.GetItem(command.TargetListType, command.TargetSlotIndex);
             if (target == null
-                || target.ItemKind != ItemCore.KindEquipment
+                || target.ItemKind != (isMedal ? ItemCore.KindGuildMedal : ItemCore.KindEquipment)
                 || target.ItemId != command.TargetItemTemplateId)
             {
                 result = ItemUpgradeResult.Error(command, ItemUpgradeResult.ErrorInvalidTarget);
@@ -131,14 +139,15 @@ namespace DfoServer.Game.Inventory
             }
 
             var equipmentType = EquipmentTypeInfo.ParseOrUnknown(targetMetadata.EquipmentType);
-            if (!EquipmentTypeInfo.IsUpgradeTargetType(equipmentType))
+            if (isMedal ? equipmentType != EquipmentType.GuildMedal
+                : !EquipmentTypeInfo.IsUpgradeTargetType(equipmentType))
             {
                 result = ItemUpgradeResult.Error(command, ItemUpgradeResult.ErrorInvalidTarget);
                 return false;
             }
 
             var material = inventory.GetItem(InventoryListType.Main, command.MaterialSlotIndex);
-            var materialConfig = tableKind == ItemUpgradeTableKind.Advanced
+            var materialConfig = isMedal || tableKind == ItemUpgradeTableKind.Advanced
                 ? null
                 : ResolveMaterialConfig(material);
 
@@ -163,11 +172,14 @@ namespace DfoServer.Game.Inventory
                 return false;
             }
 
-            context.EquippedUpgradeProbabilityIncrease =
-                ResolveEquippedUpgradeProbabilityIncrease(inventory);
-            context.SuccessRateAddWeight = (int)Math.Min(WeightScale,
-                (long)context.SuccessRateAddWeight + ItemUpgradePotionBonus.ResolveActiveAddWeight(
-                    inventory, context.Mode, context.Scene, InventoryItemLifecycleService.UtcNowUnixSeconds()));
+            if (!isMedal)
+            {
+                context.EquippedUpgradeProbabilityIncrease =
+                    ResolveEquippedUpgradeProbabilityIncrease(inventory);
+                context.SuccessRateAddWeight = (int)Math.Min(WeightScale,
+                    (long)context.SuccessRateAddWeight + ItemUpgradePotionBonus.ResolveActiveAddWeight(
+                        inventory, context.Mode, context.Scene, InventoryItemLifecycleService.UtcNowUnixSeconds()));
+            }
 
             if (!ValidateMaterial(inventory, command.MaterialSlotIndex, material, context.Cost, out errorCode))
             {
@@ -205,7 +217,7 @@ namespace DfoServer.Game.Inventory
             }
             else if (penaltyType == 3)
             {
-                protectTicket = FindFirstProtectTicket(inventory, command.Mode);
+                protectTicket = isMedal ? null : FindFirstProtectTicket(inventory, command.Mode);
                 if (protectTicket != null)
                 {
                     protectedByTicket = true;
@@ -241,14 +253,16 @@ namespace DfoServer.Game.Inventory
             }
 
             var destroyRewardRequests = new List<InventoryRewardGrantRequest>();
-            InventoryRewardGrantBatchPlan destroyRewardPlan = null;
             if (destroyed)
             {
-                foreach (var bonus in ItemUpgradeTableProvider.CalculateDestroyBonuses(
+                var bonuses = isMedal
+                    ? GetGuildMedalDestroyBonuses(row, targetMetadata.Rarity)
+                    : ItemUpgradeTableProvider.CalculateDestroyBonuses(
                     tableKind,
                     chance.TargetLevel,
                     targetMetadata.Grade,
-                    targetMetadata.Rarity))
+                    targetMetadata.Rarity);
+                foreach (var bonus in bonuses)
                 {
                     if (bonus.HasValue)
                     {
@@ -258,19 +272,10 @@ namespace DfoServer.Game.Inventory
                             ItemCreateReason.Unknown));
                     }
                 }
-
-                if (destroyRewardRequests.Count > 0
-                    && (!InventoryRewardGrantService.TryPlanBatch(
-                            inventory,
-                            destroyRewardRequests,
-                            out destroyRewardPlan)
-                        || !destroyRewardPlan.Success))
-                {
-                    result = ItemUpgradeResult.Error(command, ItemUpgradeResult.ErrorInventoryFull);
-                    return false;
-                }
             }
 
+            // 返还规划必须基于扣费后的库存：勋章返还与消耗是同一种材料，
+            // 扣费可能清空或腾出原栈，提前规划的合并计划会失效或提前失败。
             if (!ConsumeMaterial(inventory, command.MaterialSlotIndex, material, context.Cost, out var materialUpdate))
             {
                 result = ItemUpgradeResult.Error(command, ItemUpgradeResult.ErrorInvalidMaterial);
@@ -300,7 +305,7 @@ namespace DfoServer.Game.Inventory
             if (destroyed)
             {
                 targetItemSnapshot = target.Copy();
-                if (!inventory.RemoveItem(InventoryListType.Main, command.TargetSlotIndex))
+                if (!inventory.RemoveItem(command.TargetListType, command.TargetSlotIndex))
                 {
                     result = ItemUpgradeResult.Error(command, ItemUpgradeResult.ErrorInvalidTarget);
                     return false;
@@ -310,7 +315,7 @@ namespace DfoServer.Game.Inventory
             {
                 var updatedTarget = target.Copy();
                 updatedTarget.Upgrade = newLevel;
-                if (!inventory.SetItem(InventoryListType.Main, command.TargetSlotIndex, updatedTarget))
+                if (!inventory.SetItem(command.TargetListType, command.TargetSlotIndex, updatedTarget))
                 {
                     result = ItemUpgradeResult.Error(command, ItemUpgradeResult.ErrorInvalidTarget);
                     return false;
@@ -321,9 +326,15 @@ namespace DfoServer.Game.Inventory
             var destroyRewardItems = new List<ItemUpgradeRewardItem>();
             if (destroyed)
             {
+                InventoryRewardGrantBatchPlan destroyRewardPlan = null;
                 InventoryRewardGrantBatchResult rewardBatch = null;
                 if (destroyRewardRequests.Count > 0
-                    && (!InventoryRewardGrantService.TryApplyPreparedBatch(
+                    && (!InventoryRewardGrantService.TryPlanBatch(
+                            inventory,
+                            destroyRewardRequests,
+                            out destroyRewardPlan)
+                        || !destroyRewardPlan.Success
+                        || !InventoryRewardGrantService.TryApplyPreparedBatch(
                             inventory,
                             destroyRewardPlan,
                             out rewardBatch)
@@ -353,6 +364,7 @@ namespace DfoServer.Game.Inventory
                 Method = command.Method,
                 Mode = command.Mode,
                 Scene = context.Scene,
+                TargetListType = command.TargetListType,
                 TargetSlotIndex = command.TargetSlotIndex,
                 TargetItemTemplateId = command.TargetItemTemplateId,
                 MaterialSlotIndex = command.MaterialSlotIndex,
@@ -363,7 +375,9 @@ namespace DfoServer.Game.Inventory
                 ResultCode = resultCode,
                 UpgradeSucceeded = success,
                 FinalSuccessWeight = finalWeight,
-                MaterialRemainingStackCount = materialUpdate != null ? materialUpdate.Count : 0,
+                MaterialRemainingStackCount = isMedal
+                    ? inventory.GetItem(InventoryListType.Main, command.MaterialSlotIndex)?.Count ?? 0
+                    : materialUpdate != null ? materialUpdate.Count : 0,
                 GoldCost = context.Cost != null ? context.Cost.Gold : 0,
                 UpdatedGold = updatedGold,
                 NoticeRequired = success
@@ -372,7 +386,8 @@ namespace DfoServer.Game.Inventory
                 TargetItemSnapshot = targetItemSnapshot,
             };
 
-            AddRefreshSlot(upgradeResult.MainRefreshSlots, command.TargetSlotIndex);
+            if (!isMedal)
+                AddRefreshSlot(upgradeResult.MainRefreshSlots, command.TargetSlotIndex);
             if (materialUpdate != null)
                 AddRefreshSlot(upgradeResult.MainRefreshSlots, materialUpdate.SlotIndex);
             if (protectTicketUpdate != null)
@@ -385,6 +400,16 @@ namespace DfoServer.Game.Inventory
 
             result = upgradeResult;
             return true;
+        }
+
+        private static ItemUpgradeDestroyBonus[] GetGuildMedalDestroyBonuses(UpgradeTableRow row, int rarity)
+        {
+            var refunds = ItemUpgradeTableProvider.GetFile(ItemUpgradeTableKind.Normal).PayBackByGuildFlagRarity;
+            if (rarity < 0 || rarity >= refunds.Count || row.MaterialItemId <= 0)
+                throw new InvalidOperationException("PVF guild-medal upgrade refund is incomplete.");
+            return refunds[rarity] > 0
+                ? new[] { new ItemUpgradeDestroyBonus(row.MaterialItemId, refunds[rarity]) }
+                : Array.Empty<ItemUpgradeDestroyBonus>();
         }
 
         private static bool TryResolveTableKind(
@@ -454,7 +479,8 @@ namespace DfoServer.Game.Inventory
 
             if (materialConfig == null)
             {
-                if (!ItemUpgradeTableProvider.TryGetRow(tableKind, targetLevel, out row))
+                if (!ItemUpgradeTableProvider.TryGetRow(tableKind, targetLevel, out row,
+                        equipmentType == EquipmentType.GuildMedal ? "flag_upgrade_table" : null))
                 {
                     errorCode = ItemUpgradeResult.ErrorMaxLevel;
                     return false;
@@ -737,6 +763,8 @@ namespace DfoServer.Game.Inventory
 
         private static int ResolvePenaltyType(ItemUpgradeContext context, UpgradeTableRow row, ItemUpgradeTableKind tableKind)
         {
+            if (context.EquipmentType == EquipmentType.GuildMedal)
+                return row.PenaltyType;
             if (context.Scene == ItemUpgradeScene.Ticket
                 || context.Scene == ItemUpgradeScene.LuckyDeed)
                 return 1;

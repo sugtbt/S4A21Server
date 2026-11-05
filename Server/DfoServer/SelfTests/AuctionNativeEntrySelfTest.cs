@@ -236,13 +236,13 @@ public static class AuctionNativeEntrySelfTest
             CmdPacketTypeA21.AUCTION_REGIST_CANCEL, CmdPacketTypeA21.AUCTION_BIDDING })
         {
             check(command + " success includes ordinary selector", AuctionMutationReplyBuilder.Success(command).SequenceEqual(new byte[] { 1, 0 }));
-            check(command + " generic failure exact selector", AuctionMutationReplyBuilder.Failure(command).SequenceEqual(new byte[] { 0, 153, 0 }));
-            check(command + " busy failure exact selector", AuctionMutationReplyBuilder.Failure(command, true).SequenceEqual(new byte[] { 0, 158, 0 }));
+            check(command + " generic failure exact selector", AuctionMutationReplyBuilder.Failure(command).SequenceEqual(new byte[] { 0, 0x7B, 0 }));
+            check(command + " busy failure exact selector", AuctionMutationReplyBuilder.Failure(command, true).SequenceEqual(new byte[] { 0, 0xCE, 0 }));
         }
         var piece = CmdPacketTypeA21.AUCTION_BUY_ITEM_APIECE;
         check("piece success has no selector", AuctionMutationReplyBuilder.Success(piece).SequenceEqual(new byte[] { 1 }));
-        check("piece generic failure has no selector", AuctionMutationReplyBuilder.Failure(piece).SequenceEqual(new byte[] { 0, 153 }));
-        check("piece busy failure has no selector", AuctionMutationReplyBuilder.Failure(piece, true).SequenceEqual(new byte[] { 0, 158 }));
+        check("piece generic failure has no selector", AuctionMutationReplyBuilder.Failure(piece).SequenceEqual(new byte[] { 0, 0x7B }));
+        check("piece busy failure has no selector", AuctionMutationReplyBuilder.Failure(piece, true).SequenceEqual(new byte[] { 0, 0xCE }));
         var mutated = AuctionMutationReplyBuilder.Success(piece);
         mutated[0] = 99;
         check("reply buffers do not share mutable storage", AuctionMutationReplyBuilder.Success(piece).SequenceEqual(new byte[] { 1 }));

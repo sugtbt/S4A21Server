@@ -26,7 +26,7 @@ using Microsoft.Data.Sqlite;
 
 namespace DfoServer.SelfTests
 {
-    public static class A21PvpRoomProtocolSelfTest
+    public static partial class A21PvpRoomProtocolSelfTest
     {
         public static int Run()
         {
@@ -48,6 +48,7 @@ namespace DfoServer.SelfTests
                 CheckRoomsAsync(database).GetAwaiter().GetResult();
                 CheckInvitationsAsync(database).GetAwaiter().GetResult();
                 CheckTeamDispatchAsync(database).GetAwaiter().GetResult();
+                CheckDisconnectGuardrailsAsync(database).GetAwaiter().GetResult();
                 var settlementDatabase = new GameDatabase(Path.Combine(directory, "settlement.db"), ServerPaths.SchemaFilePath);
                 Seed(settlementDatabase);
                 CheckSettlements(settlementDatabase);

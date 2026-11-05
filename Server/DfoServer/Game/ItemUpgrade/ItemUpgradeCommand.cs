@@ -7,6 +7,7 @@ namespace DfoServer.Game.ItemUpgrade
     {
         public ItemUpgradeMethod Method { get; set; }
         public ItemUpgradeMode Mode { get; set; }
+        public InventoryListType TargetListType { get; set; } = InventoryListType.Main;
         public short TargetSlotIndex { get; set; }
         public int TargetItemTemplateId { get; set; }
         public short MaterialSlotIndex { get; set; }
@@ -35,6 +36,7 @@ namespace DfoServer.Game.ItemUpgrade
         public ItemUpgradeMethod Method { get; set; }
         public ItemUpgradeMode Mode { get; set; }
         public ItemUpgradeScene Scene { get; set; }
+        public InventoryListType TargetListType { get; set; } = InventoryListType.Main;
         public short TargetSlotIndex { get; set; }
         public int TargetItemTemplateId { get; set; }
         public short MaterialSlotIndex { get; set; }
@@ -60,6 +62,7 @@ namespace DfoServer.Game.ItemUpgrade
                 Command = command,
                 Method = command != null ? command.Method : ItemUpgradeMethod.Reinforce,
                 Mode = command != null ? command.Mode : ItemUpgradeMode.Reinforce,
+                TargetListType = command != null ? command.TargetListType : InventoryListType.Main,
                 TargetSlotIndex = command != null ? command.TargetSlotIndex : (short)-1,
                 TargetItemTemplateId = command != null ? command.TargetItemTemplateId : 0,
                 MaterialSlotIndex = command != null ? command.MaterialSlotIndex : (short)-1,

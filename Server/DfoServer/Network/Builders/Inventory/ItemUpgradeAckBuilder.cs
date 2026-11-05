@@ -17,7 +17,8 @@ namespace DfoServer.Network.Builders
             writer.WriteByte(result.OldLevel);
             writer.WriteByte(result.ResultCode);
             writer.WriteByte(result.NewLevel);
-            writer.WriteByte(0x00);
+            // 0113D950 passes this byte and the following slot to 016F0000.
+            writer.WriteByte((byte)result.TargetListType);
             writer.WriteInt16(result.TargetSlotIndex);
             writer.WriteInt16(result.OptionalTicketSlotIndex);
             if (result.ResultCode == 3)

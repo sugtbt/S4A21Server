@@ -314,7 +314,9 @@ namespace DfoServer.Game.Friends
                         + $"{BitConverter.ToString(leaveBody)}");
 
                     // USER_LEAVE 只在同频道推（跨频道好友从未注册实体，无需清理）。
-                    if (!IsSameChannel(self, s))
+                    // PvP owns UID removal: battle actors must survive until
+                    // each recipient leaves its native result scene.
+                    if (!IsSameChannel(self, s) || GameNetworkConfig.IsPvpListener(self.ListenerPort))
                         continue;
 
                     var body = TownAreaNotificationBuilder.BuildUserLeave(

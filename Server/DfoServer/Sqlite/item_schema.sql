@@ -1670,3 +1670,42 @@ CREATE TABLE IF NOT EXISTS character_rename_history (
 );
 CREATE INDEX IF NOT EXISTS idx_character_rename_old_name
     ON character_rename_history(old_name, changed_at);
+
+-- ---------------------------------------------------------------------------
+-- v42: gold consignment (金币寄售) — independent from the ordinary gold auction.
+-- Wire evidence: 0x00B7 28B register body == 37B item register minus the 3
+-- trailing filter tuples, with space=0/slot=0 = Main virtual slot 0 (gold).
+-- See Docs/金币寄售业务接入规范.md.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS gold_consignment_listings (
+    listing_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    seller_character_id INTEGER NOT NULL,
+    seller_account_id   INTEGER NOT NULL,
+    gold_amount     INTEGER NOT NULL,
+    unit_price_cera INTEGER NOT NULL,
+    total_price_cera INTEGER NOT NULL,
+    fee_percent     INTEGER NOT NULL DEFAULT 5,
+    duration_hours  INTEGER NOT NULL,
+    state           INTEGER NOT NULL,
+    created_at_unix INTEGER NOT NULL,
+    expires_at_unix INTEGER NOT NULL,
+    settled_at_unix INTEGER,
+    buyer_character_id INTEGER,
+    buyer_account_id   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_gold_consignment_active
+    ON gold_consignment_listings(state, expires_at_unix);
+CREATE INDEX IF NOT EXISTS idx_gold_consignment_seller
+    ON gold_consignment_listings(seller_character_id, state);
+
+CREATE TABLE IF NOT EXISTS gold_consignment_settlements (
+    settlement_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    listing_id      INTEGER NOT NULL,
+    outcome         INTEGER NOT NULL,
+    seller_character_id INTEGER NOT NULL,
+    seller_account_id   INTEGER NOT NULL,
+    gold_amount     INTEGER NOT NULL,
+    token_cera_paid INTEGER NOT NULL,
+    created_at_unix INTEGER NOT NULL,
+    UNIQUE(listing_id, outcome)
+);
