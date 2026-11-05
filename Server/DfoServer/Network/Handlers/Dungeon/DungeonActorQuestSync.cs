@@ -85,6 +85,12 @@ namespace DfoServer.Network.Handlers.Dungeon
                     }
                 }
             }
+            else if (!run.Matches(sourceEvent.RoomIdentity))
+            {
+                // 扇出/重放投影的事件可能已不指向当前房间：AnotherArad 写入前
+                // 复验房间，避免把进度记进旧房间的观察记录。
+                return;
+            }
 
             runtime.TryRecordActorDeath(
                 sourceEvent.SourceEventId,
