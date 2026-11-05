@@ -65,10 +65,24 @@ namespace DfoServer.Game.ItemUpgrade
                 return new ItemUpgradeCost();
 
             var file = GetFile(kind);
+            var materialCount = row.MaterialCount;
+            if (input.EquipmentType == EquipmentType.GuildMedal)
+            {
+                if (!string.Equals(row.TableType, "flag_upgrade_table", StringComparison.Ordinal)
+                    || input.Rarity < 0 || input.Rarity >= file.CostWeightsByGuildFlagRarity.Count)
+                    throw new InvalidOperationException("PVF guild-medal upgrade cost is incomplete.");
+                // 029CAD38-029CAE79: multiply the material count by the rarity
+                // weight using float, then truncate toward zero (x87 RC=truncate).
+                var weight = (float)file.CostWeightsByGuildFlagRarity[input.Rarity];
+                var count = row.MaterialCount * (double)weight;
+                if (!float.IsFinite(weight) || weight <= 0 || count < 1 || count > int.MaxValue)
+                    throw new InvalidOperationException("PVF guild-medal upgrade cost is invalid.");
+                materialCount = (int)count;
+            }
             return new ItemUpgradeCost
             {
                 MaterialItemId = row.MaterialItemId,
-                MaterialCount = row.MaterialCount,
+                MaterialCount = materialCount,
                 Gold = CalculateGoldCost(file, input),
             };
         }
