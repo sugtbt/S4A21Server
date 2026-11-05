@@ -427,6 +427,27 @@ WHERE claimed_flag = 0
             entry.FirstAttachmentPetSerialOrHandle = first.PetSerialOrHandle;
         }
 
+        /// <summary>
+        /// 这封邮件是否带过账户货币凭证附件（代币券 / 欢乐代币券），**不区分是否已领取**。
+        ///
+        /// 客户端「全部接收」会把附件和邮件 gold 分成两次 claim：先按附件 claimObjectId
+        /// 领附件，再按 messageId 领金币。第二次时附件已标记领取，按待领列表判断会失效，
+        /// 导致 gold 被当金币再发一次，所以这里按整封邮件的附件历史判断。
+        /// </summary>
+        private static bool MailCarriesAccountCurrencyVoucher(
+            SqliteConnection connection, SqliteTransaction transaction, long messageId)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.Transaction = transaction;
+            cmd.CommandText = @"
+SELECT COUNT(*) FROM mailbox_attachments
+WHERE message_id = @id AND item_template_id IN (@cera, @happy);";
+            cmd.Parameters.AddWithValue("@id", messageId);
+            cmd.Parameters.AddWithValue("@cera", SpecialRewardRouter.TokenCeraVoucherItemId);
+            cmd.Parameters.AddWithValue("@happy", SpecialRewardRouter.HappyTokenCeraVoucherItemId);
+            return Convert.ToInt64(cmd.ExecuteScalar()) > 0;
+        }
+
         private static List<MailboxAttachmentEntry> LoadMailboxAttachments(SqliteConnection connection, long messageId, SqliteTransaction transaction = null)
         {
             var attachments = new List<MailboxAttachmentEntry>();
@@ -902,8 +923,25 @@ LIMIT 1;";
             var attachments = target?.Attachment != null
                 ? new List<MailboxAttachmentEntry> { target.Attachment }
                 : LoadMailboxAttachments(connection, messageId, transaction);
-            var claimsGold = mailState.Gold > 0 && !mailState.ReceivedGold;
-            if (attachments.Count == 0 && !claimsGold)
+            // 凭证类邮件（代币券 / 欢乐代币券）把金额写进 gold 只是为了邮件窗口底部
+            // 显示「代币券 N」；真正入账是附件凭证转换成账户货币。
+            //
+            // 必须按「这封邮件是否带过凭证附件」判断，而不是看本次待领的附件列表：
+            // 客户端「全部接收」会先按附件 claimObjectId 领一次附件，再按 messageId
+            // 领一次邮件金币；第二次进来时附件已标记领取、查不到，若此时判断失效就会
+            // 把 gold 当金币再发一遍（同值双发）。
+            var goldIsDisplayOnly = MailCarriesAccountCurrencyVoucher(
+                connection, transaction, messageId);
+
+            var claimsGold = !goldIsDisplayOnly
+                && mailState.Gold > 0
+                && !mailState.ReceivedGold;
+            // 显示用 gold 也要走「预留 → 标记已领」两步，否则邮件永远停在
+            // received_gold_flag = 0，客户端会认为还有金币可领、邮件也删不掉。
+            var markGoldReceived = mailState.Gold > 0
+                && !mailState.ReceivedGold
+                && (claimsGold || goldIsDisplayOnly);
+            if (attachments.Count == 0 && !claimsGold && !markGoldReceived)
                 return MailboxClaimResult.Fail(MailboxSendError.MailNotFound);
 
             var requests = new List<InventoryRewardGrantRequest>(attachments.Count);
@@ -993,7 +1031,7 @@ LIMIT 1;";
             if (!AllocateDetailUidsInTransaction(connection, transaction, plan))
                 return MailboxClaimResult.Fail(MailboxSendError.ServerBusy);
 
-            if (!ReserveClaimState(connection, transaction, characterId, messageId, claimsGold, attachments))
+            if (!ReserveClaimState(connection, transaction, characterId, messageId, markGoldReceived, attachments))
                 return MailboxClaimResult.Fail(MailboxSendError.MailNotFound);
 
             if (!InventoryRewardGrantService.TryApplyPreparedBatch(inventory, plan, out var grantResult))
@@ -1017,7 +1055,10 @@ LIMIT 1;";
             if (!InventoryPersistenceService.SaveDirtyInTransaction(connection, transaction, lease))
                 return MailboxClaimResult.Fail(MailboxSendError.ServerBusy);
 
-            MarkMailClaimed(connection, transaction, characterId, messageId, claimsGold, attachments);
+            // 显示用 gold 也必须标记成「已领」，否则客户端一直认为邮件里还有金币可领，
+            // 领完附件后邮件仍留在邮箱、看起来像又多了一封金币邮件。
+            MarkMailClaimed(connection, transaction, characterId, messageId,
+                markGoldReceived, attachments);
 
             var updatedMainSlots = new List<short>();
             var updatedAvatarSlots = new List<short>();
