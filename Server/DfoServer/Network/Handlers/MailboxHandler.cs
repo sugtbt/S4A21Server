@@ -361,6 +361,12 @@ namespace DfoServer.Network.Handlers
             await SendClaimMailboxResult(session, header.type, claimObjectId);
             await SendClaimInventoryRefresh(session, updatedSlots);
 
+            // Vouchers inside the mail (代币券 / 欢乐代币券) are converted into account
+            // currency by SpecialRewardRouter. Those balances are NOT inventory slots, so
+            // the item-list refresh above cannot carry them: without this packet the
+            // client keeps the old 代币券 value and reports "获得0代币券".
+            await SendAckCeraRefresh(session, characterId);
+
             if (result.RemovedFromInbox)
             {
                 await SendChangeLetterStatResult(session, MailboxChangeLetterStatType, (int)result.MessageId, 0);
@@ -386,6 +392,51 @@ namespace DfoServer.Network.Handlers
 
             foreach (var pair in updatedSlots)
                 await _inventoryRefreshSender.SendUpdateItemList(session, pair.Key, pair.Value).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Pushes NOTIPACKET_CERA (0x0035) with the account's current
+        /// (cera, tokenCera, happyTokenCera).
+        ///
+        /// Claiming a voucher mail converts the attachment into account currency, and the
+        /// client reports that gain from its own currency object: the item-list refresh
+        /// cannot update it, so without this the client shows a stale balance and a bogus
+        /// "获得0代币券" prompt.
+        /// </summary>
+        private static async Task SendAckCeraRefresh(EnhancedClientSession session, int characterId)
+        {
+            if (session == null) return;
+            if (!InventoryContext.TryGetLease(characterId, out var lease)
+                || lease?.Inventory?.Database == null)
+            {
+                return;
+            }
+
+            int cera, token, happy;
+            try
+            {
+                (cera, token, happy) = lease.Inventory.Database.Read(connection =>
+                {
+                    using var cmd = connection.CreateCommand();
+                    cmd.CommandText =
+                        "SELECT cera, token_cera, happy_token_cera FROM accounts "
+                        + "WHERE account_id = @aid;";
+                    cmd.Parameters.AddWithValue("@aid", lease.AccountId);
+                    using var reader = cmd.ExecuteReader();
+                    if (!reader.Read()) return (0, 0, 0);
+                    return (reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2));
+                });
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Log($"[Mailbox] CLAIM cera refresh read failed cid={characterId}: {ex.Message}");
+                return;
+            }
+
+            await session.SendPacketAsync(GamePacketEnvelopeBuilder.Build(
+                0x00,
+                (ushort)NotiPacketTypeA21.CERA,
+                CeraUpdateBuilder.Build(cera, token, happy)));
         }
 
         internal static Dictionary<InventoryListType, List<short>> BuildClaimRefreshSlots(MailboxClaimResult result)
@@ -991,7 +1042,15 @@ namespace DfoServer.Network.Handlers
             writer.WriteInt32(hasItemAttachment ? attachment.ItemTemplateId : 0);
             writer.WriteByte(hasItemAttachment ? (byte)1 : (byte)0);
 
-            var itemCount = hasItemAttachment ? Math.Max(1, attachment.ItemCount) : 0;
+            // 账户货币凭证（代币券 / 欢乐代币券）在邮件里的「数量」由邮件的 gold 字段承载，
+            // 附件只用来标识物品类型，所以下发给客户端的数量写 0。
+            // 数据库里仍保存真实数量：领取时的换算读的是 attachment.ItemCount，不受这里影响。
+            var isCurrencyVoucher = hasItemAttachment
+                && SpecialRewardRouter.TryResolveAccountCurrencyReward(
+                    attachment.ItemTemplateId, 1, out _);
+            var itemCount = !hasItemAttachment ? 0
+                : isCurrencyVoucher ? 0
+                : Math.Max(1, attachment.ItemCount);
             var itemCore = hasItemAttachment ? MailboxItemCoreCodec.Decode(attachment) : null;
             var isStackableAttachment = hasItemAttachment
                 && itemCore != null
@@ -1030,8 +1089,13 @@ namespace DfoServer.Network.Handlers
                     : (hasItemAttachment ? ClampUInt16(attachment.Durability) : (ushort)0));
             var itemAttr = structuredItem?.Attr
                 ?? (hasItemAttachment ? ClampByte(attachment.SealFlag) : (byte)0);
-            // 附魔卡、强化次数、增幅类型与增幅值；堆叠附件数量走 instance 字段。
-            var enchantOrCount = structuredItem != null ? structuredItem.EnchantCardId : itemCount;
+            // 堆叠附件必须把数量同时写进 instance 与 enchant-or-count 两处：
+            // 客户端对不同物品类型会从不同位置取「获得数量」，早期只在 stackable 且无
+            // 结构化核心时才把数量写进 enchant-or-count，带核心的代币券凭证因此被读成 0，
+            // 弹窗显示「获得0代币券」。堆叠物品本身没有附魔卡，写数量不会污染语义。
+            var enchantOrCount = isStackableAttachment
+                ? itemCount
+                : (structuredItem != null ? structuredItem.EnchantCardId : itemCount);
             var enchantUpgradeCount = structuredItem != null ? structuredItem.EnchantUpgradeCount : (byte)0;
             var amplifyValue = structuredItem != null
                 ? structuredItem.AmplifyValue

@@ -1953,6 +1953,7 @@ namespace DfoServer.Network.Handlers
                 });
         }
 
+        // Caller owns _roomPublicationGate, as required by QueueRequired.
         private Task PublishPvpPeerRosters(
             FreeDuelRoom room,
             IReadOnlyList<EnhancedClientSession> members,
@@ -1991,6 +1992,7 @@ namespace DfoServer.Network.Handlers
             return Task.WhenAll(publications);
         }
 
+        // Caller owns _roomPublicationGate, as required by QueueRequired.
         private Task PublishPvpNewcomerPeerRecords(
             FreeDuelRoom room,
             IReadOnlyList<EnhancedClientSession> recipients,
@@ -2610,7 +2612,9 @@ namespace DfoServer.Network.Handlers
                 if (sessionReturned &&
                     departingLifecyclePackets.Length > 0)
                 {
-                    await QueueRequired(
+                    // Town navigation has already been published to this
+                    // recipient; it no longer consumes the old battle seats.
+                    await _requiredPublication.QueueRequired(
                         new[] { session },
                         room.ListenerPort,
                         departingLifecyclePackets);
@@ -2728,7 +2732,7 @@ namespace DfoServer.Network.Handlers
                         {
                             return;
                         }
-                        await QueueRequired(
+                        await _requiredPublication.QueueRequired(
                             new[] { kickedMember },
                             room.ListenerPort,
                             vacatedSeatPacket);
@@ -2995,6 +2999,9 @@ namespace DfoServer.Network.Handlers
                 return;
             }
 
+            // Readiness is also a native result-scene exit signal when the
+            // server ACK watchdog has already returned the room to waiting.
+            await FlushDeferredPvpDeparturesAsync(session);
             FreeDuelRoom room = null;
             byte seat = byte.MaxValue;
             var started = false;
@@ -3556,6 +3563,7 @@ namespace DfoServer.Network.Handlers
         private async Task HandleEndPvpResultWithinTransition(
             EnhancedClientSession session)
         {
+            await FlushDeferredPvpDeparturesAsync(session);
             Task publication = Task.CompletedTask;
             await _roomPublicationGate.WaitAsync();
             try
@@ -3666,6 +3674,7 @@ namespace DfoServer.Network.Handlers
                                     matchGeneration &&
                                 candidate.RoomState ==
                                     FreeDuelRoom.StartedRoomState &&
+                                candidate.SettlementPhase == FreeDuelRoom.CombatSettlementPhase &&
                                 candidate.BattleMode == 3);
                 if (room == null)
                     return;
@@ -4248,8 +4257,8 @@ namespace DfoServer.Network.Handlers
             var removedUnpublishedRoom = false;
             var removedMember = false;
             var promotedManager = false;
-            var combatAbandoned = false;
             var combatSettled = false;
+            var deferCombatDeparture = false;
             var disconnectedCombatant = false;
             var wasLobbyReady = false;
             byte vacatedSeat = byte.MaxValue;
@@ -4286,12 +4295,14 @@ namespace DfoServer.Network.Handlers
                     _lobbyReadySessions.TryRemove(
                         endingSession.SessionId,
                         out _);
+                _deferredPvpDepartures.Remove(endingSession.SessionId);
                 if (_rooms.TryRemoveEndingSession(
                         characterId,
                         endingSession.SessionId,
                         out var departure))
                 {
                     room = departure.Room;
+                    deferCombatDeparture = room.RoomState == FreeDuelRoom.StartedRoomState;
                     vacatedSeat = departure.VacatedSeat;
                     disconnectedCombatant =
                         departure.WasActiveCombatant;
@@ -4331,17 +4342,6 @@ namespace DfoServer.Network.Handlers
                     {
                         room = settledRoom;
                         disconnectTerminalRoom = settledRoom;
-                    }
-                    else
-                    {
-                        combatAbandoned =
-                            _rooms.TryForceCombatAbandonment(
-                                room.RoomId,
-                                room.GenerationId,
-                                room.MatchGeneration,
-                                out var waitingRoom);
-                        if (combatAbandoned)
-                            room = waitingRoom;
                     }
                 }
                 if (removedRoom)
@@ -4384,25 +4384,30 @@ namespace DfoServer.Network.Handlers
                                   "on session end: ") +
                             $"cid={characterId} room={room.RoomId} " +
                             $"seat={vacatedSeat}");
-                        if (combatSettled)
+                        if (disconnectedCombatant && deferCombatDeparture)
                         {
-                            packets.Add(
+                            var combatPackets = new List<byte[]>
+                            {
                                 GamePacketEnvelopeBuilder.Build(
                                     0x00,
                                     DiePvpCharacterNotificationType,
                                     PvpRoomNotificationBuilder
                                         .BuildDeathBody(
                                             vacatedSeat,
-                                            room.WinnerSeat ==
-                                            byte.MaxValue
-                                                ? -1
-                                                : room.WinnerSeat)));
-                            packets.Add(
-                                GamePacketEnvelopeBuilder.Build(
-                                    0x00,
-                                    RequestPvpRankNotificationType,
-                                    PvpRoomNotificationBuilder
-                                        .BuildRankRequestBody()));
+                                            -1))
+                            };
+                            if (combatSettled)
+                            {
+                                combatPackets.Add(
+                                    GamePacketEnvelopeBuilder.Build(
+                                        0x00,
+                                        RequestPvpRankNotificationType,
+                                        PvpRoomNotificationBuilder.BuildRankRequestBody()));
+                            }
+                            lifecyclePublication = QueueRequired(
+                                remainingMembers,
+                                room.ListenerPort,
+                                combatPackets.ToArray());
                         }
                         packets.Add(
                             GamePacketEnvelopeBuilder.Build(
@@ -4421,15 +4426,6 @@ namespace DfoServer.Network.Handlers
                                     PvpRoomNotificationBuilder
                                         .BuildRoomStateBody(room)));
                         }
-                        else if (combatAbandoned)
-                        {
-                            packets.Add(
-                                GamePacketEnvelopeBuilder.Build(
-                                    0x00,
-                                    RoomStateNotificationType,
-                                    PvpRoomNotificationBuilder
-                                        .BuildRoomStateBody(room)));
-                        }
                     }
                     if (wasLobbyReady &&
                         endingSession.Player?.UserId > 0)
@@ -4440,11 +4436,21 @@ namespace DfoServer.Network.Handlers
                     }
 
                     teardownPackets = packets.ToArray();
-                    lifecyclePublication =
-                        QueueRequiredToReadyListener(
-                            endingSession.ListenerPort,
-                            endingSession.SessionId,
-                            teardownPackets);
+                    var deferredTargets = deferCombatDeparture && removedMember
+                        ? remainingMembers
+                        : Array.Empty<EnhancedClientSession>();
+                    foreach (var target in deferredTargets)
+                    {
+                        DeferPvpDepartureUnderGate(target, room, vacatedSeat,
+                            endingSession.Player.UserId, endingSession.SessionId);
+                    }
+                    var deferredIds = deferredTargets.Select(target => target.SessionId).ToHashSet();
+                    var immediateTargets = GetReadyListenerTargets(
+                            endingSession.ListenerPort, endingSession.SessionId)
+                        .Where(target => !deferredIds.Contains(target.SessionId))
+                        .ToArray();
+                    lifecyclePublication = Task.WhenAll(lifecyclePublication,
+                        QueueRequired(immediateTargets, endingSession.ListenerPort, teardownPackets));
                 }
             }
             finally
@@ -4568,6 +4574,9 @@ namespace DfoServer.Network.Handlers
             if (disconnectTerminalRoom != null)
                 ScheduleRankSettlementTimeout(
                     disconnectTerminalRoom);
+            else if (disconnectedCombatant && room?.BattleMode == 3 &&
+                     room.SettlementPhase == FreeDuelRoom.CombatSettlementPhase)
+                ScheduleRelayBattleTurn(room, _relayBattleTurnDelay);
         }
 
         private async Task CompleteOwnerDisconnectTeardownAsync(
@@ -4726,6 +4735,14 @@ namespace DfoServer.Network.Handlers
                                         new[] { returning.Player.UserId },
                                         0)));
                 }
+                // USER_AREA/AREA_USERS were sent before this state commit.
+                // A forced kick can exit without an END_PVP_RESULT command.
+                if (_deferredPvpDepartures.Remove(returning.SessionId, out var pending))
+                {
+                    statePublication = Task.WhenAll(statePublication,
+                        _requiredPublication.QueueRequired(new[] { returning }, listenerPort,
+                            BuildDeferredUserLeavesUnderGate(pending).ToArray()));
+                }
             }
             finally
             {
@@ -4802,10 +4819,17 @@ namespace DfoServer.Network.Handlers
             int listenerPort,
             params byte[][] packets)
         {
-            return _requiredPublication.QueueRequired(
-                targets,
-                listenerPort,
-                packets);
+            // Caller owns _roomPublicationGate. Result-exit drains and ordered
+            // post-town projections use the underlying publisher directly.
+            var publications = new List<Task>(targets.Count);
+            foreach (var target in targets)
+            {
+                var deliver = FilterDeferredDeparturePacketsUnderGate(target, packets);
+                if (deliver.Length != 0)
+                    publications.Add(_requiredPublication.QueueRequired(
+                        new[] { target }, listenerPort, deliver));
+            }
+            return Task.WhenAll(publications);
         }
 
         private IReadOnlyList<EnhancedClientSession>
