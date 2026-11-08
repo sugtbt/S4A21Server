@@ -44,10 +44,13 @@ namespace DfoServer.Game.Quests
                 return new QuestTrigger(AddSaturating(PackedValue, 1));
             if (triggerType == 0)
             {
-                return new QuestTrigger(
-                    increment
-                        ? AddSaturating(PackedValue, 1)
-                        : PackedValue > 0 ? PackedValue - 1 : 0);
+                // type 0 没有通道位, 只递减 channel0, 到 0 即止。
+                // 整包 -1 会在 channel0 已为 0 时向高位借位(512 -> 511,
+                // channel0 变成 511), 把任务卡进无法完成的状态。
+                if (increment)
+                    return new QuestTrigger(AddSaturating(PackedValue, 1));
+
+                return GetChannel(0) > 0 ? AdjustChannel(0, -1) : this;
             }
 
             var result = this;

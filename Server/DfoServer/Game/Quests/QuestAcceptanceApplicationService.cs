@@ -40,6 +40,7 @@ namespace DfoServer.Game.Quests
             var clientInitialTrigger = GameWorld.QuestData.GetInitTrigger(questId);
             var committedTrigger = clientInitialTrigger;
             var slot = -1;
+            var activationId = default(QuestActivationId);
             lock (lease.SyncRoot)
             {
                 if (!owner.IsCurrentInventoryOwner())
@@ -201,7 +202,7 @@ namespace DfoServer.Game.Quests
                                 }
                             }
 
-                            QuestRepository.InsertActiveQuest(
+                            activationId = QuestRepository.InsertActiveQuest(
                                 connection,
                                 transaction,
                                 characterId,
@@ -257,6 +258,7 @@ namespace DfoServer.Game.Quests
                 QuestId = questId,
                 InitTrigger = clientInitialTrigger,
                 CommittedTrigger = committedTrigger,
+                ActivationId = activationId,
             };
             if (clientInitialTrigger != committedTrigger)
             {

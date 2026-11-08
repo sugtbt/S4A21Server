@@ -270,6 +270,9 @@ namespace DfoServer.Game.Dungeon
                 new Dictionary<(ushort QuestId, int ChannelIndex), int>();
         private readonly HashSet<QuestActivationId> _npcItemDropActivations =
             new HashSet<QuestActivationId>();
+        private readonly HashSet<(ushort QuestId, string Reason)>
+            _questDropFilterLogs =
+                new HashSet<(ushort QuestId, string Reason)>();
 
         internal QuestRunSnapshot Snapshot { get; set; } = QuestRunSnapshot.Empty;
         internal DungeonCaptureDropJournal CaptureDrops { get; }
@@ -330,6 +333,13 @@ namespace DfoServer.Game.Dungeon
             QuestActivationId activationId)
             => activationId.IsValid
                 && _npcItemDropActivations.Add(activationId);
+
+        // 同一局内同一任务同一原因只允许记一条过滤日志。
+        internal bool TryMarkQuestDropFilterLogged(
+            ushort questId,
+            string reason)
+            => questId != 0
+                && _questDropFilterLogs.Add((questId, reason ?? string.Empty));
 
         internal void UnmarkNpcItemDropGenerated(
             QuestActivationId activationId)

@@ -886,7 +886,8 @@ namespace DfoServer.Game.Quests
 
         internal static HashSet<int> FilterEligibleQuestActivations(
             QuestRunSnapshot snapshot,
-            IEnumerable<ActiveQuest> activeQuests)
+            IEnumerable<ActiveQuest> activeQuests,
+            DungeonRun run = null)
         {
             if (snapshot == null || snapshot.Count == 0 || activeQuests == null)
                 return null;
@@ -894,9 +895,15 @@ namespace DfoServer.Game.Quests
             var eligible = new HashSet<int>();
             foreach (var activeQuest in activeQuests)
             {
-                if (activeQuest == null
-                    || !snapshot.TryGet(activeQuest.QuestId, out var frozen))
+                if (activeQuest == null)
+                    continue;
+
+                if (!snapshot.TryGet(activeQuest.QuestId, out var frozen))
                 {
+                    LogQuestFilteredOut(
+                        run,
+                        activeQuest.QuestId,
+                        "not in run snapshot");
                     continue;
                 }
 
@@ -904,12 +911,37 @@ namespace DfoServer.Game.Quests
                     || !activeQuest.ActivationId.IsValid
                     || !frozen.ActivationId.Equals(activeQuest.ActivationId))
                 {
+                    LogQuestFilteredOut(
+                        run,
+                        activeQuest.QuestId,
+                        "activation mismatch");
                     continue;
                 }
 
                 eligible.Add(activeQuest.QuestId);
             }
             return eligible.Count > 0 ? eligible : null;
+        }
+
+        // 每次掉落判定都会走一遍过滤, 同一局里同一任务的同一原因只记一条,
+        // 避免刷屏淹没 server.log。run 为 null 时(单测)只做一次纯日志。
+        private static void LogQuestFilteredOut(
+            DungeonRun run,
+            int questId,
+            string reason)
+        {
+            if (questId <= 0 || questId > ushort.MaxValue)
+                return;
+
+            if (run != null
+                && !run.TryMarkQuestDropFilterLogged((ushort)questId, reason))
+            {
+                return;
+            }
+
+            FileLogger.Log(
+                $"[{ProtocolLogName}] QUEST_DROP quest={questId} " +
+                $"filtered out by run snapshot: {reason}");
         }
 
         private HashSet<int> LoadEligibleQuestIds(
@@ -943,7 +975,7 @@ namespace DfoServer.Game.Quests
                 var quests = QuestService.LoadActiveQuests(
                     connStr,
                     session.Player.CharacterId);
-                eligible = FilterEligibleQuestActivations(snapshot, quests);
+                eligible = FilterEligibleQuestActivations(snapshot, quests, run);
                 return true;
             }
             catch (Exception ex)
