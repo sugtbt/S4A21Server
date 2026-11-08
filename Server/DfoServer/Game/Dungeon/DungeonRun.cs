@@ -882,6 +882,28 @@ namespace DfoServer.Game.Dungeon
                 CurrentRoomInstanceId = room.RoomInstanceId;
         }
 
+        // 进本后新接取的任务: 只把这一条并入本局快照, 与进本赋值共用同一把锁。
+        // 旧 activation 被覆盖, 旧局事件不会推进新任务。
+        internal void MergeAcceptedQuestIntoSnapshot(ActiveQuest quest)
+        {
+            if (quest == null || quest.QuestId == 0)
+                return;
+
+            lock (SyncRoot)
+                QuestSnapshot = QuestSnapshot.WithQuest(quest);
+        }
+
+        internal bool TryMarkQuestDropFilterLogged(
+            ushort questId,
+            string reason)
+        {
+            if (questId == 0)
+                return false;
+
+            lock (SyncRoot)
+                return QuestBridge.TryMarkQuestDropFilterLogged(questId, reason);
+        }
+
         internal bool TryMarkClearMapQuestSynced(int dungeonId, int mapId)
         {
             lock (SyncRoot)
