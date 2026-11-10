@@ -298,10 +298,18 @@ namespace DfoServer.Game.Premium
                 conn.Open();
                 using (var cmd = conn.CreateCommand())
                 {
-                    cmd.CommandText = "SELECT premium_type, end_time FROM account_premiums WHERE account_id=@aid AND premium_type>=@lo AND premium_type<@hi;";
+                    // A21 客户端(handler 0x0110DF80 原样存储 74 字节状态，
+                    // IsServiceActive 0x143F880)把槽位 expire 字段非零视为
+                    // 契约生效、不与本地时间比较(GetUsedCount/GetLimit 同样以
+                    // expire 非零为前提)，过期行必须以全零下发，否则客户端会把
+                    // 已过期契约当成生效权益(如黄金卡牌免费翻)继续展示。
+                    cmd.CommandText = "SELECT premium_type, end_time FROM account_premiums WHERE account_id=@aid AND premium_type>=@lo AND premium_type<@hi AND end_time>@now;";
                     cmd.Parameters.AddWithValue("@aid", accountId);
                     cmd.Parameters.AddWithValue("@lo", DevilContractCatalog.SlotPremiumTypeBase);
                     cmd.Parameters.AddWithValue("@hi", DevilContractCatalog.SlotPremiumTypeBase + DevilContractCatalog.SlotCount);
+                    cmd.Parameters.AddWithValue(
+                        "@now",
+                        DateTimeOffset.UtcNow.ToUnixTimeSeconds());
                     using (var reader = cmd.ExecuteReader())
                     {
                         while (reader.Read())
