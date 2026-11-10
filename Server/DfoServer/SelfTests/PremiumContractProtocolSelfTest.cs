@@ -328,6 +328,35 @@ VALUES (7, @goldCardType, @expire);";
                     BitConverter.ToInt32(serviceData, 10)
                         == DevilContractUsagePolicy.GoldCardDailyLimit,
                     ref failures);
+
+                using (var connection = new SqliteConnection(connectionString))
+                {
+                    connection.Open();
+                    using (var command = connection.CreateCommand())
+                    {
+                        command.CommandText = @"
+UPDATE account_premiums SET end_time = @expired
+WHERE account_id = 7 AND premium_type = @goldCardType;";
+                        command.Parameters.AddWithValue(
+                            "@goldCardType",
+                            DevilContractCatalog.SlotToPremiumType(
+                                DevilContractUsagePolicy.GoldCardSlot));
+                        command.Parameters.AddWithValue(
+                            "@expired",
+                            DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 1);
+                        command.ExecuteNonQuery();
+                    }
+                }
+
+                var expiredServiceData = PremiumService.BuildPremiumServiceData(
+                    connectionString,
+                    accountId: 7,
+                    usage);
+                Check(
+                    "premium state omits an expired contract slot entirely",
+                    BitConverter.ToInt32(expiredServiceData, 6) == 0
+                    && BitConverter.ToInt32(expiredServiceData, 10) == 0,
+                    ref failures);
             }
             finally
             {
