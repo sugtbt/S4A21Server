@@ -551,9 +551,8 @@ namespace DfoServer.Game.Lottery
                     appliedDoubleReward ? 2 : 1)
                 .ToList();
             var rewardRequests = BuildLotteryRewardRequests(rewardEntries);
-            var effectiveOverflowSink = definition.UsesIncreaseChanceProgress
-                ? overflowSink
-                : RejectingInventoryOverflowRewardSink.Instance;
+            var effectiveOverflowSink = overflowSink
+                ?? RejectingInventoryOverflowRewardSink.Instance;
             if (!TryPrepareOnlineOpen(
                     inventory,
                     source,
@@ -628,7 +627,7 @@ namespace DfoServer.Game.Lottery
                         inventory,
                         rewardRequests,
                         string.Empty,
-                        "鐗╁搧鏍忔病鏈夊墿浣欑┖闂达紝绀肩墿宸查偖浠跺彂閫?",
+                        "物品栏没有剩余空间，礼物已邮件发送",
                         out _))
                 {
                     return false;
@@ -865,6 +864,15 @@ namespace DfoServer.Game.Lottery
                     out plan))
             {
                 return true;
+            }
+
+            // 只有容量溢出（InsertPlanFailed）才允许转邮件；无效物品、创建
+            // 失败等其它规划错误必须整笔失败，不得伪装成溢出（背包规范
+            // 「新物品创建/发放」节的溢出约束）。
+            if (plan == null
+                || plan.Error != InventoryRewardGrantError.InsertPlanFailed)
+            {
+                return false;
             }
 
             deliverToMailbox = overflowSink
